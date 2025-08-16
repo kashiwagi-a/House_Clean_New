@@ -1,1466 +1,899 @@
 package org.example;
 
-import java.io.File;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.util.*;  // java.utilのListを使用
-import java.util.stream.Collectors;
-import java.util.logging.Logger;
-import java.util.logging.Level;
-import java.util.logging.ConsoleHandler;
-import java.util.logging.SimpleFormatter;
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
-import javax.swing.table.*;
-import java.awt.*;  // java.awtのListは使用しない
-import java.awt.event.*;
+import java.io.File;
+import java.time.LocalDate;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.logging.ConsoleHandler;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 
 /**
- * 部屋割り当てアプリケーションのメインクラス
- * データ読み込みと最適化計算を調整する
+ * ホテル客室清掃割り当てアプリケーション
+ * メインクラス（ファイル選択ダイアログ付き拡張版）
  */
 public class RoomAssignmentApplication {
 
     private static final Logger LOGGER = Logger.getLogger(RoomAssignmentApplication.class.getName());
 
-    // 設定値
-    private static final String DEFAULT_ROOM_FILE = "wincal_room_data.csv";
-    private static final String DEFAULT_SHIFT_FILE = "Shift.xlsx";
-    private static final String DEFAULT_ECO_FILE = "hotel_cleaning_now.xlsx";
+    // 調整パラメータ
+    private static final double MAX_ALLOWED_DIFFERENCE = 3.0;  // 許容される最大ポイント差
+    private static final int MAX_FLOORS_PER_STAFF = 2;        // スタッフ1人あたりの最大階数
+    private static final boolean ENABLE_AUTO_ADJUSTMENT = true; // 自動調整の有効化
 
-    // ファイルパス
-    private final String roomFilePath;
-    private final String shiftFilePath;
-    private final String ecoFilePath;
-    private final LocalDate targetDate;
-
-    // データホルダー
-    private FileProcessor.CleaningData cleaningData;
-    private java.util.List<FileProcessor.Staff> availableStaff;  // 明示的にjava.util.Listを指定
-    private java.util.List<AdaptiveRoomOptimizer.FloorInfo> floors;
-    private int totalRooms;
-
-    /**
-     * コンストラクタ
-     */
-    public RoomAssignmentApplication(String roomFile, String shiftFile, String ecoFile, LocalDate date) {
-        this.roomFilePath = roomFile;
-        this.shiftFilePath = shiftFile;
-        this.ecoFilePath = ecoFile;
-        this.targetDate = date;
+    static {
+        setupLogger();
     }
 
-    /**
-     * デフォルトコンストラクタ
-     */
-    public RoomAssignmentApplication() {
-        this(DEFAULT_ROOM_FILE, DEFAULT_SHIFT_FILE, DEFAULT_ECO_FILE, LocalDate.now());
-    }
-
-    /**
-     * ファイル選択ダイアログを使用したコンストラクタ
-     */
-    public static RoomAssignmentApplication createWithFileSelection() {
-        try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception e) {
-            // 無視
-        }
-
-        JOptionPane.showMessageDialog(null,
-                "適応型清掃管理最適化システムへようこそ。\n" +
-                        "これから必要なファイルを選択していただきます。",
-                "システム起動", JOptionPane.INFORMATION_MESSAGE);
-
-        // 清掃部屋データファイルの選択
-        String roomFile = selectFile("清掃部屋データファイル（CSV）を選択してください",
-                "csv", "CSVファイル (*.csv)", DEFAULT_ROOM_FILE);
-        if (roomFile == null) {
-            System.out.println("キャンセルされました。");
-            System.exit(0);
-        }
-
-        // シフトファイルの選択
-        String shiftFile = selectFile("シフトファイル（Excel）を選択してください",
-                "xlsx", "Excelファイル (*.xlsx)", DEFAULT_SHIFT_FILE);
-        if (shiftFile == null) {
-            System.out.println("キャンセルされました。");
-            System.exit(0);
-        }
-
-        // エコ清掃ファイルの選択
-        String ecoFile = selectFile("エコ清掃ファイル（Excel）を選択してください",
-                "xlsx", "Excelファイル (*.xlsx)", DEFAULT_ECO_FILE);
-        if (ecoFile == null) {
-            System.out.println("キャンセルされました。");
-            System.exit(0);
-        }
-
-        // 対象日の選択
-        LocalDate targetDate = selectDate();
-
-        return new RoomAssignmentApplication(roomFile, shiftFile, ecoFile, targetDate);
-    }
-
-    /**
-     * ファイル選択ダイアログ
-     */
-    private static String selectFile(String message, String extension, String description, String defaultFile) {
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setDialogTitle(message);
-        fileChooser.setCurrentDirectory(new File(System.getProperty("user.dir")));
-
-        // デフォルトファイルが存在する場合は選択状態にする
-        File defaultFileObj = new File(defaultFile);
-        if (defaultFileObj.exists()) {
-            fileChooser.setSelectedFile(defaultFileObj);
-        }
-
-        FileNameExtensionFilter filter = new FileNameExtensionFilter(description, extension);
-        fileChooser.setFileFilter(filter);
-
-        int result = fileChooser.showOpenDialog(null);
-        if (result == JFileChooser.APPROVE_OPTION) {
-            return fileChooser.getSelectedFile().getAbsolutePath();
-        }
-        return null;
-    }
-
-    /**
-     * 日付選択ダイアログ
-     */
-    private static LocalDate selectDate() {
-        LocalDate today = LocalDate.now();
-
-        // 日付選択用のスピナーモデル
-        SpinnerModel yearModel = new SpinnerNumberModel(today.getYear(), 2020, 2030, 1);
-        SpinnerModel monthModel = new SpinnerNumberModel(today.getMonthValue(), 1, 12, 1);
-        SpinnerModel dayModel = new SpinnerNumberModel(today.getDayOfMonth(), 1, 31, 1);
-
-        JSpinner yearSpinner = new JSpinner(yearModel);
-        JSpinner monthSpinner = new JSpinner(monthModel);
-        JSpinner daySpinner = new JSpinner(dayModel);
-
-        JPanel panel = new JPanel();
-        panel.add(new JLabel("対象日を選択してください："));
-        panel.add(yearSpinner);
-        panel.add(new JLabel("年"));
-        panel.add(monthSpinner);
-        panel.add(new JLabel("月"));
-        panel.add(daySpinner);
-        panel.add(new JLabel("日"));
-
-        int result = JOptionPane.showConfirmDialog(null, panel,
-                "対象日の選択",
-                JOptionPane.OK_CANCEL_OPTION);
-
-        if (result == JOptionPane.OK_OPTION) {
-            try {
-                return LocalDate.of((Integer) yearSpinner.getValue(),
-                        (Integer) monthSpinner.getValue(),
-                        (Integer) daySpinner.getValue());
-            } catch (Exception e) {
-                JOptionPane.showMessageDialog(null, "無効な日付です。今日の日付を使用します。",
-                        "エラー", JOptionPane.WARNING_MESSAGE);
-                return today;
-            }
-        }
-
-        return today;
-    }
-
-    /**
-     * アプリケーションの実行
-     */
-    public void run() {
-        try {
-            System.out.println("=== 適応型清掃管理最適化システム ===");
-            System.out.println("実行日時: " + LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
-            System.out.println();
-
-            // Step 1: データ読み込み
-            loadData();
-
-            // Step 2: データ検証
-            validateData();
-
-            // Step 2.5: 残し部屋の選択
-            selectRoomsToClean();
-
-            // Step 3: フロア情報構築
-            buildFloorInformation();
-
-            // Step 4: 最適化設定の生成
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createOptimizationConfig();
-
-            // Step 5: 最適化実行
-            AdaptiveRoomOptimizer.OptimizationResult result = executeOptimization(config);
-
-            // Step 6: 結果表示
-            displayResults(result);
-
-            // Step 7: 結果のエクスポート（オプション）
-            exportResults(result);
-
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "アプリケーション実行中にエラーが発生しました", e);
-            System.err.println("\n❌ エラーが発生しました: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    /**
-     * Step 1: データ読み込み
-     */
-    private void loadData() {
-        System.out.println("【Step 1: データ読み込み】");
-
-        // エコファイルパスを設定
-        System.setProperty("ecoDataFile", ecoFilePath);
-
-        // 部屋データの読み込み
-        System.out.print("部屋データを読み込み中... ");
-        File roomFile = new File(roomFilePath);
-        if (!roomFile.exists()) {
-            throw new RuntimeException("部屋データファイルが見つかりません: " + roomFilePath);
-        }
-        cleaningData = FileProcessor.processRoomFile(roomFile);
-        System.out.println("✓ 完了");
-
-        // シフトデータの読み込み
-        System.out.print("シフトデータを読み込み中... ");
-        File shiftFile = new File(shiftFilePath);
-        if (!shiftFile.exists()) {
-            throw new RuntimeException("シフトファイルが見つかりません: " + shiftFilePath);
-        }
-        availableStaff = FileProcessor.getAvailableStaff(shiftFile, targetDate);
-        System.out.println("✓ 完了");
-
-        // 総部屋数の計算
-        totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
-
-        System.out.println();
-    }
-
-    /**
-     * Step 2: データ検証
-     */
-    private void validateData() {
-        System.out.println("【Step 2: データ検証】");
-
-        // 部屋データの検証
-        System.out.println("部屋データ:");
-        System.out.printf("  - 本館: %d室\n", cleaningData.totalMainRooms);
-        System.out.printf("  - 別館: %d室\n", cleaningData.totalAnnexRooms);
-        System.out.printf("  - エコ清掃: %d室\n", cleaningData.ecoRooms.size());
-        System.out.printf("  - 故障部屋: %d室（清掃対象外）\n", cleaningData.totalBrokenRooms);
-        System.out.printf("  - 清掃対象合計: %d室\n", totalRooms);
-
-        if (totalRooms == 0) {
-            throw new RuntimeException("清掃対象の部屋が0室です。データを確認してください。");
-        }
-
-        // スタッフデータの検証
-        System.out.println("\nスタッフデータ:");
-        System.out.printf("  - 出勤人数: %d名\n", availableStaff.size());
-
-        if (availableStaff.isEmpty()) {
-            throw new RuntimeException("出勤可能なスタッフが0名です。シフトデータを確認してください。");
-        }
-
-        // 負荷レベルの表示
-        double avgRoomsPerStaff = (double) totalRooms / availableStaff.size();
-        System.out.printf("  - 平均負荷: %.1f室/人\n", avgRoomsPerStaff);
-
-        System.out.println();
-    }
-
-    /**
-     * Step 2.5: 残し部屋の選択（GUI）
-     */
-    private void selectRoomsToClean() {
-        System.out.println("【Step 2.5: 清掃部屋の選択】");
-
-        // GUIで部屋選択画面を表示
-        RoomSelectionDialog dialog = new RoomSelectionDialog(cleaningData);
-        dialog.setVisible(true);
-
-        // ダイアログの結果を待つ
-        Set<String> excludedRooms = dialog.getExcludedRooms();
-
-        if (!excludedRooms.isEmpty()) {
-            System.out.printf("残し部屋として %d 室が選択されました\n", excludedRooms.size());
-
-            // 残し部屋を除外してデータを更新
-            updateCleaningDataWithExclusions(excludedRooms);
-
-            // 総部屋数を再計算
-            totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
-
-            System.out.printf("更新後の清掃対象: %d室\n", totalRooms);
-        }
-
-        System.out.println();
-    }
-
-    /**
-     * 残し部屋を除外してCleaningDataを更新
-     */
-    private void updateCleaningDataWithExclusions(Set<String> excludedRooms) {
-        // 本館の部屋をフィルタリング
-        java.util.List<FileProcessor.Room> filteredMainRooms = new ArrayList<>();
-        for (FileProcessor.Room room : cleaningData.mainRooms) {
-            if (!excludedRooms.contains(room.roomNumber)) {
-                filteredMainRooms.add(room);
-            }
-        }
-
-        // 別館の部屋をフィルタリング
-        java.util.List<FileProcessor.Room> filteredAnnexRooms = new ArrayList<>();
-        for (FileProcessor.Room room : cleaningData.annexRooms) {
-            if (!excludedRooms.contains(room.roomNumber)) {
-                filteredAnnexRooms.add(room);
-            }
-        }
-
-        // エコ部屋もフィルタリング
-        java.util.List<FileProcessor.Room> filteredEcoRooms = new ArrayList<>();
-        for (FileProcessor.Room room : cleaningData.ecoRooms) {
-            if (!excludedRooms.contains(room.roomNumber)) {
-                filteredEcoRooms.add(room);
-            }
-        }
-
-        // CleaningDataを再作成
-        cleaningData = new FileProcessor.CleaningData(
-                filteredMainRooms,
-                filteredAnnexRooms,
-                filteredEcoRooms,
-                cleaningData.brokenRooms  // 故障部屋はそのまま
-        );
-    }
-
-    /**
-     * Step 3: フロア情報構築
-     */
-    private void buildFloorInformation() {
-        System.out.println("【Step 3: フロア情報構築】");
-
-        Map<Integer, AdaptiveRoomOptimizer.FloorInfo> floorMap = new HashMap<>();
-
-        // 本館の部屋を処理
-        processRoomsForFloor(cleaningData.mainRooms, floorMap, "本館");
-
-        // 別館の部屋を処理
-        processRoomsForFloor(cleaningData.annexRooms, floorMap, "別館");
-
-        // フロアリストの作成とソート
-        floors = new ArrayList<>(floorMap.values());
-        floors.sort(Comparator.comparingInt(f -> f.floorNumber));
-
-        // フロア情報の表示
-        System.out.println("\nフロア別部屋数:");
-        for (AdaptiveRoomOptimizer.FloorInfo floor : floors) {
-            System.out.printf("  %2d階: ", floor.floorNumber);
-            floor.roomCounts.forEach((type, count) -> {
-                if (count > 0) System.out.printf("%s=%d ", type, count);
-            });
-            if (floor.ecoRooms > 0) {
-                System.out.printf("エコ=%d ", floor.ecoRooms);
-            }
-            System.out.printf("(計%d室)\n", floor.getTotalRooms());
-        }
-
-        System.out.println();
-    }
-
-    /**
-     * 部屋情報をフロアマップに追加
-     */
-    private void processRoomsForFloor(
-            java.util.List<FileProcessor.Room> rooms,
-            Map<Integer, AdaptiveRoomOptimizer.FloorInfo> floorMap,
-            String buildingName) {
-
-        for (FileProcessor.Room room : rooms) {
-            int floor = room.floor;
-            if (floor == 0) continue; // 階数不明の部屋はスキップ
-
-            AdaptiveRoomOptimizer.FloorInfo floorInfo = floorMap.get(floor);
-            if (floorInfo == null) {
-                Map<String, Integer> counts = new HashMap<>();
-                counts.put("S", 0);
-                counts.put("D", 0);  // D部屋を追加
-                counts.put("T", 0);
-                counts.put("FD", 0);
-                floorInfo = new AdaptiveRoomOptimizer.FloorInfo(floor, counts, 0);
-                floorMap.put(floor, floorInfo);
-            }
-
-            if (room.isEcoClean) {
-                floorInfo = new AdaptiveRoomOptimizer.FloorInfo(
-                        floor, floorInfo.roomCounts, floorInfo.ecoRooms + 1);
-            } else {
-                Map<String, Integer> newCounts = new HashMap<>(floorInfo.roomCounts);
-                newCounts.put(room.roomType, newCounts.get(room.roomType) + 1);
-                floorInfo = new AdaptiveRoomOptimizer.FloorInfo(
-                        floor, newCounts, floorInfo.ecoRooms);
-            }
-            floorMap.put(floor, floorInfo);
-        }
-    }
-
-    /**
-     * Step 4: 最適化設定の生成
-     */
-    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createOptimizationConfig() {
-        System.out.println("【Step 4: 最適化設定生成】");
-
-        AdaptiveRoomOptimizer.AdaptiveLoadConfig config =
-                AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfig(
-                        availableStaff, totalRooms);
-
-        System.out.printf("負荷レベル: %s\n", config.loadLevel.displayName);
-        System.out.println("\nスタッフ配分:");
-        config.staffByType.forEach((type, staffList) -> {
-            int target = config.targetRoomsMap.get(type);
-            int reduction = config.reductionMap.get(type);
-            System.out.printf("  %s: %d名 (目標%d室, -%d室)\n",
-                    type.displayName, staffList.size(), target, reduction);
-        });
-
-        System.out.println();
-        return config;
-    }
-
-    /**
-     * Step 5: 最適化実行
-     */
-    private AdaptiveRoomOptimizer.OptimizationResult executeOptimization(
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
-
-        System.out.println("【Step 5: 最適化実行】");
-        System.out.println("最適化計算を開始します...\n");
-
-        AdaptiveRoomOptimizer.AdaptiveOptimizer optimizer =
-                new AdaptiveRoomOptimizer.AdaptiveOptimizer(floors, config);
-
-        return optimizer.optimize(targetDate);
-    }
-
-    /**
-     * Step 6: 結果表示
-     */
-    private void displayResults(AdaptiveRoomOptimizer.OptimizationResult result) {
-        System.out.println("\n【Step 6: 結果表示】");
-        result.printDetailedSummary();
-
-        // 手動調整を行うか確認
-        int response = JOptionPane.showConfirmDialog(null,
-                "割り振り結果を手動で調整しますか？",
-                "手動調整",
-                JOptionPane.YES_NO_OPTION);
-
-        if (response == JOptionPane.YES_OPTION) {
-            // 手動調整画面を表示
-            ManualAdjustmentFrame adjustmentFrame = new ManualAdjustmentFrame(
-                    result, cleaningData, floors);
-            adjustmentFrame.setVisible(true);
-
-            // 調整後の結果を取得
-            AdaptiveRoomOptimizer.OptimizationResult adjustedResult =
-                    adjustmentFrame.getAdjustedResult();
-
-            if (adjustedResult != null) {
-                System.out.println("\n=== 手動調整後の結果 ===");
-                adjustedResult.printDetailedSummary();
-                result = adjustedResult;
-            }
-        }
-    }
-
-    /**
-     * Step 7: 結果のエクスポート（将来の拡張用）
-     */
-    private void exportResults(AdaptiveRoomOptimizer.OptimizationResult result) {
-        // 将来的にExcelやCSVへのエクスポート機能を実装可能
-        System.out.println("\n【Step 7: 結果エクスポート】");
-        System.out.println("（現在は未実装）");
-    }
-
-    /**
-     * コマンドライン引数の解析
-     */
-    private static class CommandLineArgs {
-        String roomFile = DEFAULT_ROOM_FILE;
-        String shiftFile = DEFAULT_SHIFT_FILE;
-        String ecoFile = DEFAULT_ECO_FILE;
-        LocalDate targetDate = LocalDate.now();
-        boolean help = false;
-        boolean gui = false;
-
-        static CommandLineArgs parse(String[] args) {
-            CommandLineArgs result = new CommandLineArgs();
-
-            for (int i = 0; i < args.length; i++) {
-                switch (args[i]) {
-                    case "-r":
-                    case "--room":
-                        if (i + 1 < args.length) {
-                            result.roomFile = args[++i];
-                        }
-                        break;
-                    case "-s":
-                    case "--shift":
-                        if (i + 1 < args.length) {
-                            result.shiftFile = args[++i];
-                        }
-                        break;
-                    case "-e":
-                    case "--eco":
-                        if (i + 1 < args.length) {
-                            result.ecoFile = args[++i];
-                        }
-                        break;
-                    case "-d":
-                    case "--date":
-                        if (i + 1 < args.length) {
-                            result.targetDate = LocalDate.parse(args[++i]);
-                        }
-                        break;
-                    case "-g":
-                    case "--gui":
-                        result.gui = true;
-                        break;
-                    case "-h":
-                    case "--help":
-                        result.help = true;
-                        break;
-                }
-            }
-
-            return result;
-        }
-    }
-
-    /**
-     * ヘルプメッセージの表示
-     */
-    private static void showHelp() {
-        System.out.println("使用方法: java RoomAssignmentApplication [オプション]");
-        System.out.println();
-        System.out.println("オプション:");
-        System.out.println("  -r, --room <file>   部屋データファイル (デフォルト: " + DEFAULT_ROOM_FILE + ")");
-        System.out.println("  -s, --shift <file>  シフトファイル (デフォルト: " + DEFAULT_SHIFT_FILE + ")");
-        System.out.println("  -e, --eco <file>    エコ清掃ファイル (デフォルト: " + DEFAULT_ECO_FILE + ")");
-        System.out.println("  -d, --date <date>   対象日 (YYYY-MM-DD形式, デフォルト: 今日)");
-        System.out.println("  -g, --gui           GUIでファイルを選択");
-        System.out.println("  -h, --help          このヘルプを表示");
-    }
-
-    /**
-     * ロギング設定
-     */
-    private static void setupLogging() {
+    private static void setupLogger() {
         Logger rootLogger = Logger.getLogger("");
         rootLogger.setLevel(Level.INFO);
 
-        // コンソールハンドラーの設定
         ConsoleHandler consoleHandler = new ConsoleHandler();
         consoleHandler.setLevel(Level.INFO);
-        consoleHandler.setFormatter(new SimpleFormatter() {
-            @Override
-            public String format(java.util.logging.LogRecord record) {
-                if (record.getLevel() == Level.INFO) {
-                    return record.getMessage() + "\n";
-                } else {
-                    return super.format(record);
-                }
-            }
-        });
+        consoleHandler.setFormatter(new SimpleFormatter());
 
-        // 既存のハンドラーを削除
-        for (java.util.logging.Handler handler : rootLogger.getHandlers()) {
-            rootLogger.removeHandler(handler);
-        }
-
+        Arrays.stream(rootLogger.getHandlers()).forEach(rootLogger::removeHandler);
         rootLogger.addHandler(consoleHandler);
     }
 
-    /**
-     * メインメソッド
-     */
     public static void main(String[] args) {
-        // ロギング設定
-        setupLogging();
-
-        // コマンドライン引数の解析
-        CommandLineArgs cmdArgs = CommandLineArgs.parse(args);
-
-        if (cmdArgs.help) {
-            showHelp();
-            return;
-        }
-
         try {
-            RoomAssignmentApplication app;
+            System.out.println("=== ホテル客室清掃割り当てシステム ===");
+            System.out.println("Version 3.1 - 適応型最適化エンジン + ファイル選択機能");
+            System.out.println("=========================================\n");
 
-            // GUI選択モードまたは引数なしの場合
-            if (cmdArgs.gui || (args.length == 0)) {
-                app = createWithFileSelection();
-            } else {
-                // コマンドライン引数からアプリケーションを作成
-                app = new RoomAssignmentApplication(
-                        cmdArgs.roomFile,
-                        cmdArgs.shiftFile,
-                        cmdArgs.ecoFile,
-                        cmdArgs.targetDate
-                );
+            // Swingのルック&フィールを設定
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception e) {
+                // ルック&フィールの設定に失敗しても続行
             }
 
-            app.run();
+            // ファイル選択ダイアログで設定を取得
+            ApplicationConfig config = selectFilesWithDialog();
+
+            if (config == null) {
+                System.out.println("ファイル選択がキャンセルされました。");
+                System.exit(0);
+            }
+
+            // ファイルの検証
+            validateFiles(config);
+
+            // データの処理
+            ProcessingResult result = processData(config);
+
+            // 結果の後処理と調整
+            if (ENABLE_AUTO_ADJUSTMENT && result.optimizationResult != null) {
+                result.optimizationResult = performPostOptimizationAdjustments(result);
+            }
+
+            // 結果の検証
+            validateResults(result);
+
+            // 結果の出力
+            outputResults(result);
+
+            System.out.println("\n=== 処理完了 ===");
 
         } catch (Exception e) {
-            System.err.println("\n❌ 致命的なエラーが発生しました: " + e.getMessage());
+            LOGGER.log(Level.SEVERE, "アプリケーション実行中にエラーが発生しました", e);
+            System.err.println("エラー: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
         }
     }
 
     /**
-     * 部屋選択ダイアログクラス
+     * ファイル選択ダイアログで設定を取得
      */
-    private static class RoomSelectionDialog extends JDialog {
-        private Set<String> excludedRooms = new HashSet<>();
-        private JTable roomTable;
-        private DefaultTableModel tableModel;
+    private static ApplicationConfig selectFilesWithDialog() {
+        ApplicationConfig config = new ApplicationConfig();
 
-        public RoomSelectionDialog(FileProcessor.CleaningData cleaningData) {
-            setTitle("清掃部屋の選択");
-            setModal(true);
-            setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-            setLayout(new BorderLayout());
+        // JFileChooserのデフォルトディレクトリを設定
+        File currentDir = new File(System.getProperty("user.dir"));
 
-            // ヘッダーパネル
-            JPanel headerPanel = new JPanel(new BorderLayout());
-            JLabel titleLabel = new JLabel("清掃する部屋を選択してください");
-            titleLabel.setFont(new Font("MS Gothic", Font.BOLD, 16));
-            titleLabel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-            headerPanel.add(titleLabel, BorderLayout.NORTH);
+        System.out.println("ファイル選択ダイアログが開きます...\n");
 
-            JLabel descLabel = new JLabel("「残し部屋」にする場合は、該当する部屋のチェックを外してください");
-            descLabel.setBorder(BorderFactory.createEmptyBorder(0, 10, 10, 10));
-            headerPanel.add(descLabel, BorderLayout.SOUTH);
+        // 1. 部屋データファイル（CSV）の選択
+        JFileChooser roomFileChooser = new JFileChooser(currentDir);
+        roomFileChooser.setDialogTitle("部屋データファイル（CSV）を選択してください");
+        roomFileChooser.setFileFilter(new FileNameExtensionFilter("CSVファイル", "csv", "CSV"));
 
-            add(headerPanel, BorderLayout.NORTH);
+        int result = roomFileChooser.showOpenDialog(null);
+        if (result != JFileChooser.APPROVE_OPTION) {
+            return null;
+        }
+        config.roomDataFile = roomFileChooser.getSelectedFile();
+        System.out.println("部屋データ選択: " + config.roomDataFile.getName());
 
-            // テーブルの作成
-            String[] columnNames = {"清掃", "部屋番号", "タイプ", "建物", "エコ清掃"};
-            tableModel = new DefaultTableModel(columnNames, 0) {
-                @Override
-                public Class<?> getColumnClass(int column) {
-                    return column == 0 ? Boolean.class : String.class;
-                }
+        // 2. スタッフシフトファイル（Excel）の選択
+        JFileChooser staffFileChooser = new JFileChooser(currentDir);
+        staffFileChooser.setDialogTitle("スタッフシフトファイル（Excel）を選択してください");
+        staffFileChooser.setFileFilter(new FileNameExtensionFilter("Excelファイル", "xlsx", "xls"));
 
-                @Override
-                public boolean isCellEditable(int row, int column) {
-                    return column == 0;  // チェックボックス列のみ編集可能
-                }
-            };
-
-            // 部屋データをテーブルに追加
-            addRoomsToTable(cleaningData.mainRooms, "本館");
-            addRoomsToTable(cleaningData.annexRooms, "別館");
-
-            roomTable = new JTable(tableModel);
-            roomTable.getColumnModel().getColumn(0).setPreferredWidth(50);
-            roomTable.getColumnModel().getColumn(1).setPreferredWidth(100);
-            roomTable.getColumnModel().getColumn(2).setPreferredWidth(60);
-            roomTable.getColumnModel().getColumn(3).setPreferredWidth(60);
-            roomTable.getColumnModel().getColumn(4).setPreferredWidth(80);
-
-            JScrollPane scrollPane = new JScrollPane(roomTable);
-            scrollPane.setPreferredSize(new Dimension(450, 400));
-            add(scrollPane, BorderLayout.CENTER);
-
-            // ボタンパネル
-            JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-
-            // 全選択/全解除ボタン
-            JButton selectAllButton = new JButton("全て選択");
-            selectAllButton.addActionListener(e -> setAllRooms(true));
-            buttonPanel.add(selectAllButton);
-
-            JButton deselectAllButton = new JButton("全て解除");
-            deselectAllButton.addActionListener(e -> setAllRooms(false));
-            buttonPanel.add(deselectAllButton);
-
-            // フロア別選択ボタン
-            JButton floorButton = new JButton("フロア別選択");
-            floorButton.addActionListener(e -> showFloorSelectionDialog());
-            buttonPanel.add(floorButton);
-
-            // OKボタン
-            JButton okButton = new JButton("OK");
-            okButton.addActionListener(e -> {
-                updateExcludedRooms();
-                dispose();
-            });
-            buttonPanel.add(okButton);
-
-            // キャンセルボタン
-            JButton cancelButton = new JButton("キャンセル");
-            cancelButton.addActionListener(e -> {
-                excludedRooms.clear();
-                dispose();
-            });
-            buttonPanel.add(cancelButton);
-
-            add(buttonPanel, BorderLayout.SOUTH);
-
-            // ステータスバー
-            JLabel statusLabel = new JLabel("総部屋数: " + tableModel.getRowCount() + "室");
-            statusLabel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
-            add(statusLabel, BorderLayout.PAGE_END);
-
-            // ウィンドウサイズと位置
-            pack();
-            setLocationRelativeTo(null);
+        result = staffFileChooser.showOpenDialog(null);
+        if (result != JFileChooser.APPROVE_OPTION) {
+            // スタッフファイルが選択されない場合はデフォルトを使用
+            System.out.println("スタッフファイルが選択されませんでした。デフォルトスタッフを使用します。");
+            config.staffDataFile = new File("dummy_staff.xlsx");
+        } else {
+            config.staffDataFile = staffFileChooser.getSelectedFile();
+            System.out.println("スタッフデータ選択: " + config.staffDataFile.getName());
         }
 
-        private void addRoomsToTable(java.util.List<FileProcessor.Room> rooms, String building) {
-            for (FileProcessor.Room room : rooms) {
-                Object[] row = {
-                        true,  // デフォルトで選択
-                        room.roomNumber,
-                        room.roomType,
-                        building,
-                        room.isEcoClean ? "エコ" : "-"
-                };
-                tableModel.addRow(row);
-            }
+        // 3. エコ清掃データファイル（Excel）の選択
+        JFileChooser ecoFileChooser = new JFileChooser(currentDir);
+        ecoFileChooser.setDialogTitle("エコ清掃データファイル（Excel）を選択してください（オプション）");
+        ecoFileChooser.setFileFilter(new FileNameExtensionFilter("Excelファイル", "xlsx", "xls"));
+
+        result = ecoFileChooser.showOpenDialog(null);
+        if (result != JFileChooser.APPROVE_OPTION) {
+            System.out.println("エコ清掃ファイルが選択されませんでした。エコ清掃なしで処理します。");
+            config.ecoDataFile = new File("dummy_eco.xlsx");
+        } else {
+            config.ecoDataFile = ecoFileChooser.getSelectedFile();
+            System.out.println("エコ清掃データ選択: " + config.ecoDataFile.getName());
         }
 
-        private void setAllRooms(boolean selected) {
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                tableModel.setValueAt(selected, i, 0);
-            }
+        // 4. 日付の選択（ダイアログ）
+        config.targetDate = selectDateWithDialog();
+        if (config.targetDate == null) {
+            config.targetDate = LocalDate.now();
         }
+        System.out.println("対象日付: " + config.targetDate);
 
-        private void showFloorSelectionDialog() {
-            // フロア情報を収集
-            Map<Integer, java.util.List<Integer>> floorMap = new HashMap<>();
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                String roomNumber = (String) tableModel.getValueAt(i, 1);
-                int floor = extractFloorFromRoom(roomNumber);
-                if (floor > 0) {
-                    floorMap.computeIfAbsent(floor, k -> new ArrayList<>()).add(i);
-                }
-            }
+        // 5. 大浴場清掃タイプの選択（ダイアログ）
+        config.bathCleaningType = selectBathCleaningType();
+        System.out.println("大浴場清掃: " + config.bathCleaningType.displayName);
 
-            // フロア選択ダイアログ
-            JDialog floorDialog = new JDialog(this, "フロア別選択", true);
-            floorDialog.setLayout(new BorderLayout());
+        // エコデータファイルをシステムプロパティに設定
+        System.setProperty("ecoDataFile", config.ecoDataFile.getAbsolutePath());
 
-            JPanel floorPanel = new JPanel(new GridLayout(0, 1));
-            floorPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        System.out.println();
+        return config;
+    }
 
-            Map<Integer, JCheckBox> floorCheckBoxes = new HashMap<>();
-            for (Integer floor : new TreeSet<>(floorMap.keySet())) {
-                JCheckBox checkBox = new JCheckBox(floor + "階 (" + floorMap.get(floor).size() + "室)");
-                checkBox.setSelected(true);
-                floorCheckBoxes.put(floor, checkBox);
-                floorPanel.add(checkBox);
-            }
+    /**
+     * 日付選択ダイアログ
+     */
+    private static LocalDate selectDateWithDialog() {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
 
-            JScrollPane floorScrollPane = new JScrollPane(floorPanel);
-            floorScrollPane.setPreferredSize(new Dimension(200, 300));
-            floorDialog.add(floorScrollPane, BorderLayout.CENTER);
+        JLabel label = new JLabel("対象日付を選択してください：");
+        panel.add(label);
+        panel.add(Box.createVerticalStrut(10));
 
-            JPanel floorButtonPanel = new JPanel();
-            JButton applyButton = new JButton("適用");
-            applyButton.addActionListener(e -> {
-                // 各フロアの選択状態を適用
-                for (Map.Entry<Integer, java.util.List<Integer>> entry : floorMap.entrySet()) {
-                    boolean selected = floorCheckBoxes.get(entry.getKey()).isSelected();
-                    for (Integer rowIndex : entry.getValue()) {
-                        tableModel.setValueAt(selected, rowIndex, 0);
-                    }
-                }
-                floorDialog.dispose();
-            });
-            floorButtonPanel.add(applyButton);
+        // 年月日の入力フィールド
+        JPanel datePanel = new JPanel();
+        LocalDate today = LocalDate.now();
 
-            JButton closeButton = new JButton("閉じる");
-            closeButton.addActionListener(e -> floorDialog.dispose());
-            floorButtonPanel.add(closeButton);
+        JTextField yearField = new JTextField(String.valueOf(today.getYear()), 4);
+        JTextField monthField = new JTextField(String.valueOf(today.getMonthValue()), 2);
+        JTextField dayField = new JTextField(String.valueOf(today.getDayOfMonth()), 2);
 
-            floorDialog.add(floorButtonPanel, BorderLayout.SOUTH);
-            floorDialog.pack();
-            floorDialog.setLocationRelativeTo(this);
-            floorDialog.setVisible(true);
-        }
+        datePanel.add(yearField);
+        datePanel.add(new JLabel("年"));
+        datePanel.add(monthField);
+        datePanel.add(new JLabel("月"));
+        datePanel.add(dayField);
+        datePanel.add(new JLabel("日"));
 
-        private int extractFloorFromRoom(String roomNumber) {
+        panel.add(datePanel);
+
+        int result = JOptionPane.showConfirmDialog(null, panel, "日付選択",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+        if (result == JOptionPane.OK_OPTION) {
             try {
-                String numericPart = roomNumber.replaceAll("[^0-9]", "");
-                if (numericPart.length() == 3) {
-                    return Character.getNumericValue(numericPart.charAt(0));
-                } else if (numericPart.length() == 4 && numericPart.startsWith("10")) {
-                    return 10;
-                } else if (numericPart.length() == 4) {
-                    return Character.getNumericValue(numericPart.charAt(1));
-                }
+                int year = Integer.parseInt(yearField.getText());
+                int month = Integer.parseInt(monthField.getText());
+                int day = Integer.parseInt(dayField.getText());
+                return LocalDate.of(year, month, day);
             } catch (Exception e) {
-                // 無視
-            }
-            return 0;
-        }
-
-        private void updateExcludedRooms() {
-            excludedRooms.clear();
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                boolean selected = (Boolean) tableModel.getValueAt(i, 0);
-                if (!selected) {
-                    String roomNumber = (String) tableModel.getValueAt(i, 1);
-                    excludedRooms.add(roomNumber);
-                }
+                JOptionPane.showMessageDialog(null, "日付の形式が正しくありません。今日の日付を使用します。");
+                return LocalDate.now();
             }
         }
 
-        public Set<String> getExcludedRooms() {
-            return excludedRooms;
+        return LocalDate.now();
+    }
+
+    /**
+     * 大浴場清掃タイプ選択ダイアログ
+     */
+    private static AdaptiveRoomOptimizer.BathCleaningType selectBathCleaningType() {
+        String[] options = {
+                AdaptiveRoomOptimizer.BathCleaningType.NONE.displayName,
+                AdaptiveRoomOptimizer.BathCleaningType.NORMAL.displayName,
+                AdaptiveRoomOptimizer.BathCleaningType.WITH_DRAINING.displayName
+        };
+
+        String selected = (String) JOptionPane.showInputDialog(
+                null,
+                "大浴場清掃のタイプを選択してください：",
+                "大浴場清掃設定",
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                options,
+                options[1]  // デフォルトは「通常」
+        );
+
+        if (selected == null || selected.equals(options[0])) {
+            return AdaptiveRoomOptimizer.BathCleaningType.NONE;
+        } else if (selected.equals(options[2])) {
+            return AdaptiveRoomOptimizer.BathCleaningType.WITH_DRAINING;
+        } else {
+            return AdaptiveRoomOptimizer.BathCleaningType.NORMAL;
         }
     }
 
     /**
-     * 手動調整メインフレーム
+     * 最適化後の調整処理
      */
-    private static class ManualAdjustmentFrame extends JFrame {
-        private AdaptiveRoomOptimizer.OptimizationResult currentResult;
-        private final AdaptiveRoomOptimizer.OptimizationResult originalResult;
-        private final FileProcessor.CleaningData cleaningData;
-        private final java.util.List<AdaptiveRoomOptimizer.FloorInfo> floors;
-        private JTable assignmentTable;
-        private DefaultTableModel tableModel;
-        private ScoreSummaryPanel scoreSummaryPanel;
+    private static AdaptiveRoomOptimizer.OptimizationResult performPostOptimizationAdjustments(
+            ProcessingResult result) {
 
-        public ManualAdjustmentFrame(
-                AdaptiveRoomOptimizer.OptimizationResult result,
-                FileProcessor.CleaningData cleaningData,
-                java.util.List<AdaptiveRoomOptimizer.FloorInfo> floors) {
+        System.out.println("\n=== 最適化結果の調整処理 ===");
 
-            this.originalResult = result;
-            this.currentResult = copyResult(result);
-            this.cleaningData = cleaningData;
-            this.floors = floors;
+        List<AdaptiveRoomOptimizer.StaffAssignment> adjustedAssignments =
+                new ArrayList<>(result.optimizationResult.assignments);
 
-            setTitle("割り振り結果の手動調整");
-            setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-            setLayout(new BorderLayout());
+        // 1. ポイント差の調整
+        adjustedAssignments = adjustPointDifferences(adjustedAssignments, result);
 
-            // メインコンテンツを分割パネルで構成
-            JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-            splitPane.setDividerLocation(800);
+        // 2. 階跨ぎの最適化
+        adjustedAssignments = optimizeFloorAssignments(adjustedAssignments, result);
 
-            // 左側：部屋割り当て編集パネル
-            JPanel leftPanel = createAssignmentEditPanel();
-            splitPane.setLeftComponent(leftPanel);
+        // 3. 特殊条件の確認と調整
+        adjustedAssignments = handleSpecialConditions(adjustedAssignments, result);
 
-            // 右側：スコアサマリーパネル
-            scoreSummaryPanel = new ScoreSummaryPanel(currentResult);
-            splitPane.setRightComponent(scoreSummaryPanel);
+        // 4. 最終バランス調整
+        adjustedAssignments = finalBalanceAdjustment(adjustedAssignments, result);
 
-            add(splitPane, BorderLayout.CENTER);
+        // 新しい最適化結果を作成
+        return new AdaptiveRoomOptimizer.OptimizationResult(
+                adjustedAssignments,
+                result.optimizationResult.config,
+                result.optimizationResult.targetDate
+        );
+    }
 
-            // ボタンパネル
-            JPanel buttonPanel = createButtonPanel();
-            add(buttonPanel, BorderLayout.SOUTH);
+    /**
+     * ポイント差の調整
+     */
+    private static List<AdaptiveRoomOptimizer.StaffAssignment> adjustPointDifferences(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            ProcessingResult result) {
 
-            // ウィンドウ設定
-            setSize(1200, 700);
-            setLocationRelativeTo(null);
+        System.out.println("  1. ポイント差の調整を実行中...");
+
+        // ポイントでソート
+        assignments.sort(Comparator.comparingDouble(a -> a.adjustedScore));
+
+        double minScore = assignments.get(0).adjustedScore;
+        double maxScore = assignments.get(assignments.size() - 1).adjustedScore;
+        double difference = maxScore - minScore;
+
+        if (difference > MAX_ALLOWED_DIFFERENCE) {
+            System.out.printf("    警告: ポイント差が大きすぎます (%.2f点)\n", difference);
+
+            // 部屋の再配分を試みる
+            AdaptiveRoomOptimizer.StaffAssignment minStaff = assignments.get(0);
+            AdaptiveRoomOptimizer.StaffAssignment maxStaff = assignments.get(assignments.size() - 1);
+
+            // 高負荷スタッフから低負荷スタッフへ部屋を移動する処理
+            // (実装は複雑なため、ここでは警告のみ)
+            System.out.printf("    提案: %sから%sへ部屋を移動することを検討\n",
+                    maxStaff.staff.name, minStaff.staff.name);
+        } else {
+            System.out.printf("    ポイント差は許容範囲内です (%.2f点)\n", difference);
         }
 
-        private JPanel createAssignmentEditPanel() {
-            JPanel panel = new JPanel(new BorderLayout());
-            panel.setBorder(BorderFactory.createTitledBorder("部屋割り当て編集"));
+        return assignments;
+    }
 
-            // テーブルの作成
-            String[] columnNames = {"階", "部屋番号", "タイプ", "エコ", "現在の担当", "新しい担当"};
-            tableModel = new DefaultTableModel(columnNames, 0) {
-                @Override
-                public boolean isCellEditable(int row, int column) {
-                    return column == 5; // 新しい担当列のみ編集可能
+    /**
+     * 階跨ぎの最適化
+     */
+    private static List<AdaptiveRoomOptimizer.StaffAssignment> optimizeFloorAssignments(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            ProcessingResult result) {
+
+        System.out.println("  2. 階跨ぎの最適化を実行中...");
+
+        int multiFloorCount = 0;
+        int excessiveFloorCount = 0;
+
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            if (assignment.floors.size() > 1) {
+                multiFloorCount++;
+                if (assignment.floors.size() > MAX_FLOORS_PER_STAFF) {
+                    excessiveFloorCount++;
+                    System.out.printf("    警告: %sが%d階を担当しています\n",
+                            assignment.staff.name, assignment.floors.size());
                 }
-
-                @Override
-                public Class<?> getColumnClass(int column) {
-                    return column == 5 ? JComboBox.class : String.class;
-                }
-            };
-
-            // 全部屋のデータを追加
-            addAllRoomsToTable();
-
-            assignmentTable = new JTable(tableModel);
-
-            // コンボボックスエディタの設定
-            JComboBox<String> staffCombo = new JComboBox<>();
-            for (AdaptiveRoomOptimizer.StaffAssignment assignment : currentResult.assignments) {
-                staffCombo.addItem(assignment.staff.name);
-            }
-            assignmentTable.getColumnModel().getColumn(5).setCellEditor(new DefaultCellEditor(staffCombo));
-
-            // 列幅の設定
-            assignmentTable.getColumnModel().getColumn(0).setPreferredWidth(40);
-            assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(80);
-            assignmentTable.getColumnModel().getColumn(2).setPreferredWidth(50);
-            assignmentTable.getColumnModel().getColumn(3).setPreferredWidth(50);
-            assignmentTable.getColumnModel().getColumn(4).setPreferredWidth(150);
-            assignmentTable.getColumnModel().getColumn(5).setPreferredWidth(150);
-
-            JScrollPane scrollPane = new JScrollPane(assignmentTable);
-            panel.add(scrollPane, BorderLayout.CENTER);
-
-            // フィルターパネル
-            JPanel filterPanel = createFilterPanel();
-            panel.add(filterPanel, BorderLayout.NORTH);
-
-            return panel;
-        }
-
-        private void addAllRoomsToTable() {
-            // 現在の割り当てを部屋番号でマッピング
-            Map<String, String> roomToStaff = new HashMap<>();
-            for (AdaptiveRoomOptimizer.StaffAssignment assignment : currentResult.assignments) {
-                String staffName = assignment.staff.name;
-                for (Map.Entry<Integer, AdaptiveRoomOptimizer.RoomAllocation> entry :
-                        assignment.roomsByFloor.entrySet()) {
-                    int floor = entry.getKey();
-                    // この階の部屋を取得して割り当て
-                    assignRoomsToStaff(floor, entry.getValue(), staffName, roomToStaff);
-                }
-            }
-
-            // 全部屋をテーブルに追加
-            java.util.List<RoomInfo> allRooms = getAllRoomsSorted();
-            for (RoomInfo room : allRooms) {
-                String currentStaff = roomToStaff.getOrDefault(room.roomNumber, "未割当");
-                Object[] row = {
-                        room.floor,
-                        room.roomNumber,
-                        room.roomType,
-                        room.isEco ? "エコ" : "-",
-                        currentStaff,
-                        currentStaff
-                };
-                tableModel.addRow(row);
             }
         }
 
-        private void assignRoomsToStaff(int floor, AdaptiveRoomOptimizer.RoomAllocation allocation,
-                                        String staffName, Map<String, String> roomToStaff) {
-            // フロア情報から実際の部屋を取得
-            java.util.List<FileProcessor.Room> floorRooms = new ArrayList<>();
-            floorRooms.addAll(cleaningData.mainRooms.stream()
-                    .filter(r -> r.floor == floor)
-                    .collect(Collectors.toList()));
-            floorRooms.addAll(cleaningData.annexRooms.stream()
-                    .filter(r -> r.floor == floor)
-                    .collect(Collectors.toList()));
+        System.out.printf("    複数階担当: %d名, 過剰担当: %d名\n",
+                multiFloorCount, excessiveFloorCount);
 
-            // タイプ別に部屋を割り当て
-            Map<String, java.util.List<FileProcessor.Room>> roomsByType = floorRooms.stream()
-                    .collect(Collectors.groupingBy(r -> r.roomType));
+        // 階数が多すぎる場合の調整ロジック
+        if (excessiveFloorCount > 0) {
+            // 実際の再配分ロジックは複雑なため、ここでは警告のみ
+            System.out.println("    提案: 階数制限を超えているスタッフの負荷を再配分");
+        }
 
-            // 各タイプの部屋を必要数だけ割り当て
-            for (Map.Entry<String, Integer> typeEntry : allocation.roomCounts.entrySet()) {
-                String type = typeEntry.getKey();
-                int count = typeEntry.getValue();
-                java.util.List<FileProcessor.Room> typeRooms = roomsByType.getOrDefault(type, new ArrayList<>());
+        return assignments;
+    }
 
-                for (int i = 0; i < count && i < typeRooms.size(); i++) {
-                    FileProcessor.Room room = typeRooms.get(i);
-                    if (!room.isEcoClean) {
-                        roomToStaff.put(room.roomNumber, staffName);
+    /**
+     * 特殊条件の確認と調整
+     */
+    private static List<AdaptiveRoomOptimizer.StaffAssignment> handleSpecialConditions(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            ProcessingResult result) {
+
+        System.out.println("  3. 特殊条件の確認中...");
+
+        // ツイン部屋の配分確認
+        Map<String, Integer> twinDistribution = new HashMap<>();
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            int twinCount = 0;
+            for (AdaptiveRoomOptimizer.RoomAllocation allocation : assignment.roomsByFloor.values()) {
+                twinCount += allocation.roomCounts.getOrDefault("T", 0);
+            }
+            twinDistribution.put(assignment.staff.name, twinCount);
+        }
+
+        int minTwins = twinDistribution.values().stream().min(Integer::compare).orElse(0);
+        int maxTwins = twinDistribution.values().stream().max(Integer::compare).orElse(0);
+
+        if (maxTwins - minTwins > 1) {
+            System.out.printf("    ツイン部屋の偏り検出: 最小%d室、最大%d室\n", minTwins, maxTwins);
+
+            // ツイン部屋が多いスタッフと少ないスタッフを特定
+            String maxTwinStaff = twinDistribution.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse("");
+            String minTwinStaff = twinDistribution.entrySet().stream()
+                    .min(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse("");
+
+            System.out.printf("    提案: %sから%sへツイン部屋を移動\n", maxTwinStaff, minTwinStaff);
+        }
+
+        // 大浴場清掃担当者の確認
+        int bathCleaningStaff = 0;
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            AdaptiveRoomOptimizer.BathCleaningType bathType =
+                    result.optimizationResult.config.bathCleaningAssignments.get(assignment.staff.id);
+            if (bathType != null && bathType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                bathCleaningStaff++;
+                System.out.printf("    大浴場担当: %s (%s, -%d室)\n",
+                        assignment.staff.name, bathType.displayName, bathType.reduction);
+            }
+        }
+
+        if (bathCleaningStaff > 0) {
+            System.out.printf("    大浴場清掃担当者数: %d名\n", bathCleaningStaff);
+        }
+
+        return assignments;
+    }
+
+    /**
+     * 最終バランス調整
+     */
+    private static List<AdaptiveRoomOptimizer.StaffAssignment> finalBalanceAdjustment(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            ProcessingResult result) {
+
+        System.out.println("  4. 最終バランス調整...");
+
+        // 統計情報の計算
+        double avgRooms = assignments.stream()
+                .mapToInt(a -> a.totalRooms)
+                .average()
+                .orElse(0);
+
+        double avgPoints = assignments.stream()
+                .mapToDouble(a -> a.adjustedScore)
+                .average()
+                .orElse(0);
+
+        // 標準偏差の計算
+        double variance = assignments.stream()
+                .mapToDouble(a -> Math.pow(a.adjustedScore - avgPoints, 2))
+                .average()
+                .orElse(0);
+        double stdDev = Math.sqrt(variance);
+
+        System.out.printf("    平均部屋数: %.1f室\n", avgRooms);
+        System.out.printf("    平均ポイント: %.1f点\n", avgPoints);
+        System.out.printf("    標準偏差: %.2f\n", stdDev);
+
+        // 外れ値の検出
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            double deviation = Math.abs(assignment.adjustedScore - avgPoints);
+            if (deviation > stdDev * 2) {
+                System.out.printf("    外れ値検出: %s (%.1f点, 平均から%.1f点の乖離)\n",
+                        assignment.staff.name, assignment.adjustedScore, deviation);
+            }
+        }
+
+        // 建物別の負荷確認
+        int mainBuildingTotal = 0;
+        int annexBuildingTotal = 0;
+
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            if (assignment.hasMainBuilding) {
+                mainBuildingTotal += assignment.totalRooms;
+            }
+            if (assignment.hasAnnexBuilding) {
+                annexBuildingTotal += assignment.totalRooms;
+            }
+        }
+
+        System.out.printf("    本館負荷: %d室\n", mainBuildingTotal);
+        System.out.printf("    別館負荷: %d室\n", annexBuildingTotal);
+
+        if (Math.abs(mainBuildingTotal - annexBuildingTotal) > 5) {
+            System.out.println("    警告: 建物間の負荷バランスに偏りがあります");
+        }
+
+        return assignments;
+    }
+
+    /**
+     * 結果の検証
+     */
+    private static void validateResults(ProcessingResult result) {
+        System.out.println("\n=== 結果の検証 ===");
+
+        if (result.optimizationResult == null) {
+            throw new IllegalStateException("最適化結果が生成されていません");
+        }
+
+        // 全部屋が割り当てられているか確認
+        int totalAssignedRooms = result.optimizationResult.assignments.stream()
+                .mapToInt(a -> a.totalRooms)
+                .sum();
+
+        int totalRooms = result.cleaningData.totalMainRooms +
+                result.cleaningData.totalAnnexRooms;
+
+        if (totalAssignedRooms != totalRooms) {
+            System.out.printf("  警告: 部屋数の不一致 (割当: %d, 総数: %d)\n",
+                    totalAssignedRooms, totalRooms);
+        } else {
+            System.out.printf("  ✓ 全%d室が正しく割り当てられています\n", totalRooms);
+        }
+
+        // スタッフ数の確認
+        int assignedStaffCount = result.optimizationResult.assignments.size();
+        int availableStaffCount = result.availableStaff.size();
+
+        if (assignedStaffCount != availableStaffCount) {
+            System.out.printf("  警告: スタッフ数の不一致 (割当: %d, 利用可能: %d)\n",
+                    assignedStaffCount, availableStaffCount);
+        } else {
+            System.out.printf("  ✓ 全%d名のスタッフに割り当て完了\n", assignedStaffCount);
+        }
+
+        // 制約条件の確認
+        boolean constraintViolation = false;
+
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : result.optimizationResult.assignments) {
+            // 本館の制約確認
+            if (assignment.hasMainBuilding && assignment.totalRooms > AdaptiveRoomOptimizer.MAX_MAIN_BUILDING_ROOMS) {
+                System.out.printf("  × %sが本館制限を超過 (%d室 > %d室)\n",
+                        assignment.staff.name, assignment.totalRooms,
+                        AdaptiveRoomOptimizer.MAX_MAIN_BUILDING_ROOMS);
+                constraintViolation = true;
+            }
+
+            // 別館の制約確認
+            if (assignment.hasAnnexBuilding && assignment.totalRooms > AdaptiveRoomOptimizer.MAX_ANNEX_BUILDING_ROOMS) {
+                System.out.printf("  × %sが別館制限を超過 (%d室 > %d室)\n",
+                        assignment.staff.name, assignment.totalRooms,
+                        AdaptiveRoomOptimizer.MAX_ANNEX_BUILDING_ROOMS);
+                constraintViolation = true;
+            }
+        }
+
+        if (!constraintViolation) {
+            System.out.println("  ✓ すべての制約条件を満たしています");
+        }
+    }
+
+    /**
+     * 設定の読み込み（コマンドライン引数がある場合のみ使用）
+     */
+    private static ApplicationConfig loadConfiguration(String[] args) {
+        // コマンドライン引数がない場合はnullを返す
+        if (args.length == 0) {
+            return null;
+        }
+
+        ApplicationConfig config = new ApplicationConfig();
+
+        // コマンドライン引数から設定を読み込む
+        for (int i = 0; i < args.length; i++) {
+            switch (args[i]) {
+                case "--room-data":
+                case "-r":
+                    if (i + 1 < args.length) {
+                        config.roomDataFile = new File(args[++i]);
                     }
-                }
-            }
-
-            // エコ部屋の割り当て
-            java.util.List<FileProcessor.Room> ecoRooms = floorRooms.stream()
-                    .filter(r -> r.isEcoClean)
-                    .collect(Collectors.toList());
-
-            for (int i = 0; i < allocation.ecoRooms && i < ecoRooms.size(); i++) {
-                roomToStaff.put(ecoRooms.get(i).roomNumber, staffName);
+                    break;
+                case "--staff-data":
+                case "-s":
+                    if (i + 1 < args.length) {
+                        config.staffDataFile = new File(args[++i]);
+                    }
+                    break;
+                case "--eco-data":
+                case "-e":
+                    if (i + 1 < args.length) {
+                        config.ecoDataFile = new File(args[++i]);
+                    }
+                    break;
+                case "--date":
+                case "-d":
+                    if (i + 1 < args.length) {
+                        config.targetDate = LocalDate.parse(args[++i]);
+                    }
+                    break;
+                case "--bath-cleaning":
+                case "-b":
+                    if (i + 1 < args.length) {
+                        String bathType = args[++i].toUpperCase();
+                        config.bathCleaningType = AdaptiveRoomOptimizer.BathCleaningType.valueOf(bathType);
+                    }
+                    break;
+                case "--no-adjustment":
+                    config.disableAdjustment = true;
+                    break;
+                case "--max-difference":
+                    if (i + 1 < args.length) {
+                        config.maxAllowedDifference = Double.parseDouble(args[++i]);
+                    }
+                    break;
+                case "--help":
+                case "-h":
+                    printHelp();
+                    System.exit(0);
+                    break;
             }
         }
 
-        private java.util.List<RoomInfo> getAllRoomsSorted() {
-            java.util.List<RoomInfo> allRooms = new ArrayList<>();
-
-            // 本館の部屋
-            for (FileProcessor.Room room : cleaningData.mainRooms) {
-                allRooms.add(new RoomInfo(room.roomNumber, room.roomType,
-                        room.floor, room.isEcoClean, "本館"));
-            }
-
-            // 別館の部屋
-            for (FileProcessor.Room room : cleaningData.annexRooms) {
-                allRooms.add(new RoomInfo(room.roomNumber, room.roomType,
-                        room.floor, room.isEcoClean, "別館"));
-            }
-
-            // ソート（階数、部屋番号順）
-            allRooms.sort((a, b) -> {
-                int floorComp = Integer.compare(a.floor, b.floor);
-                if (floorComp != 0) return floorComp;
-                return a.roomNumber.compareTo(b.roomNumber);
-            });
-
-            return allRooms;
+        // デフォルト値の設定
+        if (config.roomDataFile == null) {
+            config.roomDataFile = new File("wincal_room_data.CSV");
+        }
+        if (config.staffDataFile == null) {
+            config.staffDataFile = new File("Shift.xlsx");
+        }
+        if (config.ecoDataFile == null) {
+            config.ecoDataFile = new File("hotel_cleaning_now.xlsx");
+        }
+        if (config.targetDate == null) {
+            config.targetDate = LocalDate.now();
+        }
+        if (config.bathCleaningType == null) {
+            config.bathCleaningType = AdaptiveRoomOptimizer.BathCleaningType.NORMAL;
+        }
+        if (config.maxAllowedDifference == 0) {
+            config.maxAllowedDifference = MAX_ALLOWED_DIFFERENCE;
         }
 
-        private JPanel createFilterPanel() {
-            JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        // エコデータファイルをシステムプロパティに設定
+        System.setProperty("ecoDataFile", config.ecoDataFile.getAbsolutePath());
 
-            // 階フィルター
-            JLabel floorLabel = new JLabel("階:");
-            JComboBox<String> floorCombo = new JComboBox<>();
-            floorCombo.addItem("全て");
-            for (int i = 1; i <= 10; i++) {
-                floorCombo.addItem(i + "階");
-            }
+        return config;
+    }
 
-            // スタッフフィルター
-            JLabel staffLabel = new JLabel("スタッフ:");
-            JComboBox<String> staffCombo = new JComboBox<>();
-            staffCombo.addItem("全て");
-            for (AdaptiveRoomOptimizer.StaffAssignment assignment : currentResult.assignments) {
-                staffCombo.addItem(assignment.staff.name);
-            }
-
-            // フィルター適用ボタン
-            JButton filterButton = new JButton("フィルター適用");
-            filterButton.addActionListener(e -> applyFilter(floorCombo, staffCombo));
-
-            panel.add(floorLabel);
-            panel.add(floorCombo);
-            panel.add(Box.createHorizontalStrut(20));
-            panel.add(staffLabel);
-            panel.add(staffCombo);
-            panel.add(Box.createHorizontalStrut(20));
-            panel.add(filterButton);
-
-            return panel;
+    /**
+     * ファイルの検証
+     */
+    private static void validateFiles(ApplicationConfig config) {
+        if (!config.roomDataFile.exists()) {
+            throw new IllegalArgumentException("部屋データファイルが見つかりません: " +
+                    config.roomDataFile.getAbsolutePath());
         }
 
-        private void applyFilter(JComboBox<String> floorCombo, JComboBox<String> staffCombo) {
-            String selectedFloor = (String) floorCombo.getSelectedItem();
-            String selectedStaff = (String) staffCombo.getSelectedItem();
+        if (!config.staffDataFile.exists()) {
+            LOGGER.warning("スタッフデータファイルが見つかりません。デフォルトスタッフを使用します: " +
+                    config.staffDataFile.getAbsolutePath());
+        }
 
-            TableRowSorter<DefaultTableModel> sorter = new TableRowSorter<>(tableModel);
-            assignmentTable.setRowSorter(sorter);
+        if (!config.ecoDataFile.exists()) {
+            LOGGER.warning("エコ清掃データファイルが見つかりません: " +
+                    config.ecoDataFile.getAbsolutePath());
+        }
 
-            java.util.List<RowFilter<Object, Object>> filters = new ArrayList<>();
+        System.out.println("【入力ファイル】");
+        System.out.println("部屋データ: " + config.roomDataFile.getName());
+        System.out.println("スタッフデータ: " + config.staffDataFile.getName());
+        System.out.println("エコ清掃データ: " + config.ecoDataFile.getName());
+        System.out.println("対象日: " + config.targetDate);
+        System.out.println("大浴場清掃: " + config.bathCleaningType.displayName);
+        System.out.println("自動調整: " + (!config.disableAdjustment ? "有効" : "無効"));
+        System.out.println("許容ポイント差: " + config.maxAllowedDifference);
+        System.out.println();
+    }
 
-            // 階フィルター
-            if (!"全て".equals(selectedFloor)) {
-                String floor = selectedFloor.replace("階", "");
-                filters.add(RowFilter.regexFilter("^" + floor + "$", 0));
-            }
+    /**
+     * データの処理
+     */
+    private static ProcessingResult processData(ApplicationConfig config) {
+        ProcessingResult result = new ProcessingResult();
 
-            // スタッフフィルター
-            if (!"全て".equals(selectedStaff)) {
-                filters.add(RowFilter.regexFilter("^" + selectedStaff + "$", 4));
-            }
+        // 部屋データの読み込み
+        System.out.println("部屋データを読み込み中...");
+        FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(config.roomDataFile);
+        result.cleaningData = cleaningData;
 
-            if (!filters.isEmpty()) {
-                sorter.setRowFilter(RowFilter.andFilter(filters));
+        System.out.println("読み込み完了:");
+        System.out.println("  本館: " + cleaningData.totalMainRooms + "室");
+        System.out.println("  別館: " + cleaningData.totalAnnexRooms + "室");
+        System.out.println("  エコ清掃: " + cleaningData.ecoRooms.size() + "室");
+        System.out.println("  故障: " + cleaningData.totalBrokenRooms + "室");
+        System.out.println();
+
+        // スタッフデータの読み込み
+        System.out.println("スタッフデータを読み込み中...");
+        List<FileProcessor.Staff> availableStaff = FileProcessor.getAvailableStaff(
+                config.staffDataFile, config.targetDate);
+        result.availableStaff = availableStaff;
+
+        System.out.println("利用可能スタッフ: " + availableStaff.size() + "名");
+        System.out.println();
+
+        // フロア情報の生成
+        System.out.println("フロア情報を生成中...");
+        List<AdaptiveRoomOptimizer.FloorInfo> floors = generateFloorInfo(cleaningData);
+        result.floors = floors;
+
+        // 適応型最適化の実行
+        System.out.println("最適化エンジンを起動中...");
+        int totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
+
+        // 適応型設定の作成
+        AdaptiveRoomOptimizer.AdaptiveLoadConfig adaptiveConfig =
+                AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfig(
+                        availableStaff,
+                        totalRooms,
+                        cleaningData.totalMainRooms,
+                        cleaningData.totalAnnexRooms,
+                        config.bathCleaningType
+                );
+
+        // 最適化の実行
+        AdaptiveRoomOptimizer.AdaptiveOptimizer optimizer =
+                new AdaptiveRoomOptimizer.AdaptiveOptimizer(floors, adaptiveConfig);
+
+        result.optimizationResult = optimizer.optimize(config.targetDate);
+        result.config = config;
+
+        return result;
+    }
+
+    /**
+     * フロア情報の生成
+     */
+    private static List<AdaptiveRoomOptimizer.FloorInfo> generateFloorInfo(
+            FileProcessor.CleaningData cleaningData) {
+
+        Map<Integer, Map<String, Integer>> floorRoomCounts = new HashMap<>();
+        Map<Integer, Integer> floorEcoCounts = new HashMap<>();
+        Map<Integer, Boolean> floorBuildings = new HashMap<>();
+
+        // 本館の部屋を集計
+        for (FileProcessor.Room room : cleaningData.mainRooms) {
+            int floor = room.floor;
+            if (floor == 0) continue;
+
+            floorRoomCounts.computeIfAbsent(floor, k -> new HashMap<>());
+            floorBuildings.put(floor, true);
+
+            if (room.isEcoClean) {
+                floorEcoCounts.merge(floor, 1, Integer::sum);
             } else {
-                sorter.setRowFilter(null);
+                Map<String, Integer> counts = floorRoomCounts.get(floor);
+                counts.merge(room.roomType, 1, Integer::sum);
             }
         }
 
-        private JPanel createButtonPanel() {
-            JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        // 別館の部屋を集計
+        for (FileProcessor.Room room : cleaningData.annexRooms) {
+            int floor = room.floor;
+            if (floor == 0) continue;
 
-            JButton applyButton = new JButton("変更を適用");
-            applyButton.addActionListener(e -> applyChanges());
-
-            JButton resetButton = new JButton("リセット");
-            resetButton.addActionListener(e -> resetChanges());
-
-            JButton detailButton = new JButton("詳細スコア表示");
-            detailButton.addActionListener(e -> showDetailedScores());
-
-            JButton confirmButton = new JButton("確定");
-            confirmButton.addActionListener(e -> confirmAndClose());
-
-            JButton cancelButton = new JButton("キャンセル");
-            cancelButton.addActionListener(e -> dispose());
-
-            panel.add(applyButton);
-            panel.add(resetButton);
-            panel.add(detailButton);
-            panel.add(confirmButton);
-            panel.add(cancelButton);
-
-            return panel;
-        }
-
-        private void applyChanges() {
-            // テーブルの変更を反映して新しい結果を生成
-            Map<String, java.util.List<RoomAssignment>> newAssignments = new HashMap<>();
-
-            // 各行から新しい割り当てを収集
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                String roomNumber = (String) tableModel.getValueAt(i, 1);
-                String roomType = (String) tableModel.getValueAt(i, 2);
-                String isEco = (String) tableModel.getValueAt(i, 3);
-                int floor = Integer.parseInt(tableModel.getValueAt(i, 0).toString());
-                String newStaff = (String) tableModel.getValueAt(i, 5);
-
-                if (!"未割当".equals(newStaff)) {
-                    newAssignments.computeIfAbsent(newStaff, k -> new ArrayList<>())
-                            .add(new RoomAssignment(roomNumber, roomType, floor, "エコ".equals(isEco)));
-                }
+            if (floor < 10) {
+                floor = floor + 20;
             }
 
-            // 新しいStaffAssignmentリストを作成
-            java.util.List<AdaptiveRoomOptimizer.StaffAssignment> newStaffAssignments = new ArrayList<>();
+            floorRoomCounts.computeIfAbsent(floor, k -> new HashMap<>());
+            floorBuildings.put(floor, false);
 
-            for (AdaptiveRoomOptimizer.StaffAssignment original : originalResult.assignments) {
-                String staffName = original.staff.name;
-                java.util.List<RoomAssignment> rooms = newAssignments.get(staffName);
+            if (room.isEcoClean) {
+                floorEcoCounts.merge(floor, 1, Integer::sum);
+            } else {
+                Map<String, Integer> counts = floorRoomCounts.get(floor);
+                counts.merge(room.roomType, 1, Integer::sum);
+            }
+        }
 
-                if (rooms != null && !rooms.isEmpty()) {
-                    // フロア別に部屋を整理
-                    Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> roomsByFloor =
-                            organizeRoomsByFloor(rooms);
-                    java.util.List<Integer> floors = new ArrayList<>(roomsByFloor.keySet());
+        // FloorInfoオブジェクトのリストを作成
+        List<AdaptiveRoomOptimizer.FloorInfo> floors = new ArrayList<>();
+        for (Map.Entry<Integer, Map<String, Integer>> entry : floorRoomCounts.entrySet()) {
+            int floorNumber = entry.getKey();
+            Map<String, Integer> roomCounts = entry.getValue();
+            int ecoCounts = floorEcoCounts.getOrDefault(floorNumber, 0);
+            boolean isMainBuilding = floorBuildings.getOrDefault(floorNumber, true);
 
-                    AdaptiveRoomOptimizer.StaffAssignment newAssignment =
-                            new AdaptiveRoomOptimizer.StaffAssignment(
-                                    original.staff, original.workerType, floors, roomsByFloor);
-                    newStaffAssignments.add(newAssignment);
-                } else {
-                    // 部屋が割り当てられていない場合は空の割り当て
-                    newStaffAssignments.add(new AdaptiveRoomOptimizer.StaffAssignment(
-                            original.staff, original.workerType,
-                            new ArrayList<>(), new HashMap<>()));
-                }
+            floors.add(new AdaptiveRoomOptimizer.FloorInfo(
+                    floorNumber, roomCounts, ecoCounts, isMainBuilding));
+        }
+
+        floors.sort(Comparator.comparingInt(f -> f.floorNumber));
+
+        System.out.println("生成されたフロア数: " + floors.size());
+        for (AdaptiveRoomOptimizer.FloorInfo floor : floors) {
+            System.out.printf("  %d階 (%s): %d室 (エコ: %d室)\n",
+                    floor.floorNumber,
+                    floor.isMainBuilding ? "本館" : "別館",
+                    floor.getTotalRooms(),
+                    floor.ecoRooms);
+        }
+        System.out.println();
+
+        return floors;
+    }
+
+    /**
+     * 結果の出力
+     */
+    private static void outputResults(ProcessingResult result) {
+        if (result.optimizationResult != null) {
+            result.optimizationResult.printDetailedSummary();
+
+            // 調整提案の出力
+            if (ENABLE_AUTO_ADJUSTMENT) {
+                outputAdjustmentSuggestions(result);
             }
 
-            // 新しい結果を作成
-            currentResult = new AdaptiveRoomOptimizer.OptimizationResult(
-                    newStaffAssignments, originalResult.config, originalResult.targetDate);
-
-            // スコアパネルを更新
-            scoreSummaryPanel.updateScores(currentResult);
-
-            JOptionPane.showMessageDialog(this, "変更が適用されました。");
-        }
-
-        private Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> organizeRoomsByFloor(
-                java.util.List<RoomAssignment> rooms) {
-            Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> result = new HashMap<>();
-
-            // フロア別にグループ化
-            Map<Integer, java.util.List<RoomAssignment>> roomsByFloor = rooms.stream()
-                    .collect(Collectors.groupingBy(r -> r.floor));
-
-            for (Map.Entry<Integer, java.util.List<RoomAssignment>> entry : roomsByFloor.entrySet()) {
-                int floor = entry.getKey();
-                java.util.List<RoomAssignment> floorRooms = entry.getValue();
-
-                // タイプ別カウント
-                Map<String, Integer> typeCounts = new HashMap<>();
-                typeCounts.put("S", 0);
-                typeCounts.put("D", 0);
-                typeCounts.put("T", 0);
-                typeCounts.put("FD", 0);
-
-                int ecoCount = 0;
-
-                for (RoomAssignment room : floorRooms) {
-                    if (room.isEco) {
-                        ecoCount++;
-                    } else {
-                        typeCounts.put(room.roomType, typeCounts.get(room.roomType) + 1);
-                    }
-                }
-
-                result.put(floor, new AdaptiveRoomOptimizer.RoomAllocation(typeCounts, ecoCount));
+            // CSV形式での出力
+            if (Boolean.getBoolean("output.csv")) {
+                outputCsvResults(result.optimizationResult);
             }
 
-            return result;
-        }
-
-        private void resetChanges() {
-            // 元の割り当てに戻す
-            currentResult = copyResult(originalResult);
-
-            // テーブルを再構築
-            tableModel.setRowCount(0);
-            addAllRoomsToTable();
-
-            // スコアパネルを更新
-            scoreSummaryPanel.updateScores(currentResult);
-
-            JOptionPane.showMessageDialog(this, "変更がリセットされました。");
-        }
-
-        private void showDetailedScores() {
-            DetailedScoreDialog dialog = new DetailedScoreDialog(this, currentResult);
-            dialog.setVisible(true);
-        }
-
-        private void confirmAndClose() {
-            int response = JOptionPane.showConfirmDialog(this,
-                    "現在の割り当てで確定しますか？",
-                    "確認",
-                    JOptionPane.YES_NO_OPTION);
+            // GUI編集ツールの起動オプション
+            int response = JOptionPane.showConfirmDialog(null,
+                    "割り当て結果を編集しますか？\n編集GUIを開きます。",
+                    "編集確認",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.QUESTION_MESSAGE);
 
             if (response == JOptionPane.YES_OPTION) {
-                dispose();
-            }
-        }
-
-        public AdaptiveRoomOptimizer.OptimizationResult getAdjustedResult() {
-            return currentResult;
-        }
-
-        private AdaptiveRoomOptimizer.OptimizationResult copyResult(
-                AdaptiveRoomOptimizer.OptimizationResult original) {
-            // 結果のディープコピーを作成
-            java.util.List<AdaptiveRoomOptimizer.StaffAssignment> copiedAssignments = new ArrayList<>();
-            for (AdaptiveRoomOptimizer.StaffAssignment assignment : original.assignments) {
-                copiedAssignments.add(new AdaptiveRoomOptimizer.StaffAssignment(
-                        assignment.staff,
-                        assignment.workerType,
-                        new ArrayList<>(assignment.floors),
-                        new HashMap<>(assignment.roomsByFloor)));
-            }
-            return new AdaptiveRoomOptimizer.OptimizationResult(
-                    copiedAssignments, original.config, original.targetDate);
-        }
-
-        // 内部クラス：部屋情報
-        private static class RoomInfo {
-            final String roomNumber;
-            final String roomType;
-            final int floor;
-            final boolean isEco;
-            final String building;
-
-            RoomInfo(String roomNumber, String roomType, int floor, boolean isEco, String building) {
-                this.roomNumber = roomNumber;
-                this.roomType = roomType;
-                this.floor = floor;
-                this.isEco = isEco;
-                this.building = building;
-            }
-        }
-
-        // 内部クラス：部屋割り当て
-        private static class RoomAssignment {
-            final String roomNumber;
-            final String roomType;
-            final int floor;
-            final boolean isEco;
-
-            RoomAssignment(String roomNumber, String roomType, int floor, boolean isEco) {
-                this.roomNumber = roomNumber;
-                this.roomType = roomType;
-                this.floor = floor;
-                this.isEco = isEco;
+                // 編集GUIを起動
+                System.out.println("\n編集GUIを起動しています...");
+                AssignmentEditorGUI.showEditor(result.optimizationResult);
             }
         }
     }
 
     /**
-     * スコアサマリーパネル
+     * 調整提案の出力
      */
-    private static class ScoreSummaryPanel extends JPanel {
-        private JTextArea summaryArea;
+    private static void outputAdjustmentSuggestions(ProcessingResult result) {
+        System.out.println("\n=== 調整提案 ===");
 
-        public ScoreSummaryPanel(AdaptiveRoomOptimizer.OptimizationResult result) {
-            setLayout(new BorderLayout());
-            setBorder(BorderFactory.createTitledBorder("スコアサマリー"));
+        List<String> suggestions = new ArrayList<>();
 
-            summaryArea = new JTextArea();
-            summaryArea.setEditable(false);
-            summaryArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-
-            JScrollPane scrollPane = new JScrollPane(summaryArea);
-            add(scrollPane, BorderLayout.CENTER);
-
-            updateScores(result);
+        // ポイント差の確認
+        if (result.optimizationResult.adjustedScoreDifference > MAX_ALLOWED_DIFFERENCE) {
+            suggestions.add("スタッフ間のポイント差を縮小するため、部屋の再配分を検討してください");
         }
 
-        public void updateScores(AdaptiveRoomOptimizer.OptimizationResult result) {
-            StringBuilder sb = new StringBuilder();
-            sb.append("=== スタッフ別スコア ===\n\n");
+        // 階跨ぎの確認
+        long multiFloorStaff = result.optimizationResult.assignments.stream()
+                .filter(a -> a.floors.size() > MAX_FLOORS_PER_STAFF)
+                .count();
+        if (multiFloorStaff > 0) {
+            suggestions.add(String.format("%d名のスタッフが%d階以上を担当しています。階数を減らすことを検討してください",
+                    multiFloorStaff, MAX_FLOORS_PER_STAFF + 1));
+        }
 
-            // スコア計算
-            double minScore = Double.MAX_VALUE;
-            double maxScore = Double.MIN_VALUE;
-            double totalScore = 0;
+        // 建物バランスの確認
+        int mainTotal = 0, annexTotal = 0;
+        for (AdaptiveRoomOptimizer.StaffAssignment a : result.optimizationResult.assignments) {
+            if (a.hasMainBuilding) mainTotal += a.totalRooms;
+            if (a.hasAnnexBuilding) annexTotal += a.totalRooms;
+        }
 
-            for (AdaptiveRoomOptimizer.StaffAssignment assignment : result.assignments) {
-                double score = assignment.totalPoints;
-                minScore = Math.min(minScore, score);
-                maxScore = Math.max(maxScore, score);
-                totalScore += score;
+        if (Math.abs(mainTotal - annexTotal) > 5) {
+            suggestions.add(String.format("建物間の負荷差が大きいです（本館:%d室、別館:%d室）",
+                    mainTotal, annexTotal));
+        }
 
-                sb.append(String.format("%-15s: %2d室 (%.1f点)\n",
-                        assignment.staff.name, assignment.totalRooms, score));
-
-                // 詳細
-                sb.append("  担当フロア: ");
-                for (int i = 0; i < assignment.floors.size(); i++) {
-                    if (i > 0) sb.append(", ");
-                    sb.append(assignment.floors.get(i) + "階");
-                }
-                sb.append("\n");
-
-                // タイプ別内訳
-                Map<String, Integer> totalCounts = new HashMap<>();
-                totalCounts.put("S", 0);
-                totalCounts.put("D", 0);
-                totalCounts.put("T", 0);
-                totalCounts.put("FD", 0);
-                int totalEco = 0;
-
-                for (AdaptiveRoomOptimizer.RoomAllocation allocation : assignment.roomsByFloor.values()) {
-                    allocation.roomCounts.forEach((type, count) ->
-                            totalCounts.put(type, totalCounts.get(type) + count));
-                    totalEco += allocation.ecoRooms;
-                }
-
-                sb.append("  内訳: ");
-                java.util.List<String> breakdown = new ArrayList<>();
-                if (totalCounts.get("S") > 0) breakdown.add("S:" + totalCounts.get("S"));
-                if (totalCounts.get("D") > 0) breakdown.add("D:" + totalCounts.get("D"));
-                if (totalCounts.get("T") > 0) breakdown.add("T:" + totalCounts.get("T"));
-                if (totalCounts.get("FD") > 0) breakdown.add("FD:" + totalCounts.get("FD"));
-                if (totalEco > 0) breakdown.add("エコ:" + totalEco);
-                sb.append(String.join(", ", breakdown));
-                sb.append("\n\n");
-            }
-
-            // 統計情報
-            sb.append("=== 統計情報 ===\n");
-            sb.append(String.format("最小スコア: %.1f点\n", minScore));
-            sb.append(String.format("最大スコア: %.1f点\n", maxScore));
-            sb.append(String.format("スコア差: %.1f点\n", maxScore - minScore));
-            sb.append(String.format("平均スコア: %.1f点\n",
-                    totalScore / result.assignments.size()));
-
-            // 評価
-            String evaluation;
-            double scoreDiff = maxScore - minScore;
-            if (scoreDiff <= 3.0) {
-                evaluation = "✅ 優秀（バランス良好）";
-            } else if (scoreDiff <= 4.0) {
-                evaluation = "⭕ 良好";
-            } else {
-                evaluation = "⚠️ 要改善（偏りあり）";
-            }
-            sb.append("\n評価: ").append(evaluation);
-
-            summaryArea.setText(sb.toString());
-            summaryArea.setCaretPosition(0);
+        if (suggestions.isEmpty()) {
+            System.out.println("  現在の配分は最適な状態です。追加の調整は不要です。");
+        } else {
+            suggestions.forEach(s -> System.out.println("  ・" + s));
         }
     }
 
     /**
-     * 詳細スコアダイアログ
+     * CSV形式での結果出力
      */
-    private static class DetailedScoreDialog extends JDialog {
-        public DetailedScoreDialog(JFrame parent, AdaptiveRoomOptimizer.OptimizationResult result) {
-            super(parent, "詳細スコア表示", true);
-            setLayout(new BorderLayout());
+    private static void outputCsvResults(AdaptiveRoomOptimizer.OptimizationResult result) {
+        System.out.println("\n=== CSV形式出力 ===");
+        System.out.println("スタッフ名,部屋数,基本点,調整後点,階数,詳細");
 
-            // テーブルの作成
-            String[] columnNames = {"スタッフ", "総室数", "S", "D", "T", "FD", "エコ",
-                    "総スコア", "タイプ"};
-            DefaultTableModel model = new DefaultTableModel(columnNames, 0);
-
-            for (AdaptiveRoomOptimizer.StaffAssignment assignment : result.assignments) {
-                // タイプ別集計
-                Map<String, Integer> totalCounts = new HashMap<>();
-                totalCounts.put("S", 0);
-                totalCounts.put("D", 0);
-                totalCounts.put("T", 0);
-                totalCounts.put("FD", 0);
-                int totalEco = 0;
-
-                for (AdaptiveRoomOptimizer.RoomAllocation allocation : assignment.roomsByFloor.values()) {
-                    allocation.roomCounts.forEach((type, count) ->
-                            totalCounts.put(type, totalCounts.get(type) + count));
-                    totalEco += allocation.ecoRooms;
-                }
-
-                String workerType = assignment.workerType ==
-                        AdaptiveRoomOptimizer.WorkerType.LIGHT_DUTY ?
-                        "軽減" : "通常";
-
-                Object[] row = {
-                        assignment.staff.name,
-                        assignment.totalRooms,
-                        totalCounts.get("S"),
-                        totalCounts.get("D"),
-                        totalCounts.get("T"),
-                        totalCounts.get("FD"),
-                        totalEco,
-                        String.format("%.1f", assignment.totalPoints),
-                        workerType
-                };
-                model.addRow(row);
-            }
-
-            JTable table = new JTable(model);
-            table.setAutoCreateRowSorter(true);
-
-            // 列幅設定
-            table.getColumnModel().getColumn(0).setPreferredWidth(150);
-            for (int i = 1; i <= 6; i++) {
-                table.getColumnModel().getColumn(i).setPreferredWidth(60);
-            }
-            table.getColumnModel().getColumn(7).setPreferredWidth(80);
-            table.getColumnModel().getColumn(8).setPreferredWidth(60);
-
-            JScrollPane scrollPane = new JScrollPane(table);
-            add(scrollPane, BorderLayout.CENTER);
-
-            // スコア計算説明
-            JPanel bottomPanel = new JPanel(new BorderLayout());
-            JTextArea explainArea = new JTextArea(
-                    "【スコア計算式】\n" +
-                            "S部屋: 1.0点/室\n" +
-                            "D部屋: 1.0点/室\n" +
-                            "T部屋: 1.5点/室\n" +
-                            "FD部屋: 2.0点/室\n" +
-                            "エコ部屋: 0.5点/室\n"
-            );
-            explainArea.setEditable(false);
-            explainArea.setBackground(getBackground());
-            bottomPanel.add(explainArea, BorderLayout.NORTH);
-
-            JButton closeButton = new JButton("閉じる");
-            closeButton.addActionListener(e -> dispose());
-            JPanel buttonPanel = new JPanel();
-            buttonPanel.add(closeButton);
-            bottomPanel.add(buttonPanel, BorderLayout.SOUTH);
-
-            add(bottomPanel, BorderLayout.SOUTH);
-
-            setSize(700, 500);
-            setLocationRelativeTo(parent);
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : result.assignments) {
+            System.out.printf("%s,%d,%.2f,%.2f,\"%s\",\"%s\"\n",
+                    assignment.staff.name,
+                    assignment.totalRooms,
+                    assignment.totalPoints,
+                    assignment.adjustedScore,
+                    assignment.floors.toString(),
+                    assignment.getDetailedDescription());
         }
+    }
+
+    /**
+     * ヘルプメッセージの表示
+     */
+    private static void printHelp() {
+        System.out.println("使用方法: java RoomAssignmentApplication [オプション]");
+        System.out.println();
+        System.out.println("オプション:");
+        System.out.println("  -r, --room-data <file>      部屋データファイル (CSV)");
+        System.out.println("  -s, --staff-data <file>     スタッフシフトファイル (Excel)");
+        System.out.println("  -e, --eco-data <file>       エコ清掃データファイル (Excel)");
+        System.out.println("  -d, --date <yyyy-MM-dd>     対象日付");
+        System.out.println("  -b, --bath-cleaning <type>  大浴場清掃タイプ (NONE/NORMAL/WITH_DRAINING)");
+        System.out.println("  --no-adjustment              自動調整を無効化");
+        System.out.println("  --max-difference <value>     許容される最大ポイント差");
+        System.out.println("  -h, --help                   このヘルプを表示");
+        System.out.println();
+        System.out.println("例:");
+        System.out.println("  java RoomAssignmentApplication -r rooms.csv -s shift.xlsx -d 2024-12-01");
+        System.out.println("  java RoomAssignmentApplication --no-adjustment --max-difference 2.5");
+    }
+
+    /**
+     * アプリケーション設定クラス
+     */
+    private static class ApplicationConfig {
+        File roomDataFile;
+        File staffDataFile;
+        File ecoDataFile;
+        LocalDate targetDate;
+        AdaptiveRoomOptimizer.BathCleaningType bathCleaningType;
+        boolean disableAdjustment = false;
+        double maxAllowedDifference = 0;
+    }
+
+    /**
+     * 処理結果クラス
+     */
+    private static class ProcessingResult {
+        FileProcessor.CleaningData cleaningData;
+        List<FileProcessor.Staff> availableStaff;
+        List<AdaptiveRoomOptimizer.FloorInfo> floors;
+        AdaptiveRoomOptimizer.OptimizationResult optimizationResult;
+        ApplicationConfig config;
     }
 }

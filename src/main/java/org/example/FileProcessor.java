@@ -1,4 +1,4 @@
-package org.example;  // com.example.roomassignment から変更
+package org.example;
 
 import java.io.*;
 import java.util.*;
@@ -12,39 +12,49 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 public class FileProcessor {
     private static final Logger LOGGER = Logger.getLogger(FileProcessor.class.getName());
 
-    // CleaningDataクラスを内部クラスとして定義
+    // CleaningDataクラスを内部クラスとして定義（修正版）
     public static class CleaningData {
         public final List<Room> mainRooms;
         public final List<Room> annexRooms;
         public final List<Room> ecoRooms;
-        public final List<Room> brokenRooms;  // 故障部屋リストを追加
+        public final List<Room> brokenRooms;
+        public final List<Room> roomsToClean;  // ★追加：清掃対象の全部屋リスト
         public final int totalMainRooms;
         public final int totalAnnexRooms;
-        public final int totalBrokenRooms;    // 故障部屋数を追加
+        public final int totalBrokenRooms;
 
-        public CleaningData(List<Room> mainRooms, List<Room> annexRooms, List<Room> ecoRooms, List<Room> brokenRooms) {
+        public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
+                            List<Room> ecoRooms, List<Room> brokenRooms) {
             this.mainRooms = mainRooms;
             this.annexRooms = annexRooms;
             this.ecoRooms = ecoRooms;
             this.brokenRooms = brokenRooms;
+
+            // ★追加：清掃対象の全部屋リストを作成
+            this.roomsToClean = new ArrayList<>();
+            this.roomsToClean.addAll(mainRooms);
+            this.roomsToClean.addAll(annexRooms);
+
             this.totalMainRooms = mainRooms.size();
             this.totalAnnexRooms = annexRooms.size();
             this.totalBrokenRooms = brokenRooms.size();
         }
     }
 
-    // Roomクラスを内部クラスとして定義
+    // Roomクラスを内部クラスとして定義（修正版）
     public static class Room {
         public final String roomNumber;
         public final String roomType;
         public final boolean isEcoClean;
-        public final boolean isBroken;  // 故障フラグを追加
+        public final boolean isEco;  // ★追加：エコ清掃フラグ（RoomNumberAssigner用）
+        public final boolean isBroken;
         public final int floor;
 
         public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken) {
             this.roomNumber = roomNumber;
             this.roomType = roomType;
             this.isEcoClean = isEcoClean;
+            this.isEco = isEcoClean;  // ★追加：isEcoCleanと同じ値を設定
             this.isBroken = isBroken;
             this.floor = extractFloor(roomNumber);
         }
@@ -100,7 +110,7 @@ public class FileProcessor {
         List<Room> mainRooms = new ArrayList<>();
         List<Room> annexRooms = new ArrayList<>();
         List<Room> ecoRooms = new ArrayList<>();
-        List<Room> brokenRooms = new ArrayList<>();  // 故障部屋リストを追加
+        List<Room> brokenRooms = new ArrayList<>();
         Map<String, List<String>> ecoRoomMap = loadEcoRoomInfo();
 
         try (BufferedReader reader = new BufferedReader(new FileReader(file, java.nio.charset.StandardCharsets.UTF_8))) {
@@ -142,7 +152,7 @@ public class FileProcessor {
                 // 部屋タイプは3列目（インデックス2）
                 String roomTypeCode = parts.length > 2 ? parts[2].trim() : "";
 
-                // 故障状態は6列目（インデックス5）- 新規追加
+                // 故障状態は6列目（インデックス5）
                 String brokenStatus = parts.length > 5 ? parts[5].trim() : "";
                 boolean isBroken = brokenStatus.equals("1");
 

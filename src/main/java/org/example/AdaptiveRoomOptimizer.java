@@ -10,6 +10,7 @@ import java.util.logging.Level;
 /**
  * 適応型清掃管理最適化システム（条件追加版）
  * 清掃条件.txtの要件を反映した実装
+ * 部屋数制限機能統合版
  */
 public class AdaptiveRoomOptimizer {
 
@@ -105,7 +106,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * 適応型作業者タイプ
+     * 適応型ワーカータイプ
      */
     public enum AdaptiveWorkerType {
         SUPER_LIGHT("超軽減", 0.1),
@@ -149,7 +150,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * 適応型負荷設定（拡張版）
+     * 適応型負荷設定（拡張版）- 部屋数制限機能統合
      */
     public static class AdaptiveLoadConfig {
         public final List<FileProcessor.Staff> availableStaff;
@@ -160,6 +161,9 @@ public class AdaptiveRoomOptimizer {
         public final Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType;
         public final Map<String, WorkerType> workerTypes;
         public final Map<String, BathCleaningType> bathCleaningAssignments;
+        public final Map<String, Integer> staffRoomLimits;  // ★追加: 個別制限
+        public final Map<String, Integer> upperLimits;     // ★追加: 上限制限
+        public final Map<String, Integer> lowerLimits;     // ★追加: 下限制限
 
         private AdaptiveLoadConfig(
                 List<FileProcessor.Staff> availableStaff,
@@ -168,7 +172,8 @@ public class AdaptiveRoomOptimizer {
                 Map<AdaptiveWorkerType, Integer> reductionMap,
                 Map<AdaptiveWorkerType, Integer> targetRoomsMap,
                 Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType,
-                Map<String, BathCleaningType> bathCleaningAssignments) {
+                Map<String, BathCleaningType> bathCleaningAssignments,
+                Map<String, Integer> staffRoomLimits) {  // ★追加
 
             this.availableStaff = new ArrayList<>(availableStaff);
             this.extendedStaffInfo = new ArrayList<>(extendedStaffInfo);
@@ -178,6 +183,20 @@ public class AdaptiveRoomOptimizer {
             this.staffByType = new HashMap<>(staffByType);
             this.workerTypes = convertToWorkerTypeMap(staffByType);
             this.bathCleaningAssignments = new HashMap<>(bathCleaningAssignments);
+
+            // ★追加: 制限情報の処理
+            this.staffRoomLimits = staffRoomLimits != null ? new HashMap<>(staffRoomLimits) : new HashMap<>();
+            this.upperLimits = new HashMap<>();
+            this.lowerLimits = new HashMap<>();
+
+            // 正負で上限・下限を分離
+            for (Map.Entry<String, Integer> entry : this.staffRoomLimits.entrySet()) {
+                if (entry.getValue() < 0) {
+                    lowerLimits.put(entry.getKey(), Math.abs(entry.getValue()));
+                } else {
+                    upperLimits.put(entry.getKey(), entry.getValue());
+                }
+            }
         }
 
         private static Map<String, WorkerType> convertToWorkerTypeMap(
@@ -191,10 +210,66 @@ public class AdaptiveRoomOptimizer {
             return result;
         }
 
+        /**
+         * ★追加: 個別目標部屋数を取得（制限考慮版）
+         */
+        public int getIndividualTarget(String staffId, int baseTarget) {
+            LOGGER.fine(String.format("制限計算: %s, ベース: %d室", staffId, baseTarget));
+
+            // 大浴場清掃による削減
+            BathCleaningType bathType = bathCleaningAssignments.get(staffId);
+            int bathReduction = 0;
+            if (bathType != null && bathType != BathCleaningType.NONE) {
+                bathReduction = bathType.reduction;
+                LOGGER.fine(String.format("大浴場清掃: %s -%d室", staffId, bathReduction));
+            }
+
+            int target = baseTarget - bathReduction;
+
+            // 上限制限
+            if (upperLimits.containsKey(staffId)) {
+                int upperLimit = upperLimits.get(staffId);
+                target = Math.min(target, upperLimit);
+                LOGGER.fine(String.format("上限適用: %s %d室", staffId, upperLimit));
+            }
+
+            // 下限制限
+            if (lowerLimits.containsKey(staffId)) {
+                int lowerLimit = lowerLimits.get(staffId);
+                target = Math.max(target, lowerLimit);
+                LOGGER.fine(String.format("下限適用: %s %d室", staffId, lowerLimit));
+            }
+
+            // 最低3室は保証
+            target = Math.max(3, target);
+
+            return target;
+        }
+
+        /**
+         * ★修正: 制限マップを受け取るオーバーロード版を追加
+         */
         public static AdaptiveLoadConfig createAdaptiveConfig(
                 List<FileProcessor.Staff> availableStaff, int totalRooms,
                 int mainBuildingRooms, int annexBuildingRooms,
-                BathCleaningType bathType) {
+                BathCleaningType bathType, Map<String, Integer> roomLimits) {
+
+            LOGGER.info("=== 適応型設定作成（制限機能付き） ===");
+            LOGGER.info(String.format("総部屋数: %d, 本館: %d, 別館: %d",
+                    totalRooms, mainBuildingRooms, annexBuildingRooms));
+
+            // 制限情報のログ出力
+            if (roomLimits != null && !roomLimits.isEmpty()) {
+                LOGGER.info("部屋数制限設定:");
+                roomLimits.forEach((staffId, limit) -> {
+                    String staffName = availableStaff.stream()
+                            .filter(s -> s.id.equals(staffId))
+                            .map(s -> s.name)
+                            .findFirst().orElse(staffId);
+                    String limitType = limit < 0 ? "下限" : "上限";
+                    LOGGER.info(String.format("  %s: %s %d室", staffName, limitType, Math.abs(limit)));
+                });
+            }
 
             // 拡張スタッフ情報の生成
             List<ExtendedStaffInfo> extendedInfo = new ArrayList<>();
@@ -202,7 +277,7 @@ public class AdaptiveRoomOptimizer {
 
             // 大浴場清掃担当者の設定（最初の4人を本館担当の大浴場清掃に）
             int bathStaffAssigned = 0;
-            final BathCleaningType finalBathType = bathType;  // ラムダ式用にfinal変数として保持
+            final BathCleaningType finalBathType = bathType;
             final int maxBathStaff = BATH_CLEANING_STAFF_COUNT;
 
             for (int i = 0; i < availableStaff.size(); i++) {
@@ -223,7 +298,7 @@ public class AdaptiveRoomOptimizer {
             }
 
             // 本館と別館の実質的な必要部屋数を計算
-            final int finalBathStaffAssigned = bathStaffAssigned;  // ラムダ式用にfinal変数として保持
+            final int finalBathStaffAssigned = bathStaffAssigned;
             int bathReductionTotal = finalBathStaffAssigned * finalBathType.reduction;
             int mainEffectiveRooms = mainBuildingRooms + bathReductionTotal;
 
@@ -272,7 +347,7 @@ public class AdaptiveRoomOptimizer {
                             bathAssignments, mainEffectiveRooms, mainStaffCount, annexStaffCount);
 
             return new AdaptiveLoadConfig(availableStaff, extendedInfo, level,
-                    reductionMap, targetRoomsMap, staffByType, bathAssignments);
+                    reductionMap, targetRoomsMap, staffByType, bathAssignments, roomLimits);
         }
 
         // オーバーロード版（後方互換性のため）
@@ -282,7 +357,7 @@ public class AdaptiveRoomOptimizer {
             int mainRooms = (int)(totalRooms * 0.55); // 概算値
             int annexRooms = totalRooms - mainRooms;
             return createAdaptiveConfig(availableStaff, totalRooms, mainRooms, annexRooms,
-                    BathCleaningType.NORMAL);
+                    BathCleaningType.NORMAL, new HashMap<>());
         }
 
         private static Map<AdaptiveWorkerType, List<FileProcessor.Staff>> assignStaffToTypes(
@@ -334,7 +409,7 @@ public class AdaptiveRoomOptimizer {
             double avgAnnexRooms = (double) (totalRooms - mainEffectiveRooms +
                     BATH_CLEANING_STAFF_COUNT * BATH_CLEANING_REDUCTION) / annexStaffCount;
 
-            final int baseTarget = (int) Math.floor(avgRooms);  // ラムダ式用にfinal変数として保持
+            final int baseTarget = (int) Math.floor(avgRooms);
             int totalReduction = 0;
             int normalStaffCount = 0;
 
@@ -515,7 +590,7 @@ public class AdaptiveRoomOptimizer {
 
         public String getDetailedDescription() {
             StringBuilder sb = new StringBuilder();
-            sb.append(String.format("%s: %d室 (基本%.1f点 + 移動%.1f点 = %.1f点) - ",
+            sb.append(String.format("%s: %d室 (基本%.1fポイント + 移動%.1fポイント = %.1fポイント) - ",
                     staff.name, totalRooms, totalPoints, movementPenalty, adjustedScore));
 
             for (int i = 0; i < floors.size(); i++) {
@@ -602,6 +677,30 @@ public class AdaptiveRoomOptimizer {
             }
             System.out.printf("  大浴場清掃担当者数: %d名（本館のみ担当）\n", bathCount);
 
+            // ★追加: 制限適用状況
+            if (!config.staffRoomLimits.isEmpty()) {
+                System.out.println("\n【部屋数制限適用状況】");
+                for (StaffAssignment assignment : assignments) {
+                    String staffId = assignment.staff.id;
+                    Integer limit = config.staffRoomLimits.get(staffId);
+                    if (limit != null) {
+                        String limitType = limit < 0 ? "下限" : "上限";
+                        int absLimit = Math.abs(limit);
+                        int actual = assignment.totalRooms;
+
+                        String status;
+                        if (limit < 0) {
+                            status = actual >= absLimit ? "✓" : "⚠未達";
+                        } else {
+                            status = actual <= absLimit ? "✓" : "⚠超過";
+                        }
+
+                        System.out.printf("  %s: %s%d室 → 実際%d室 %s\n",
+                                assignment.staff.name, limitType, absLimit, actual, status);
+                    }
+                }
+            }
+
             System.out.println("\n【個別配分結果】");
             assignments.forEach(a -> System.out.println(a.getDetailedDescription()));
 
@@ -640,11 +739,11 @@ public class AdaptiveRoomOptimizer {
             double[] adjustedScores = assignments.stream()
                     .mapToDouble(a -> a.adjustedScore).toArray();
 
-            System.out.printf("基本点数範囲: %.2f ～ %.2f (差: %.2f点)\n",
+            System.out.printf("基本点数範囲: %.2f ～ %.2f (差: %.2fポイント)\n",
                     Arrays.stream(points).min().orElse(0),
                     Arrays.stream(points).max().orElse(0),
                     pointDifference);
-            System.out.printf("調整後スコア範囲: %.2f ～ %.2f (差: %.2f点)\n",
+            System.out.printf("調整後スコア範囲: %.2f ～ %.2f (差: %.2fポイント)\n",
                     Arrays.stream(adjustedScores).min().orElse(0),
                     Arrays.stream(adjustedScores).max().orElse(0),
                     adjustedScoreDifference);
@@ -659,7 +758,7 @@ public class AdaptiveRoomOptimizer {
             byType.forEach((type, list) -> {
                 double avgRooms = list.stream().mapToInt(a -> a.totalRooms).average().orElse(0);
                 double avgPoints = list.stream().mapToDouble(a -> a.adjustedScore).average().orElse(0);
-                System.out.printf("%s作業者: %d名, 平均%.1f室, 平均%.1f点\n",
+                System.out.printf("%s作業者: %d名, 平均%.1f室, 平均%.1fポイント\n",
                         type.displayName, list.size(), avgRooms, avgPoints);
             });
 
@@ -786,6 +885,9 @@ public class AdaptiveRoomOptimizer {
 
                 int targetRooms = adaptiveConfig.targetRoomsMap.get(type);
 
+                // ★追加: 個別制限を適用
+                targetRooms = adaptiveConfig.getIndividualTarget(staff.id, targetRooms);
+
                 // 大浴場清掃の削減を適用
                 if (bathType != null && bathType != BathCleaningType.NONE) {
                     targetRooms = Math.max(3, targetRooms - bathType.reduction);
@@ -801,7 +903,7 @@ public class AdaptiveRoomOptimizer {
 
                 // 本館の階（1-10階）から選択
                 for (int floor = 1; floor <= 10 && currentRooms < targetRooms; floor++) {
-                    final int currentFloor = floor;  // ラムダ式用にfinal変数として保持
+                    final int currentFloor = floor;
                     FloorInfo floorInfo = floors.stream()
                             .filter(f -> f.floorNumber == currentFloor && f.isMainBuilding)
                             .findFirst().orElse(null);
@@ -835,6 +937,9 @@ public class AdaptiveRoomOptimizer {
             for (FileProcessor.Staff staff : annexBuildingStaff) {
                 AdaptiveWorkerType type = adaptiveConfig.getAdaptiveWorkerType(staff.id);
                 int targetRooms = Math.min(adaptiveConfig.targetRoomsMap.get(type), MAX_ANNEX_BUILDING_ROOMS);
+
+                // ★追加: 個別制限を適用
+                targetRooms = adaptiveConfig.getIndividualTarget(staff.id, targetRooms);
 
                 Map<Integer, RoomAllocation> staffRooms = new HashMap<>();
                 List<Integer> staffFloors = new ArrayList<>();

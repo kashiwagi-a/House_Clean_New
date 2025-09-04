@@ -41,7 +41,7 @@ public class FileProcessor {
         }
     }
 
-    // Roomクラスを内部クラスとして定義（修正版）
+    // Roomクラスを内部クラスとして定義（修正版 - buildingフィールド追加）
     public static class Room {
         public final String roomNumber;
         public final String roomType;
@@ -49,6 +49,7 @@ public class FileProcessor {
         public final boolean isEco;  // ★追加：エコ清掃フラグ（RoomNumberAssigner用）
         public final boolean isBroken;
         public final int floor;
+        public final String building;  // ★追加：建物情報
 
         public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken) {
             this.roomNumber = roomNumber;
@@ -57,13 +58,15 @@ public class FileProcessor {
             this.isEco = isEcoClean;  // ★追加：isEcoCleanと同じ値を設定
             this.isBroken = isBroken;
             this.floor = extractFloor(roomNumber);
+            this.building = isAnnexRoom(roomNumber) ? "別館" : "本館";  // ★追加：建物判定
         }
 
         @Override
         public String toString() {
             return roomNumber + " (" + roomType + ", " + floor + "階" +
                     (isEcoClean ? ", エコ清掃" : "") +
-                    (isBroken ? ", 故障" : "") + ")";
+                    (isBroken ? ", 故障" : "") +
+                    ", " + building + ")";  // ★追加：建物情報も表示
         }
     }
 
@@ -105,13 +108,21 @@ public class FileProcessor {
         }
     }
 
-    // CSVファイルから部屋データを読み込むメソッド
+    // ★修正版：故障部屋選択機能完全対応
     private static CleaningData processCsvRoomFile(File file) {
         List<Room> mainRooms = new ArrayList<>();
         List<Room> annexRooms = new ArrayList<>();
         List<Room> ecoRooms = new ArrayList<>();
         List<Room> brokenRooms = new ArrayList<>();
         Map<String, List<String>> ecoRoomMap = loadEcoRoomInfo();
+
+        // ★追加：選択された故障部屋を取得
+        Set<String> selectedBrokenRooms = getSelectedBrokenRooms();
+
+        if (!selectedBrokenRooms.isEmpty()) {
+            LOGGER.info("清掃対象として選択された故障部屋: " + selectedBrokenRooms.size() + "室");
+            selectedBrokenRooms.forEach(room -> LOGGER.info("  - " + room));
+        }
 
         try (BufferedReader reader = new BufferedReader(new FileReader(file, java.nio.charset.StandardCharsets.UTF_8))) {
             String line;
@@ -168,18 +179,33 @@ public class FileProcessor {
                 LOGGER.info("処理中の部屋: " + roomNumber + ", タイプ: " + roomTypeCode +
                         ", 故障: " + isBroken + ", 状態: " + roomStatus);
 
-                // 故障部屋はスキップ（清掃対象外）
+                // ★修正：故障部屋の処理ロジック
+                boolean wasOriginallyBroken = isBroken;
                 if (isBroken) {
-                    LOGGER.info("故障部屋をスキップ: " + roomNumber);
-                    Room room = new Room(roomNumber, determineRoomType(roomTypeCode), false, true);
-                    brokenRooms.add(room);
-                    continue;
+                    // 故障部屋リストに追加（記録用）
+                    Room brokenRoom = new Room(roomNumber, determineRoomType(roomTypeCode), false, true);
+                    brokenRooms.add(brokenRoom);
+
+                    // 選択された故障部屋は清掃対象として処理を続行
+                    if (selectedBrokenRooms.contains(roomNumber)) {
+                        LOGGER.info("故障部屋を清掃対象として処理: " + roomNumber);
+                        // 清掃対象として続行するため故障フラグをfalseに変更
+                        isBroken = false;
+                    } else {
+                        LOGGER.info("故障部屋をスキップ: " + roomNumber);
+                        continue;
+                    }
                 }
 
+                // ★重要：選択された故障部屋の場合は清掃状態をチェックしない
                 // 清掃が必要な部屋のみ処理（2=チェックアウト、3=連泊）
-                if (!roomStatus.equals("2") && !roomStatus.equals("3")) {
-                    LOGGER.info("清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
-                    continue;
+                if (!wasOriginallyBroken || selectedBrokenRooms.contains(roomNumber)) {
+                    // 選択された故障部屋の場合は清掃状態に関係なく処理
+                    if (!selectedBrokenRooms.contains(roomNumber) &&
+                            !roomStatus.equals("2") && !roomStatus.equals("3")) {
+                        LOGGER.info("清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
+                        continue;
+                    }
                 }
 
                 // 部屋タイプをコードから判定
@@ -197,15 +223,17 @@ public class FileProcessor {
                     }
                 }
 
-                // 部屋オブジェクトを作成
-                Room room = new Room(roomNumber, roomType, isEcoClean, false);
+                // 部屋オブジェクトを作成（★修正：選択された故障部屋は故障フラグをfalse）
+                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken);
 
                 // 別館か本館かを判定して対応するリストに追加
                 if (isAnnexRoom(roomNumber)) {
-                    LOGGER.info("別館部屋を追加: " + roomNumber);
+                    LOGGER.info("別館部屋を追加: " + roomNumber +
+                            (selectedBrokenRooms.contains(roomNumber) ? " (選択された故障部屋)" : ""));
                     annexRooms.add(room);
                 } else {
-                    LOGGER.info("本館部屋を追加: " + roomNumber);
+                    LOGGER.info("本館部屋を追加: " + roomNumber +
+                            (selectedBrokenRooms.contains(roomNumber) ? " (選択された故障部屋)" : ""));
                     mainRooms.add(room);
                 }
 
@@ -220,6 +248,25 @@ public class FileProcessor {
             LOGGER.info(String.format("読み込まれた部屋数: 本館=%d, 別館=%d, エコ清掃=%d, 故障=%d",
                     mainRooms.size(), annexRooms.size(), ecoRooms.size(), brokenRooms.size()));
 
+            // ★追加：選択された故障部屋の処理結果をログ出力
+            if (!selectedBrokenRooms.isEmpty()) {
+                long processedBrokenRooms = selectedBrokenRooms.stream()
+                        .mapToLong(roomNumber -> {
+                            boolean inMain = mainRooms.stream().anyMatch(r -> r.roomNumber.equals(roomNumber));
+                            boolean inAnnex = annexRooms.stream().anyMatch(r -> r.roomNumber.equals(roomNumber));
+                            if (inMain || inAnnex) {
+                                LOGGER.info("故障部屋が清掃対象に追加されました: " + roomNumber +
+                                        " (" + (inMain ? "本館" : "別館") + ")");
+                            }
+                            return inMain || inAnnex ? 1 : 0;
+                        }).sum();
+                LOGGER.info("選択された故障部屋のうち清掃対象に追加された部屋: " + processedBrokenRooms + "室");
+
+                if (processedBrokenRooms != selectedBrokenRooms.size()) {
+                    LOGGER.warning("一部の選択された故障部屋が清掃対象に追加されませんでした。CSVデータを確認してください。");
+                }
+            }
+
             // 部屋が一つも読み込まれなかった場合は警告
             if (mainRooms.isEmpty() && annexRooms.isEmpty()) {
                 LOGGER.warning("読み込まれた部屋データが0件です。CSVフォーマットを確認してください。");
@@ -231,6 +278,28 @@ public class FileProcessor {
             LOGGER.log(Level.SEVERE, "部屋データの読み込み中にエラーが発生しました", e);
             throw new RuntimeException("部屋データの読み込みに失敗しました", e);
         }
+    }
+
+    /**
+     * ★追加：選択された故障部屋の部屋番号セットを取得
+     */
+    private static Set<String> getSelectedBrokenRooms() {
+        Set<String> selectedRooms = new HashSet<>();
+
+        String selectedBrokenRoomsStr = System.getProperty("selectedBrokenRooms");
+        if (selectedBrokenRoomsStr != null && !selectedBrokenRoomsStr.trim().isEmpty()) {
+            LOGGER.info("システムプロパティから故障部屋選択情報を取得: " + selectedBrokenRoomsStr);
+            String[] roomNumbers = selectedBrokenRoomsStr.split(",");
+            for (String roomNumber : roomNumbers) {
+                if (!roomNumber.trim().isEmpty()) {
+                    selectedRooms.add(roomNumber.trim());
+                }
+            }
+        } else {
+            LOGGER.info("選択された故障部屋はありません");
+        }
+
+        return selectedRooms;
     }
 
     // パターンからルームタイプを決定するメソッド（更新版）

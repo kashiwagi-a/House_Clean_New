@@ -156,7 +156,7 @@ public class RoomAssignmentApplication extends JFrame {
         brokenRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
         brokenRoomSettingsButton.setPreferredSize(new Dimension(120, 35));
         brokenRoomSettingsButton.setBackground(new Color(255, 140, 0)); // オレンジ色
-        brokenRoomSettingsButton.setForeground(Color.WHITE);
+        brokenRoomSettingsButton.setForeground(Color.BLACK);
         brokenRoomSettingsButton.addActionListener(this::openBrokenRoomSettings);
         brokenRoomSettingsButton.setEnabled(false); // 初期状態は無効
         panel.add(brokenRoomSettingsButton);
@@ -205,6 +205,7 @@ public class RoomAssignmentApplication extends JFrame {
 
                 // ボタンの色を変更して設定済みを示す
                 brokenRoomSettingsButton.setBackground(new Color(34, 139, 34)); // 緑色
+                brokenRoomSettingsButton.setForeground(Color.BLACK); // 緑背景の場合は白文字
                 brokenRoomSettingsButton.setText("故障部屋設定済み");
             }
 

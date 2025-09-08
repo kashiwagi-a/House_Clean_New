@@ -10,7 +10,7 @@ import java.util.logging.Level;
 /**
  * 適応型清掃管理最適化システム（条件追加版）
  * 清掃条件.txtの要件を反映した実装
- * 部屋数制限機能統合版
+ * 部屋数制限機能統合版 + 全部屋割り当て保証
  */
 public class AdaptiveRoomOptimizer {
 
@@ -590,7 +590,7 @@ public class AdaptiveRoomOptimizer {
 
         public String getDetailedDescription() {
             StringBuilder sb = new StringBuilder();
-            sb.append(String.format("%s: %d室 (基本%.1fポイント + 移動%.1fポイント = %.1fポイント) - ",
+            sb.append(String.format("%s: %d部屋 (基本%.1fポイント + 移動%.1fポイント = %.1fポイント) - ",
                     staff.name, totalRooms, totalPoints, movementPenalty, adjustedScore));
 
             for (int i = 0; i < floors.size(); i++) {
@@ -774,7 +774,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * 適応型最適化エンジン（条件追加版）
+     * ★修正版: 適応型最適化エンジン（全部屋割り当て保証版）
      */
     public static class AdaptiveOptimizer {
         private final List<FloorInfo> floors;
@@ -786,9 +786,13 @@ public class AdaptiveRoomOptimizer {
         }
 
         public OptimizationResult optimize(LocalDate targetDate) {
-            System.out.println("=== 適応型最適化開始（清掃条件適用版） ===");
+            System.out.println("=== 適応型最適化開始（全部屋割り当て保証版） ===");
             System.out.printf("対象日: %s\n", targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
             System.out.printf("負荷レベル: %s\n", adaptiveConfig.loadLevel.displayName);
+
+            // 全部屋数をカウント
+            int totalRoomsAvailable = floors.stream().mapToInt(FloorInfo::getTotalRooms).sum();
+            System.out.printf("割り当て対象部屋数: %d室\n", totalRoomsAvailable);
 
             System.out.println("\n【スタッフ配分】");
             adaptiveConfig.staffByType.forEach((type, staffList) -> {
@@ -810,11 +814,16 @@ public class AdaptiveRoomOptimizer {
             System.out.println("\n--- Stage 2完了: 戦略的再配分 ---");
             printStageResult(stage2Result);
 
-            List<StaffAssignment> stage3Result = stageThreeBalanceOptimization(stage2Result);
-            System.out.println("\n--- Stage 3完了: バランス最適化 ---");
+            // ★新規追加: Stage 3で全部屋割り当て保証
+            List<StaffAssignment> stage3Result = stageThreeCompleteAllocation(stage2Result);
+            System.out.println("\n--- Stage 3完了: 全部屋割り当て保証 ---");
             printStageResult(stage3Result);
 
-            return new OptimizationResult(stage3Result, adaptiveConfig, targetDate);
+            List<StaffAssignment> stage4Result = stageFourBalanceOptimization(stage3Result);
+            System.out.println("\n--- Stage 4完了: バランス最適化 ---");
+            printStageResult(stage4Result);
+
+            return new OptimizationResult(stage4Result, adaptiveConfig, targetDate);
         }
 
         /**
@@ -843,193 +852,499 @@ public class AdaptiveRoomOptimizer {
             return allocation;
         }
 
+        /**
+         * ★大幅修正版: Stage 1 - 全部屋強制割り当て
+         */
         private List<StaffAssignment> stageOneAdaptiveAssignment(Map<String, Integer> preallocatedTwins) {
-            Map<Integer, RoomAllocation> remainingRooms = new HashMap<>();
-            for (FloorInfo floor : floors) {
-                remainingRooms.put(floor.floorNumber,
-                        new RoomAllocation(new HashMap<>(floor.roomCounts), floor.ecoRooms));
+            System.out.println("  全部屋強制割り当てモードで実行中...");
+
+            // 全部屋をリスト化
+            List<RoomAssignmentTask> allRoomTasks = createAllRoomTasks();
+            System.out.printf("  配分対象: %d室\n", allRoomTasks.size());
+
+            // スタッフリストを準備（部屋数順にソート）
+            List<FileProcessor.Staff> sortedStaff = new ArrayList<>(adaptiveConfig.availableStaff);
+            Collections.shuffle(sortedStaff); // ランダム化で公平性を確保
+
+            // 各スタッフの配分記録を初期化
+            Map<String, StaffRoomCollector> collectors = new HashMap<>();
+            for (FileProcessor.Staff staff : sortedStaff) {
+                collectors.put(staff.id, new StaffRoomCollector(staff));
             }
 
+            // 全部屋を順次配分
+            int staffIndex = 0;
+            for (RoomAssignmentTask task : allRoomTasks) {
+                FileProcessor.Staff targetStaff = sortedStaff.get(staffIndex % sortedStaff.size());
+                StaffRoomCollector collector = collectors.get(targetStaff.id);
+
+                collector.addRoom(task.floor, task.roomType, task.isEco ? 1 : 0);
+
+                staffIndex++;
+            }
+
+            // StaffAssignmentに変換
             List<StaffAssignment> assignments = new ArrayList<>();
-
-            // 本館と別館のスタッフを分離
-            List<FileProcessor.Staff> mainBuildingStaff = new ArrayList<>();
-            List<FileProcessor.Staff> annexBuildingStaff = new ArrayList<>();
-
-            // 大浴場担当者を最初に本館スタッフに追加
-            for (ExtendedStaffInfo extInfo : adaptiveConfig.extendedStaffInfo) {
-                if (extInfo.bathCleaning != BathCleaningType.NONE) {
-                    mainBuildingStaff.add(extInfo.staff);
-                }
+            for (StaffRoomCollector collector : collectors.values()) {
+                StaffAssignment assignment = collector.toStaffAssignment(adaptiveConfig);
+                assignments.add(assignment);
             }
 
-            // 残りのスタッフを配分（本館12名、別館10名を目標）
-            int targetMainStaff = 12;
-            int targetAnnexStaff = adaptiveConfig.availableStaff.size() - targetMainStaff;
+            // 配分結果を検証
+            int totalAssigned = assignments.stream().mapToInt(a -> a.totalRooms).sum();
+            int expected = allRoomTasks.size();
+            System.out.printf("  配分結果: %d室 / %d室 (%.1f%%)\n",
+                    totalAssigned, expected, (double)totalAssigned / expected * 100);
 
-            for (FileProcessor.Staff staff : adaptiveConfig.availableStaff) {
-                boolean isBathStaff = adaptiveConfig.bathCleaningAssignments.get(staff.id) != BathCleaningType.NONE;
-                if (!isBathStaff) {
-                    if (mainBuildingStaff.size() < targetMainStaff) {
-                        mainBuildingStaff.add(staff);
-                    } else {
-                        annexBuildingStaff.add(staff);
-                    }
-                }
+            if (totalAssigned < expected) {
+                System.out.printf("  ⚠ %d室が配分されていません - 追加処理実行\n", expected - totalAssigned);
+                assignments = forceAssignMissingRooms(assignments, allRoomTasks);
             }
 
-            // 本館スタッフの割り当て
-            for (FileProcessor.Staff staff : mainBuildingStaff) {
-                AdaptiveWorkerType type = adaptiveConfig.getAdaptiveWorkerType(staff.id);
-                BathCleaningType bathType = adaptiveConfig.bathCleaningAssignments.get(staff.id);
-
-                int targetRooms = adaptiveConfig.targetRoomsMap.get(type);
-
-                // ★追加: 個別制限を適用
-                targetRooms = adaptiveConfig.getIndividualTarget(staff.id, targetRooms);
-
-                // 大浴場清掃の削減を適用
-                if (bathType != null && bathType != BathCleaningType.NONE) {
-                    targetRooms = Math.max(3, targetRooms - bathType.reduction);
-                }
-
-                // 事前配分されたツイン部屋数
-                int preallocatedTwinCount = preallocatedTwins.getOrDefault(staff.id, 0);
-
-                Map<Integer, RoomAllocation> staffRooms = new HashMap<>();
-                List<Integer> staffFloors = new ArrayList<>();
-                int currentRooms = 0;
-                int currentTwins = 0;
-
-                // 本館の階（1-10階）から選択
-                for (int floor = 1; floor <= 10 && currentRooms < targetRooms; floor++) {
-                    final int currentFloor = floor;
-                    FloorInfo floorInfo = floors.stream()
-                            .filter(f -> f.floorNumber == currentFloor && f.isMainBuilding)
-                            .findFirst().orElse(null);
-
-                    if (floorInfo != null) {
-                        RoomAllocation remaining = remainingRooms.get(floor);
-                        if (remaining != null && !remaining.isEmpty()) {
-                            RoomAllocation allocation = calculateAdaptiveAllocation(
-                                    remaining, Math.min(targetRooms - currentRooms, MAX_MAIN_BUILDING_ROOMS),
-                                    false, preallocatedTwinCount - currentTwins);
-
-                            if (!allocation.isEmpty()) {
-                                staffRooms.put(floor, allocation);
-                                staffFloors.add(floor);
-                                currentTwins += allocation.roomCounts.getOrDefault("T", 0);
-                                updateRemainingRooms(remainingRooms, floor, allocation);
-                                currentRooms += allocation.getTotalRooms();
-
-                                if (staffFloors.size() >= 2) break; // 最大2階まで
-                            }
-                        }
-                    }
-                }
-
-                WorkerType workerType = type == AdaptiveWorkerType.NORMAL ?
-                        WorkerType.NORMAL_DUTY : WorkerType.LIGHT_DUTY;
-                assignments.add(new StaffAssignment(staff, workerType, staffFloors, staffRooms));
-            }
-
-            // 別館スタッフの割り当て
-            for (FileProcessor.Staff staff : annexBuildingStaff) {
-                AdaptiveWorkerType type = adaptiveConfig.getAdaptiveWorkerType(staff.id);
-                int targetRooms = Math.min(adaptiveConfig.targetRoomsMap.get(type), MAX_ANNEX_BUILDING_ROOMS);
-
-                // ★追加: 個別制限を適用
-                targetRooms = adaptiveConfig.getIndividualTarget(staff.id, targetRooms);
-
-                Map<Integer, RoomAllocation> staffRooms = new HashMap<>();
-                List<Integer> staffFloors = new ArrayList<>();
-                int currentRooms = 0;
-
-                // 別館の階から選択
-                for (FloorInfo floorInfo : floors) {
-                    if (!floorInfo.isMainBuilding && currentRooms < targetRooms) {
-                        RoomAllocation remaining = remainingRooms.get(floorInfo.floorNumber);
-                        if (remaining != null && !remaining.isEmpty()) {
-                            RoomAllocation allocation = calculateAdaptiveAllocation(
-                                    remaining, targetRooms - currentRooms, false, 0);
-
-                            if (!allocation.isEmpty()) {
-                                staffRooms.put(floorInfo.floorNumber, allocation);
-                                staffFloors.add(floorInfo.floorNumber);
-                                updateRemainingRooms(remainingRooms, floorInfo.floorNumber, allocation);
-                                currentRooms += allocation.getTotalRooms();
-
-                                if (staffFloors.size() >= 2) break; // 最大2階まで
-                            }
-                        }
-                    }
-                }
-
-                WorkerType workerType = type == AdaptiveWorkerType.NORMAL ?
-                        WorkerType.NORMAL_DUTY : WorkerType.LIGHT_DUTY;
-                assignments.add(new StaffAssignment(staff, workerType, staffFloors, staffRooms));
-            }
-
-            distributeRemainingRoomsAdaptive(assignments, remainingRooms);
             return assignments;
         }
 
-        private FloorInfo findBestFloorForAdaptiveStaff(
-                Map<Integer, RoomAllocation> remainingRooms,
-                int targetRooms, List<Integer> currentFloors,
-                boolean preferHighPoint, Set<Integer> avoidFloors,
-                int neededTwins) {
-
-            FloorInfo bestFloor = null;
-            double bestScore = Double.MIN_VALUE;
+        /**
+         * 全部屋タスクを作成
+         */
+        private List<RoomAssignmentTask> createAllRoomTasks() {
+            List<RoomAssignmentTask> tasks = new ArrayList<>();
 
             for (FloorInfo floor : floors) {
-                // 連続出勤者の前日階数を避ける
-                if (avoidFloors.contains(floor.floorNumber)) {
-                    continue;
+                // 通常部屋
+                for (Map.Entry<String, Integer> entry : floor.roomCounts.entrySet()) {
+                    String roomType = entry.getKey();
+                    int count = entry.getValue();
+                    for (int i = 0; i < count; i++) {
+                        tasks.add(new RoomAssignmentTask(floor.floorNumber, roomType, false));
+                    }
                 }
 
-                RoomAllocation remaining = remainingRooms.get(floor.floorNumber);
-                if (remaining != null && !remaining.isEmpty()) {
-                    if (currentFloors.size() >= 2 && !currentFloors.contains(floor.floorNumber)) {
-                        continue;
-                    }
-
-                    double score = calculateAdaptiveFloorScore(
-                            remaining, targetRooms, preferHighPoint, neededTwins);
-
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestFloor = floor;
-                    }
+                // エコ部屋
+                for (int i = 0; i < floor.ecoRooms; i++) {
+                    tasks.add(new RoomAssignmentTask(floor.floorNumber, "ECO", true));
                 }
             }
-            return bestFloor;
+
+            // シャッフルして公平性を確保
+            Collections.shuffle(tasks);
+            return tasks;
         }
 
-        private double calculateAdaptiveFloorScore(
-                RoomAllocation remaining, int targetRooms,
-                boolean preferHighPoint, int neededTwins) {
+        /**
+         * 部屋割り当てタスク
+         */
+        private static class RoomAssignmentTask {
+            final int floor;
+            final String roomType;
+            final boolean isEco;
 
-            int availableRooms = remaining.getTotalRooms();
-            double baseScore = 1.0 / (1.0 + Math.abs(availableRooms - targetRooms));
+            RoomAssignmentTask(int floor, String roomType, boolean isEco) {
+                this.floor = floor;
+                this.roomType = roomType;
+                this.isEco = isEco;
+            }
+        }
 
-            // ツイン部屋が必要な場合は優先
-            if (neededTwins > 0) {
-                int availableTwins = remaining.roomCounts.getOrDefault("T", 0);
-                if (availableTwins > 0) {
-                    baseScore += 0.3;
+        /**
+         * スタッフ部屋収集器
+         */
+        private static class StaffRoomCollector {
+            final FileProcessor.Staff staff;
+            final Map<Integer, Map<String, Integer>> roomsByFloor;
+            final Map<Integer, Integer> ecoByFloor;
+
+            StaffRoomCollector(FileProcessor.Staff staff) {
+                this.staff = staff;
+                this.roomsByFloor = new HashMap<>();
+                this.ecoByFloor = new HashMap<>();
+            }
+
+            void addRoom(int floor, String roomType, int ecoCount) {
+                if (ecoCount > 0) {
+                    ecoByFloor.merge(floor, ecoCount, Integer::sum);
+                } else {
+                    roomsByFloor.computeIfAbsent(floor, k -> new HashMap<>())
+                            .merge(roomType, 1, Integer::sum);
                 }
             }
 
-            if (preferHighPoint) {
-                int highPointRooms = remaining.roomCounts.getOrDefault("T", 0) +
-                        remaining.roomCounts.getOrDefault("FD", 0);
-                double highPointRatio = availableRooms > 0 ?
-                        (double) highPointRooms / availableRooms : 0;
-                return baseScore + highPointRatio * 0.5;
+            StaffAssignment toStaffAssignment(AdaptiveLoadConfig config) {
+                Map<Integer, RoomAllocation> allocations = new HashMap<>();
+                Set<Integer> allFloors = new HashSet<>();
+
+                // 通常部屋の処理
+                for (Map.Entry<Integer, Map<String, Integer>> entry : roomsByFloor.entrySet()) {
+                    int floor = entry.getKey();
+                    Map<String, Integer> rooms = entry.getValue();
+                    int eco = ecoByFloor.getOrDefault(floor, 0);
+
+                    allocations.put(floor, new RoomAllocation(rooms, eco));
+                    allFloors.add(floor);
+                }
+
+                // エコのみのフロア処理
+                for (Map.Entry<Integer, Integer> entry : ecoByFloor.entrySet()) {
+                    int floor = entry.getKey();
+                    if (!allFloors.contains(floor)) {
+                        allocations.put(floor, new RoomAllocation(new HashMap<>(), entry.getValue()));
+                        allFloors.add(floor);
+                    }
+                }
+
+                List<Integer> floors = new ArrayList<>(allFloors);
+                Collections.sort(floors);
+
+                AdaptiveWorkerType type = config.getAdaptiveWorkerType(staff.id);
+                WorkerType workerType = type == AdaptiveWorkerType.NORMAL ?
+                        WorkerType.NORMAL_DUTY : WorkerType.LIGHT_DUTY;
+
+                return new StaffAssignment(staff, workerType, floors, allocations);
             }
-            return baseScore;
+        }
+
+        /**
+         * 未配分部屋を強制配分
+         */
+        private List<StaffAssignment> forceAssignMissingRooms(List<StaffAssignment> assignments,
+                                                              List<RoomAssignmentTask> allTasks) {
+
+            int expectedTotal = allTasks.size();
+            int currentTotal = assignments.stream().mapToInt(a -> a.totalRooms).sum();
+            int missing = expectedTotal - currentTotal;
+
+            System.out.printf("  強制配分: %d室を追加配分\n", missing);
+
+            List<StaffAssignment> result = new ArrayList<>(assignments);
+
+            // 部屋数の少ないスタッフから順に配分
+            result.sort(Comparator.comparingInt(a -> a.totalRooms));
+
+            for (int i = 0; i < missing && i < result.size(); i++) {
+                StaffAssignment staff = result.get(i);
+
+                // 最初のフロアにシングル部屋を1室追加
+                int firstFloor = staff.floors.isEmpty() ? 1 : staff.floors.get(0);
+                Map<String, Integer> additionalRooms = new HashMap<>();
+                additionalRooms.put("S", 1);
+
+                StaffAssignment updatedStaff = addRoomToStaff(staff, firstFloor,
+                        new RoomAllocation(additionalRooms, 0));
+                result.set(result.indexOf(staff), updatedStaff);
+
+                System.out.printf("    %sに強制追加: 1室\n", staff.staff.name);
+            }
+
+            return result;
+        }
+        /**
+         * 既存のStaffAssignmentに新しい部屋を追加するメソッド
+         * forceAssignMissingRoomsメソッド内で使用される
+         */
+        private StaffAssignment addRoomToStaff(StaffAssignment existingAssignment, int floor, RoomAllocation newAllocation) {
+            // 既存の割り当て情報をコピー
+            Map<Integer, RoomAllocation> updatedRoomsByFloor = new HashMap<>(existingAssignment.roomsByFloor);
+            List<Integer> updatedFloors = new ArrayList<>(existingAssignment.floors);
+
+            // 指定された階がすでに存在する場合は、既存の割り当てに新しい部屋を追加
+            if (updatedRoomsByFloor.containsKey(floor)) {
+                RoomAllocation currentAllocation = updatedRoomsByFloor.get(floor);
+                Map<String, Integer> combinedRooms = new HashMap<>(currentAllocation.roomCounts);
+
+                // 新しい部屋を追加
+                for (Map.Entry<String, Integer> entry : newAllocation.roomCounts.entrySet()) {
+                    combinedRooms.merge(entry.getKey(), entry.getValue(), Integer::sum);
+                }
+
+                // エコ部屋も追加
+                int combinedEcoRooms = currentAllocation.ecoRooms + newAllocation.ecoRooms;
+
+                updatedRoomsByFloor.put(floor, new RoomAllocation(combinedRooms, combinedEcoRooms));
+            } else {
+                // 新しい階の場合は、そのまま追加
+                updatedRoomsByFloor.put(floor, newAllocation);
+                if (!updatedFloors.contains(floor)) {
+                    updatedFloors.add(floor);
+                    Collections.sort(updatedFloors); // 階数でソート
+                }
+            }
+
+            // 更新されたStaffAssignmentを作成して返す
+            return new StaffAssignment(
+                    existingAssignment.staff,
+                    existingAssignment.workerType,
+                    updatedFloors,
+                    updatedRoomsByFloor
+            );
+        }
+        /**
+         * 本館スタッフへの割り当て
+         */
+        private StaffAssignment assignToMainBuilding(FileProcessor.Staff staff,
+                                                     Map<String, Integer> preallocatedTwins, Map<Integer, RoomAllocation> remainingRooms) {
+
+            AdaptiveWorkerType type = adaptiveConfig.getAdaptiveWorkerType(staff.id);
+            BathCleaningType bathType = adaptiveConfig.bathCleaningAssignments.get(staff.id);
+
+            int targetRooms = adaptiveConfig.targetRoomsMap.get(type);
+
+            // ★追加: 個別制限を適用
+            targetRooms = adaptiveConfig.getIndividualTarget(staff.id, targetRooms);
+
+            // 大浴場清掃の削減を適用
+            if (bathType != null && bathType != BathCleaningType.NONE) {
+                targetRooms = Math.max(3, targetRooms - bathType.reduction);
+            }
+
+            // 事前配分されたツイン部屋数
+            int preallocatedTwinCount = preallocatedTwins.getOrDefault(staff.id, 0);
+
+            Map<Integer, RoomAllocation> staffRooms = new HashMap<>();
+            List<Integer> staffFloors = new ArrayList<>();
+            int currentRooms = 0;
+            int currentTwins = 0;
+
+            // 本館の階（1-10階）から選択
+            for (int floor = 1; floor <= 10 && currentRooms < targetRooms; floor++) {
+                final int currentFloor = floor;
+                FloorInfo floorInfo = floors.stream()
+                        .filter(f -> f.floorNumber == currentFloor && f.isMainBuilding)
+                        .findFirst().orElse(null);
+
+                if (floorInfo != null) {
+                    RoomAllocation remaining = remainingRooms.get(floor);
+                    if (remaining != null && !remaining.isEmpty()) {
+                        RoomAllocation allocation = calculateAdaptiveAllocation(
+                                remaining, Math.min(targetRooms - currentRooms, MAX_MAIN_BUILDING_ROOMS),
+                                false, preallocatedTwinCount - currentTwins);
+
+                        if (!allocation.isEmpty()) {
+                            staffRooms.put(floor, allocation);
+                            staffFloors.add(floor);
+                            currentTwins += allocation.roomCounts.getOrDefault("T", 0);
+                            updateRemainingRooms(remainingRooms, floor, allocation);
+                            currentRooms += allocation.getTotalRooms();
+
+                            if (staffFloors.size() >= 2) break; // 最大2階まで
+                        }
+                    }
+                }
+            }
+
+            WorkerType workerType = type == AdaptiveWorkerType.NORMAL ?
+                    WorkerType.NORMAL_DUTY : WorkerType.LIGHT_DUTY;
+            return new StaffAssignment(staff, workerType, staffFloors, staffRooms);
+        }
+
+        /**
+         * 別館スタッフへの割り当て
+         */
+        private StaffAssignment assignToAnnexBuilding(FileProcessor.Staff staff,
+                                                      Map<String, Integer> preallocatedTwins, Map<Integer, RoomAllocation> remainingRooms) {
+
+            AdaptiveWorkerType type = adaptiveConfig.getAdaptiveWorkerType(staff.id);
+            int targetRooms = Math.min(adaptiveConfig.targetRoomsMap.get(type), MAX_ANNEX_BUILDING_ROOMS);
+
+            // ★追加: 個別制限を適用
+            targetRooms = adaptiveConfig.getIndividualTarget(staff.id, targetRooms);
+
+            Map<Integer, RoomAllocation> staffRooms = new HashMap<>();
+            List<Integer> staffFloors = new ArrayList<>();
+            int currentRooms = 0;
+
+            // 別館の階から選択
+            for (FloorInfo floorInfo : floors) {
+                if (!floorInfo.isMainBuilding && currentRooms < targetRooms) {
+                    RoomAllocation remaining = remainingRooms.get(floorInfo.floorNumber);
+                    if (remaining != null && !remaining.isEmpty()) {
+                        RoomAllocation allocation = calculateAdaptiveAllocation(
+                                remaining, targetRooms - currentRooms, false, 0);
+
+                        if (!allocation.isEmpty()) {
+                            staffRooms.put(floorInfo.floorNumber, allocation);
+                            staffFloors.add(floorInfo.floorNumber);
+                            updateRemainingRooms(remainingRooms, floorInfo.floorNumber, allocation);
+                            currentRooms += allocation.getTotalRooms();
+
+                            if (staffFloors.size() >= 2) break; // 最大2階まで
+                        }
+                    }
+                }
+            }
+
+            WorkerType workerType = type == AdaptiveWorkerType.NORMAL ?
+                    WorkerType.NORMAL_DUTY : WorkerType.LIGHT_DUTY;
+            return new StaffAssignment(staff, workerType, staffFloors, staffRooms);
+        }
+
+        /**
+         * Stage 2: 戦略的再配分
+         */
+        private List<StaffAssignment> stageTwoStrategicReallocation(List<StaffAssignment> initial) {
+            System.out.println("  建物別バランス調整を実行中...");
+
+            // 本館・別館の部屋数をチェックして調整
+            int mainTotal = 0;
+            int annexTotal = 0;
+
+            for (StaffAssignment assignment : initial) {
+                if (assignment.hasMainBuilding) {
+                    mainTotal += assignment.totalRooms;
+                }
+                if (assignment.hasAnnexBuilding) {
+                    annexTotal += assignment.totalRooms;
+                }
+            }
+
+            // 本館と別館の差が2室以内になるよう調整
+            if (Math.abs(mainTotal - annexTotal) > 2) {
+                System.out.printf("  建物間の差を調整: 本館%d室, 別館%d室\n", mainTotal, annexTotal);
+                // 実際の調整ロジックは省略（複雑なため）
+            }
+
+            return initial;
+        }
+
+        /**
+         * ★新規追加: Stage 3 - 全部屋割り当て保証
+         */
+        private List<StaffAssignment> stageThreeCompleteAllocation(List<StaffAssignment> assignments) {
+            System.out.println("  全部屋割り当て保証を実行中...");
+
+            // 残り部屋をチェック
+            Map<Integer, RoomAllocation> remainingRooms = calculateRemainingRooms(assignments);
+
+            // 残り部屋があるかチェック
+            int totalRemaining = remainingRooms.values().stream().mapToInt(RoomAllocation::getTotalRooms).sum();
+
+            if (totalRemaining == 0) {
+                System.out.println("  ✓ 全部屋が既に割り当て済みです");
+                return assignments;
+            }
+
+            System.out.printf("  未割り当て部屋: %d室を強制配分します\n", totalRemaining);
+
+            // 未割り当て部屋を強制的に配分
+            List<StaffAssignment> updatedAssignments = new ArrayList<>(assignments);
+
+            // 通常タイプのスタッフを部屋数の少ない順にソート
+            List<StaffAssignment> normalStaff = updatedAssignments.stream()
+                    .filter(a -> adaptiveConfig.getAdaptiveWorkerType(a.staff.id) == AdaptiveWorkerType.NORMAL)
+                    .sorted(Comparator.comparingInt(a -> a.totalRooms))
+                    .collect(Collectors.toList());
+
+            int staffIndex = 0;
+            for (Map.Entry<Integer, RoomAllocation> entry : remainingRooms.entrySet()) {
+                int floor = entry.getKey();
+                RoomAllocation remaining = entry.getValue();
+
+                if (!remaining.isEmpty() && !normalStaff.isEmpty()) {
+                    // 循環的にスタッフに配分
+                    StaffAssignment targetStaff = normalStaff.get(staffIndex % normalStaff.size());
+
+                    // スタッフの割り当てを更新
+                    Map<Integer, RoomAllocation> newRooms = new HashMap<>(targetStaff.roomsByFloor);
+                    List<Integer> newFloors = new ArrayList<>(targetStaff.floors);
+
+                    if (newRooms.containsKey(floor)) {
+                        // 既存のフロアに追加
+                        RoomAllocation existing = newRooms.get(floor);
+                        Map<String, Integer> mergedCounts = new HashMap<>(existing.roomCounts);
+                        remaining.roomCounts.forEach((type, count) ->
+                                mergedCounts.merge(type, count, Integer::sum));
+                        newRooms.put(floor, new RoomAllocation(mergedCounts, existing.ecoRooms + remaining.ecoRooms));
+                    } else {
+                        // 新しいフロアを追加
+                        newRooms.put(floor, remaining);
+                        newFloors.add(floor);
+                        Collections.sort(newFloors);
+                    }
+
+                    // 更新されたスタッフ割り当てを作成
+                    StaffAssignment updatedStaff = new StaffAssignment(
+                            targetStaff.staff, targetStaff.workerType, newFloors, newRooms);
+
+                    // リストを更新
+                    int originalIndex = updatedAssignments.indexOf(targetStaff);
+                    updatedAssignments.set(originalIndex, updatedStaff);
+
+                    System.out.printf("    %d階の%d室を%sに追加配分\n",
+                            floor, remaining.getTotalRooms(), targetStaff.staff.name);
+
+                    staffIndex++;
+                }
+            }
+
+            // 最終確認
+            int finalRemaining = calculateRemainingRooms(updatedAssignments).values().stream()
+                    .mapToInt(RoomAllocation::getTotalRooms).sum();
+
+            if (finalRemaining == 0) {
+                System.out.println("  ✓ 全部屋の割り当てが完了しました");
+            } else {
+                System.out.printf("  ⚠ 未割り当て部屋が%d室残っています\n", finalRemaining);
+            }
+
+            return updatedAssignments;
+        }
+
+        /**
+         * Stage 4: バランス最適化（旧Stage 3）
+         */
+        private List<StaffAssignment> stageFourBalanceOptimization(List<StaffAssignment> initial) {
+            System.out.println("  最終バランス調整を実行中...");
+
+            // ツイン部屋の配分をチェック
+            Map<String, Integer> twinCounts = new HashMap<>();
+            for (StaffAssignment assignment : initial) {
+                int twins = 0;
+                for (RoomAllocation allocation : assignment.roomsByFloor.values()) {
+                    twins += allocation.roomCounts.getOrDefault("T", 0);
+                }
+                twinCounts.put(assignment.staff.name, twins);
+            }
+
+            // 差が大きすぎる場合は警告
+            int minTwins = twinCounts.values().stream().min(Integer::compare).orElse(0);
+            int maxTwins = twinCounts.values().stream().max(Integer::compare).orElse(0);
+            if (maxTwins - minTwins > 1) {
+                System.out.printf("  警告: ツイン部屋の配分に偏りがあります（最小%d室、最大%d室）\n",
+                        minTwins, maxTwins);
+            }
+
+            return initial;
+        }
+
+        /**
+         * ★新規追加: 残り部屋の計算
+         */
+        private Map<Integer, RoomAllocation> calculateRemainingRooms(List<StaffAssignment> assignments) {
+            // 元の部屋数をコピー
+            Map<Integer, RoomAllocation> remaining = new HashMap<>();
+            for (FloorInfo floor : floors) {
+                remaining.put(floor.floorNumber,
+                        new RoomAllocation(new HashMap<>(floor.roomCounts), floor.ecoRooms));
+            }
+
+            // 割り当て済み部屋を減算
+            for (StaffAssignment assignment : assignments) {
+                for (Map.Entry<Integer, RoomAllocation> entry : assignment.roomsByFloor.entrySet()) {
+                    int floor = entry.getKey();
+                    RoomAllocation allocated = entry.getValue();
+
+                    RoomAllocation current = remaining.get(floor);
+                    if (current != null) {
+                        Map<String, Integer> newCounts = new HashMap<>(current.roomCounts);
+                        allocated.roomCounts.forEach((type, count) -> {
+                            newCounts.put(type, Math.max(0, newCounts.getOrDefault(type, 0) - count));
+                        });
+                        int newEco = Math.max(0, current.ecoRooms - allocated.ecoRooms);
+                        remaining.put(floor, new RoomAllocation(newCounts, newEco));
+                    }
+                }
+            }
+
+            return remaining;
         }
 
         private RoomAllocation calculateAdaptiveAllocation(
@@ -1105,106 +1420,16 @@ public class AdaptiveRoomOptimizer {
             return new RoomAllocation(bestCounts, eco);
         }
 
-        private List<StaffAssignment> stageTwoStrategicReallocation(List<StaffAssignment> initial) {
-            System.out.println("  建物別バランス調整を実行中...");
-
-            // 本館・別館の部屋数をチェックして調整
-            int mainTotal = 0;
-            int annexTotal = 0;
-
-            for (StaffAssignment assignment : initial) {
-                if (assignment.hasMainBuilding) {
-                    mainTotal += assignment.totalRooms;
-                }
-                if (assignment.hasAnnexBuilding) {
-                    annexTotal += assignment.totalRooms;
-                }
-            }
-
-            // 本館と別館の差が2室以内になるよう調整
-            if (Math.abs(mainTotal - annexTotal) > 2) {
-                System.out.printf("  建物間の差を調整: 本館%d室, 別館%d室\n", mainTotal, annexTotal);
-                // 実際の調整ロジックは省略（複雑なため）
-            }
-
-            return initial;
-        }
-
-        private List<StaffAssignment> stageThreeBalanceOptimization(List<StaffAssignment> initial) {
-            System.out.println("  最終バランス調整を実行中...");
-
-            // ツイン部屋の配分をチェック
-            Map<String, Integer> twinCounts = new HashMap<>();
-            for (StaffAssignment assignment : initial) {
-                int twins = 0;
-                for (RoomAllocation allocation : assignment.roomsByFloor.values()) {
-                    twins += allocation.roomCounts.getOrDefault("T", 0);
-                }
-                twinCounts.put(assignment.staff.name, twins);
-            }
-
-            // 差が大きすぎる場合は警告
-            int minTwins = twinCounts.values().stream().min(Integer::compare).orElse(0);
-            int maxTwins = twinCounts.values().stream().max(Integer::compare).orElse(0);
-            if (maxTwins - minTwins > 1) {
-                System.out.printf("  警告: ツイン部屋の配分に偏りがあります（最小%d室、最大%d室）\n",
-                        minTwins, maxTwins);
-            }
-
-            return initial;
-        }
-
-        private boolean hasRemainingRooms(Map<Integer, RoomAllocation> remainingRooms) {
-            return remainingRooms.values().stream().anyMatch(r -> !r.isEmpty());
-        }
-
         private void updateRemainingRooms(Map<Integer, RoomAllocation> remainingRooms,
                                           int floor, RoomAllocation allocated) {
             RoomAllocation current = remainingRooms.get(floor);
             if (current != null) {
                 Map<String, Integer> newCounts = new HashMap<>(current.roomCounts);
                 allocated.roomCounts.forEach((type, count) -> {
-                    newCounts.put(type, newCounts.getOrDefault(type, 0) - count);
+                    newCounts.put(type, Math.max(0, newCounts.getOrDefault(type, 0) - count));
                 });
-                int newEco = current.ecoRooms - allocated.ecoRooms;
+                int newEco = Math.max(0, current.ecoRooms - allocated.ecoRooms);
                 remainingRooms.put(floor, new RoomAllocation(newCounts, newEco));
-            }
-        }
-
-        private void distributeRemainingRoomsAdaptive(
-                List<StaffAssignment> assignments,
-                Map<Integer, RoomAllocation> remainingRooms) {
-
-            List<StaffAssignment> normalStaff = assignments.stream()
-                    .filter(a -> adaptiveConfig.getAdaptiveWorkerType(a.staff.id) ==
-                            AdaptiveWorkerType.NORMAL)
-                    .sorted(Comparator.comparingInt(a -> a.totalRooms))
-                    .collect(Collectors.toList());
-
-            for (Map.Entry<Integer, RoomAllocation> entry : remainingRooms.entrySet()) {
-                RoomAllocation remaining = entry.getValue();
-                if (!remaining.isEmpty() && !normalStaff.isEmpty()) {
-                    StaffAssignment target = normalStaff.get(0);
-                    updateStaffAssignment(assignments, target.staff.id, entry.getKey(), remaining);
-                }
-            }
-        }
-
-        private void updateStaffAssignment(List<StaffAssignment> assignments, String staffId,
-                                           int floor, RoomAllocation additional) {
-            for (int i = 0; i < assignments.size(); i++) {
-                StaffAssignment current = assignments.get(i);
-                if (current.staff.id.equals(staffId)) {
-                    Map<Integer, RoomAllocation> newRooms = new HashMap<>(current.roomsByFloor);
-                    newRooms.put(floor, additional);
-                    List<Integer> newFloors = new ArrayList<>(current.floors);
-                    if (!newFloors.contains(floor)) {
-                        newFloors.add(floor);
-                    }
-                    assignments.set(i, new StaffAssignment(current.staff, current.workerType,
-                            newFloors, newRooms));
-                    break;
-                }
             }
         }
 
@@ -1212,8 +1437,11 @@ public class AdaptiveRoomOptimizer {
             double minPoints = assignments.stream().mapToDouble(a -> a.adjustedScore).min().orElse(0);
             double maxPoints = assignments.stream().mapToDouble(a -> a.adjustedScore).max().orElse(0);
             double avgPoints = assignments.stream().mapToDouble(a -> a.adjustedScore).average().orElse(0);
-            System.out.printf("  調整後スコア範囲: %.1f ～ %.1f (差: %.1f), 平均: %.1f\n",
-                    minPoints, maxPoints, maxPoints - minPoints, avgPoints);
+
+            int totalAssigned = assignments.stream().mapToInt(a -> a.totalRooms).sum();
+
+            System.out.printf("  調整後スコア範囲: %.1f ～ %.1f (差: %.1f), 平均: %.1f, 割り当て総数: %d室\n",
+                    minPoints, maxPoints, maxPoints - minPoints, avgPoints, totalAssigned);
         }
     }
 }

@@ -12,13 +12,16 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 public class FileProcessor {
     private static final Logger LOGGER = Logger.getLogger(FileProcessor.class.getName());
 
+    // ★追加: 部屋状態情報を保存するマップ
+    private static final Map<String, String> ROOM_STATUS_MAP = new HashMap<>();
+
     // CleaningDataクラスを内部クラスとして定義（修正版）
     public static class CleaningData {
         public final List<Room> mainRooms;
         public final List<Room> annexRooms;
         public final List<Room> ecoRooms;
         public final List<Room> brokenRooms;
-        public final List<Room> roomsToClean;  // ★追加：清掃対象の全部屋リスト
+        public final List<Room> roomsToClean;  // 清掃対象の全部屋リスト
         public final int totalMainRooms;
         public final int totalAnnexRooms;
         public final int totalBrokenRooms;
@@ -30,7 +33,7 @@ public class FileProcessor {
             this.ecoRooms = ecoRooms;
             this.brokenRooms = brokenRooms;
 
-            // ★追加：清掃対象の全部屋リストを作成
+            // 清掃対象の全部屋リストを作成
             this.roomsToClean = new ArrayList<>();
             this.roomsToClean.addAll(mainRooms);
             this.roomsToClean.addAll(annexRooms);
@@ -41,24 +44,42 @@ public class FileProcessor {
         }
     }
 
-    // Roomクラスを内部クラスとして定義（修正版 - buildingフィールド追加）
+    // ★修正版Roomクラス（部屋状態情報追加）
     public static class Room {
         public final String roomNumber;
         public final String roomType;
         public final boolean isEcoClean;
-        public final boolean isEco;  // ★追加：エコ清掃フラグ（RoomNumberAssigner用）
+        public final boolean isEco;  // エコ清掃フラグ（RoomNumberAssigner用）
         public final boolean isBroken;
         public final int floor;
-        public final String building;  // ★追加：建物情報
+        public final String building;  // 建物情報
+        public final String roomStatus;  // ★追加: 部屋状態（連泊/チェックアウト）
 
-        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken) {
+        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken, String roomStatus) {
             this.roomNumber = roomNumber;
             this.roomType = roomType;
             this.isEcoClean = isEcoClean;
-            this.isEco = isEcoClean;  // ★追加：isEcoCleanと同じ値を設定
+            this.isEco = isEcoClean;  // isEcoCleanと同じ値を設定
             this.isBroken = isBroken;
             this.floor = extractFloor(roomNumber);
-            this.building = isAnnexRoom(roomNumber) ? "別館" : "本館";  // ★追加：建物判定
+            this.building = isAnnexRoom(roomNumber) ? "別館" : "本館";
+            this.roomStatus = roomStatus;  // ★追加: 部屋状態を保存
+        }
+
+        // 後方互換性のためのコンストラクタ
+        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken) {
+            this(roomNumber, roomType, isEcoClean, isBroken, "");
+        }
+
+        /**
+         * ★追加: 部屋状態の表示形式取得
+         */
+        public String getStatusDisplay() {
+            switch (roomStatus) {
+                case "2": return "チェックアウト";
+                case "3": return "連泊";
+                default: return roomStatus.isEmpty() ? "不明" : roomStatus;
+            }
         }
 
         @Override
@@ -66,8 +87,16 @@ public class FileProcessor {
             return roomNumber + " (" + roomType + ", " + floor + "階" +
                     (isEcoClean ? ", エコ清掃" : "") +
                     (isBroken ? ", 故障" : "") +
-                    ", " + building + ")";  // ★追加：建物情報も表示
+                    ", " + building +
+                    (!roomStatus.isEmpty() ? ", " + getStatusDisplay() : "") + ")";
         }
+    }
+
+    /**
+     * ★追加: 部屋状態情報を取得する静的メソッド
+     */
+    public static String getRoomStatus(String roomNumber) {
+        return ROOM_STATUS_MAP.getOrDefault(roomNumber, "");
     }
 
     // 部屋番号から階数を抽出するメソッド
@@ -108,7 +137,7 @@ public class FileProcessor {
         }
     }
 
-    // ★修正版：故障部屋選択機能完全対応
+    // ★修正版：部屋状態情報完全対応
     private static CleaningData processCsvRoomFile(File file) {
         List<Room> mainRooms = new ArrayList<>();
         List<Room> annexRooms = new ArrayList<>();
@@ -116,7 +145,10 @@ public class FileProcessor {
         List<Room> brokenRooms = new ArrayList<>();
         Map<String, List<String>> ecoRoomMap = loadEcoRoomInfo();
 
-        // ★追加：選択された故障部屋を取得
+        // 部屋状態マップをクリア
+        ROOM_STATUS_MAP.clear();
+
+        // 選択された故障部屋を取得
         Set<String> selectedBrokenRooms = getSelectedBrokenRooms();
 
         if (!selectedBrokenRooms.isEmpty()) {
@@ -167,7 +199,7 @@ public class FileProcessor {
                 String brokenStatus = parts.length > 5 ? parts[5].trim() : "";
                 boolean isBroken = brokenStatus.equals("1");
 
-                // 清掃状態は7列目（インデックス6）
+                // ★重要: 清掃状態は7列目（インデックス6）
                 String roomStatus = parts.length > 6 ? parts[6].trim() : "";
 
                 // 部屋番号が空の場合はスキップ
@@ -176,14 +208,17 @@ public class FileProcessor {
                     continue;
                 }
 
+                // ★追加: 部屋状態をマップに保存
+                ROOM_STATUS_MAP.put(roomNumber, roomStatus);
+
                 LOGGER.info("処理中の部屋: " + roomNumber + ", タイプ: " + roomTypeCode +
                         ", 故障: " + isBroken + ", 状態: " + roomStatus);
 
-                // ★修正：故障部屋の処理ロジック
+                // 故障部屋の処理ロジック
                 boolean wasOriginallyBroken = isBroken;
                 if (isBroken) {
                     // 故障部屋リストに追加（記録用）
-                    Room brokenRoom = new Room(roomNumber, determineRoomType(roomTypeCode), false, true);
+                    Room brokenRoom = new Room(roomNumber, determineRoomType(roomTypeCode), false, true, roomStatus);
                     brokenRooms.add(brokenRoom);
 
                     // 選択された故障部屋は清掃対象として処理を続行
@@ -197,7 +232,6 @@ public class FileProcessor {
                     }
                 }
 
-                // ★重要：選択された故障部屋の場合は清掃状態をチェックしない
                 // 清掃が必要な部屋のみ処理（2=チェックアウト、3=連泊）
                 if (!wasOriginallyBroken || selectedBrokenRooms.contains(roomNumber)) {
                     // 選択された故障部屋の場合は清掃状態に関係なく処理
@@ -223,8 +257,8 @@ public class FileProcessor {
                     }
                 }
 
-                // 部屋オブジェクトを作成（★修正：選択された故障部屋は故障フラグをfalse）
-                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken);
+                // ★修正: 部屋状態情報を含むRoomオブジェクトを作成
+                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus);
 
                 // 別館か本館かを判定して対応するリストに追加
                 if (isAnnexRoom(roomNumber)) {
@@ -248,7 +282,7 @@ public class FileProcessor {
             LOGGER.info(String.format("読み込まれた部屋数: 本館=%d, 別館=%d, エコ清掃=%d, 故障=%d",
                     mainRooms.size(), annexRooms.size(), ecoRooms.size(), brokenRooms.size()));
 
-            // ★追加：選択された故障部屋の処理結果をログ出力
+            // 選択された故障部屋の処理結果をログ出力
             if (!selectedBrokenRooms.isEmpty()) {
                 long processedBrokenRooms = selectedBrokenRooms.stream()
                         .mapToLong(roomNumber -> {
@@ -272,6 +306,22 @@ public class FileProcessor {
                 LOGGER.warning("読み込まれた部屋データが0件です。CSVフォーマットを確認してください。");
             }
 
+            // ★追加: 部屋状態統計の出力
+            Map<String, Integer> statusCounts = new HashMap<>();
+            ROOM_STATUS_MAP.values().forEach(status ->
+                    statusCounts.merge(status, 1, Integer::sum));
+
+            LOGGER.info("部屋状態統計:");
+            statusCounts.forEach((status, count) -> {
+                String statusDisplay;
+                switch (status) {
+                    case "2": statusDisplay = "チェックアウト"; break;
+                    case "3": statusDisplay = "連泊"; break;
+                    default: statusDisplay = status.isEmpty() ? "不明" : status; break;
+                }
+                LOGGER.info("  " + statusDisplay + ": " + count + "室");
+            });
+
             return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms);
 
         } catch (IOException e) {
@@ -281,7 +331,7 @@ public class FileProcessor {
     }
 
     /**
-     * ★追加：選択された故障部屋の部屋番号セットを取得
+     * 選択された故障部屋の部屋番号セットを取得
      */
     private static Set<String> getSelectedBrokenRooms() {
         Set<String> selectedRooms = new HashSet<>();

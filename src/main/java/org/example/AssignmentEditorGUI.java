@@ -66,55 +66,80 @@ public class AssignmentEditorGUI extends JFrame {
             this.name = assignment.staff.name;
             this.floors = new ArrayList<>(assignment.floors);
             this.roomsByFloor = new HashMap<>(assignment.roomsByFloor);
-            this.totalRooms = assignment.totalRooms;
-            this.totalPoints = assignment.totalPoints;
-            this.adjustedScore = assignment.adjustedScore;
-            this.hasMainBuilding = assignment.hasMainBuilding;
-            this.hasAnnexBuilding = assignment.hasAnnexBuilding;
-            this.bathCleaningType = bathType;
             this.detailedRoomsByFloor = new HashMap<>();
+            this.bathCleaningType = bathType;
+            this.hasMainBuilding = assignment.floors.stream().anyMatch(f -> f <= 10);
+            this.hasAnnexBuilding = assignment.floors.stream().anyMatch(f -> f > 10);
+
+            calculatePoints();
+        }
+
+        private void calculatePoints() {
+            double totalPoints = 0;
+            int totalRooms = 0;
+
+            for (AdaptiveRoomOptimizer.RoomAllocation allocation : roomsByFloor.values()) {
+                for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
+                    String type = entry.getKey();
+                    int count = entry.getValue();
+                    totalPoints += ROOM_POINTS.getOrDefault(type, 1.0) * count;
+                    totalRooms += count;
+                }
+                totalPoints += ROOM_POINTS.get("ECO") * allocation.ecoRooms;
+                totalRooms += allocation.ecoRooms;
+            }
+
+            // 大浴場清掃のポイント調整
+            if (bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                totalPoints += bathCleaningType.reduction;
+            }
+
+            this.totalPoints = totalPoints;
+            this.totalRooms = totalRooms;
+            this.adjustedScore = totalPoints;
         }
 
         String getWorkerTypeDisplay() {
-            if (bathCleaningType != null && bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+            if (bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
                 return bathCleaningType.displayName;
             }
             return "通常";
         }
 
         String getDetailedRoomDisplay() {
-            if (detailedRoomsByFloor.isEmpty()) {
-                return getRoomDisplay();
-            }
-
             StringBuilder sb = new StringBuilder();
-            List<Integer> sortedFloors = new ArrayList<>(detailedRoomsByFloor.keySet());
+            List<Integer> sortedFloors = new ArrayList<>(floors);
             Collections.sort(sortedFloors);
 
             for (int i = 0; i < sortedFloors.size(); i++) {
-                int floor = sortedFloors.get(i);
-                List<FileProcessor.Room> rooms = detailedRoomsByFloor.get(floor);
-
                 if (i > 0) sb.append(" ");
-                sb.append(getFloorDisplayName(floor)).append(": ");
 
-                rooms.sort(Comparator.comparing(r -> r.roomNumber));
+                int floor = sortedFloors.get(i);
+                sb.append(getFloorDisplayName(floor)).append("(");
 
-                Map<String, List<FileProcessor.Room>> byType = rooms.stream()
-                        .collect(Collectors.groupingBy(r -> r.roomType));
-
-                boolean first = true;
-                for (Map.Entry<String, List<FileProcessor.Room>> entry : byType.entrySet()) {
-                    if (!first) sb.append(", ");
-                    first = false;
-
-                    List<String> roomNumbers = entry.getValue().stream()
-                            .map(r -> r.roomNumber)
+                // 詳細部屋情報がある場合
+                if (detailedRoomsByFloor.containsKey(floor)) {
+                    List<FileProcessor.Room> rooms = detailedRoomsByFloor.get(floor);
+                    List<String> roomNumbers = rooms.stream()
+                            .map(room -> room.roomNumber)
+                            .sorted()
                             .collect(Collectors.toList());
-
-                    sb.append(String.join(",", roomNumbers))
-                            .append("(").append(entry.getKey()).append(")");
+                    sb.append(String.join(",", roomNumbers));
+                } else {
+                    // 基本情報のみ
+                    AdaptiveRoomOptimizer.RoomAllocation allocation = roomsByFloor.get(floor);
+                    if (allocation != null) {
+                        List<String> roomInfo = new ArrayList<>();
+                        for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
+                            roomInfo.add(entry.getKey() + ":" + entry.getValue());
+                        }
+                        if (allocation.ecoRooms > 0) {
+                            roomInfo.add("エコ:" + allocation.ecoRooms);
+                        }
+                        sb.append(String.join(" ", roomInfo));
+                    }
                 }
+                sb.append(")");
             }
 
             return sb.toString();
@@ -172,7 +197,8 @@ public class AssignmentEditorGUI extends JFrame {
 
         @Override
         public String toString() {
-            String floorName = floor <= 20 ? floor + "階" : "別館" + (floor - 20) + "階";
+            String floorName = floor <= 20 ?
+                    floor + "階" : "別館" + (floor - 20) + "階";
             return room.roomNumber + " (" + room.roomType + ") - " + floorName;
         }
     }
@@ -330,6 +356,144 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
+     * ★修正版: サマリーパネルの作成（エコ清掃部屋数を常に表示）
+     */
+    private JPanel createSummaryPanel() {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        panel.setBorder(BorderFactory.createTitledBorder("サマリー"));
+
+        int actualTotalRooms = 0;
+        int actualStaffCount = 0;
+
+        if (processingResult.cleaningDataObj != null) {
+            actualTotalRooms = processingResult.cleaningDataObj.totalMainRooms +
+                    processingResult.cleaningDataObj.totalAnnexRooms;
+
+            if (processingResult.optimizationResult != null &&
+                    processingResult.optimizationResult.config != null) {
+                actualStaffCount = processingResult.optimizationResult.config.availableStaff.size();
+            } else {
+                actualStaffCount = staffDataMap.size();
+            }
+        } else {
+            actualTotalRooms = staffDataMap.values().stream()
+                    .mapToInt(s -> s.totalRooms)
+                    .sum();
+            actualStaffCount = staffDataMap.size();
+        }
+
+        double avgRooms = actualStaffCount > 0 ?
+                (double) actualTotalRooms / actualStaffCount : 0;
+
+        panel.add(new JLabel(String.format("総部屋数: %d | ", actualTotalRooms)));
+        panel.add(new JLabel(String.format("スタッフ数: %d | ", actualStaffCount)));
+        panel.add(new JLabel(String.format("平均部屋数: %.1f", avgRooms)));
+
+        // 残し部屋数表示
+        if (!excludedRooms.isEmpty()) {
+            panel.add(new JLabel(String.format(" | 残し部屋: %d室", excludedRooms.size())));
+        }
+
+        if (staffDataMap.size() != actualStaffCount) {
+            panel.add(new JLabel(String.format(" (割当済: %d人)", staffDataMap.size())));
+        }
+
+        if (processingResult.cleaningDataObj != null) {
+            panel.add(new JLabel(" | "));
+
+            // ★修正: エコ清掃部屋の建物別集計
+            int mainEcoRooms = countEcoRoomsInBuilding(true);   // 本館のエコ部屋数
+            int annexEcoRooms = countEcoRoomsInBuilding(false); // 別館のエコ部屋数
+
+            // ★修正: 本館表示（エコ部屋数を内訳として常に表示）
+            panel.add(new JLabel(String.format("本館: %d室（内エコ；%d）",
+                    processingResult.cleaningDataObj.totalMainRooms, mainEcoRooms)));
+
+            // ★修正: 別館表示（エコ部屋数を内訳として常に表示）
+            panel.add(new JLabel(String.format(" 別館: %d室（内エコ；%d）",
+                    processingResult.cleaningDataObj.totalAnnexRooms, annexEcoRooms)));
+
+            // 故障部屋数表示
+            if (processingResult.cleaningDataObj.totalBrokenRooms > 0) {
+                panel.add(new JLabel(String.format(" 故障: %d室",
+                        processingResult.cleaningDataObj.totalBrokenRooms)));
+            }
+        }
+
+        return panel;
+    }
+
+    /**
+     * ★追加: エコ清掃部屋を建物別に集計するメソッド
+     * @param isMainBuilding true=本館、false=別館
+     * @return 指定建物のエコ清掃部屋数
+     */
+    private int countEcoRoomsInBuilding(boolean isMainBuilding) {
+        if (processingResult.cleaningDataObj == null ||
+                processingResult.cleaningDataObj.ecoRooms == null) {
+            return 0;
+        }
+
+        int count = 0;
+        for (FileProcessor.Room ecoRoom : processingResult.cleaningDataObj.ecoRooms) {
+            // 部屋番号から階数を抽出（例：201 → 2階）
+            int floor = extractFloorFromRoomNumber(ecoRoom.roomNumber);
+
+            // 建物判定（10階以下は本館、11階以上は別館）
+            boolean roomIsMainBuilding = (floor <= 10);
+
+            if (roomIsMainBuilding == isMainBuilding) {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /**
+     * ★追加: 部屋番号から階数を抽出するヘルパーメソッド
+     * @param roomNumber 部屋番号（例："201", "1201"）
+     * @return 階数（例：2, 12）
+     */
+    private int extractFloorFromRoomNumber(String roomNumber) {
+        try {
+            // 数字以外を削除
+            String numericPart = roomNumber.replaceAll("[^0-9]", "");
+
+            if (numericPart.isEmpty()) {
+                return 1; // デフォルト
+            }
+
+            // 3桁の数字（本館）- 例：201 → 2階
+            if (numericPart.length() == 3) {
+                return Integer.parseInt(numericPart.substring(0, 1));
+            }
+            // 4桁の数字で10で始まる場合（本館10階）- 例：1001 → 10階
+            else if (numericPart.length() == 4 && numericPart.startsWith("10")) {
+                return 10;
+            }
+            // 4桁の数字（別館）- 例：1201 → 12階
+            else if (numericPart.length() == 4) {
+                return Integer.parseInt(numericPart.substring(0, 2));
+            }
+            // その他の場合
+            else if (numericPart.length() >= 2) {
+                // 最初の1〜2桁を階数として取得
+                if (numericPart.length() >= 3) {
+                    return Integer.parseInt(numericPart.substring(0, numericPart.length() - 2));
+                } else {
+                    return Integer.parseInt(numericPart.substring(0, 1));
+                }
+            }
+
+            return 1; // デフォルト
+        } catch (NumberFormatException e) {
+            // エラー時のデフォルト
+            return 1;
+        }
+    }
+
+    /**
      * ★修正: 修正版ボタンパネル作成（残し部屋設定ボタン追加）
      */
     private JPanel createNewButtonPanel() {
@@ -434,445 +598,24 @@ public class AssignmentEditorGUI extends JFrame {
         refreshTable();
     }
 
-    /**
-     * 部屋詳細編集ダイアログ
-     */
-    private void showRoomDetailEditor(String staffName) {
-        StaffData staffData = staffDataMap.get(staffName);
-        if (staffData == null) return;
+    protected void assignRoomNumbers() {
+        if (roomAssigner == null) return;
 
-        JDialog dialog = new JDialog(this, staffName + " - 部屋詳細編集", true);
-        dialog.setLayout(new BorderLayout());
+        Map<String, List<FileProcessor.Room>> assignments =
+                roomAssigner.assignDetailedRooms(currentAssignments);
 
-        JPanel mainPanel = new JPanel(new BorderLayout());
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        for (Map.Entry<String, List<FileProcessor.Room>> entry : assignments.entrySet()) {
+            String staffName = entry.getKey();
+            List<FileProcessor.Room> rooms = entry.getValue();
 
-        JPanel infoPanel = new JPanel(new GridLayout(2, 1));
-        infoPanel.setBorder(BorderFactory.createTitledBorder("スタッフ情報"));
-        infoPanel.add(new JLabel("スタッフ: " + staffName));
-        infoPanel.add(new JLabel("作業者タイプ: " + staffData.getWorkerTypeDisplay()));
-        mainPanel.add(infoPanel, BorderLayout.NORTH);
+            StaffData staffData = staffDataMap.get(staffName);
+            if (staffData != null) {
+                Map<Integer, List<FileProcessor.Room>> byFloor = rooms.stream()
+                        .collect(Collectors.groupingBy(r -> r.floor));
 
-        JPanel roomPanel = new JPanel(new BorderLayout());
-        roomPanel.setBorder(BorderFactory.createTitledBorder("担当部屋"));
-
-        DefaultListModel<RoomListItem> listModel = new DefaultListModel<>();
-
-        if (!staffData.detailedRoomsByFloor.isEmpty()) {
-            List<Integer> sortedFloors = new ArrayList<>(staffData.detailedRoomsByFloor.keySet());
-            Collections.sort(sortedFloors);
-
-            for (int floor : sortedFloors) {
-                List<FileProcessor.Room> rooms = staffData.detailedRoomsByFloor.get(floor);
-                for (FileProcessor.Room room : rooms) {
-                    listModel.addElement(new RoomListItem(room, floor));
-                }
+                staffData.detailedRoomsByFloor = byFloor;
             }
         }
-
-        JList<RoomListItem> roomList = new JList<>(listModel);
-        roomList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        roomList.setCellRenderer(new RoomListCellRenderer());
-
-        JScrollPane scrollPane = new JScrollPane(roomList);
-        scrollPane.setPreferredSize(new Dimension(400, 300));
-        roomPanel.add(scrollPane, BorderLayout.CENTER);
-
-        JPanel roomButtonPanel = new JPanel(new FlowLayout());
-
-        JButton moveSelectedButton = new JButton("選択した部屋を移動");
-        moveSelectedButton.addActionListener(e -> {
-            List<RoomListItem> selected = roomList.getSelectedValuesList();
-            if (!selected.isEmpty()) {
-                moveSelectedRooms(staffName, selected, dialog);
-            }
-        });
-        roomButtonPanel.add(moveSelectedButton);
-
-        JButton swapRoomButton = new JButton("部屋交換");
-        swapRoomButton.addActionListener(e -> {
-            List<RoomListItem> selected = roomList.getSelectedValuesList();
-            if (selected.size() == 1) {
-                showRoomSwapDialog(staffName, selected.get(0), dialog);
-            } else {
-                JOptionPane.showMessageDialog(dialog,
-                        "交換する部屋を1つ選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
-            }
-        });
-        roomButtonPanel.add(swapRoomButton);
-
-        roomPanel.add(roomButtonPanel, BorderLayout.SOUTH);
-        mainPanel.add(roomPanel, BorderLayout.CENTER);
-
-        JPanel buttonPanel = new JPanel(new FlowLayout());
-
-        JButton optimizeButton = new JButton("並び替え");
-        optimizeButton.addActionListener(e -> {
-            optimizeRoomProximity(staffName);
-            dialog.dispose();
-            refreshTable();
-        });
-        buttonPanel.add(optimizeButton);
-
-        JButton closeButton = new JButton("閉じる");
-        closeButton.addActionListener(e -> dialog.dispose());
-        buttonPanel.add(closeButton);
-
-        mainPanel.add(buttonPanel, BorderLayout.SOUTH);
-
-        dialog.add(mainPanel);
-        dialog.setSize(500, 500);
-        dialog.setLocationRelativeTo(this);
-        dialog.setVisible(true);
-    }
-
-    private void moveSelectedRooms(String fromStaff, List<RoomListItem> rooms, JDialog parentDialog) {
-        String[] staffNames = staffDataMap.keySet().stream()
-                .filter(name -> !name.equals(fromStaff))
-                .sorted()
-                .toArray(String[]::new);
-
-        String toStaff = (String) JOptionPane.showInputDialog(
-                parentDialog,
-                "移動先スタッフを選択:",
-                "部屋移動",
-                JOptionPane.QUESTION_MESSAGE,
-                null,
-                staffNames,
-                staffNames[0]
-        );
-
-        if (toStaff != null) {
-            for (RoomListItem item : rooms) {
-                moveSpecificRoom(fromStaff, toStaff, item.room, item.floor);
-            }
-
-            statusLabel.setText(String.format("%sから%sへ%d室を移動しました",
-                    fromStaff, toStaff, rooms.size()));
-
-            parentDialog.dispose();
-            refreshTable();
-        }
-    }
-
-    private void showRoomSwapDialog(String staff1, RoomListItem room1, JDialog parentDialog) {
-        JDialog dialog = new JDialog(parentDialog, "部屋交換", true);
-        dialog.setLayout(new BorderLayout());
-
-        JPanel panel = new JPanel(new GridLayout(3, 2, 10, 10));
-        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
-
-        panel.add(new JLabel("交換元:"));
-        panel.add(new JLabel(staff1 + " - " + room1));
-
-        panel.add(new JLabel("交換先スタッフ:"));
-        String[] otherStaff = staffDataMap.keySet().stream()
-                .filter(name -> !name.equals(staff1))
-                .sorted()
-                .toArray(String[]::new);
-        JComboBox<String> staffCombo = new JComboBox<>(otherStaff);
-        panel.add(staffCombo);
-
-        panel.add(new JLabel("交換する部屋:"));
-        JComboBox<RoomListItem> roomCombo = new JComboBox<>();
-        panel.add(roomCombo);
-
-        staffCombo.addActionListener(e -> {
-            String selected = (String) staffCombo.getSelectedItem();
-            if (selected != null) {
-                updateRoomCombo(roomCombo, selected, room1.room.roomType);
-            }
-        });
-
-        if (otherStaff.length > 0) {
-            updateRoomCombo(roomCombo, otherStaff[0], room1.room.roomType);
-        }
-
-        dialog.add(panel, BorderLayout.CENTER);
-
-        JPanel buttonPanel = new JPanel(new FlowLayout());
-
-        JButton swapButton = new JButton("交換");
-        swapButton.addActionListener(e -> {
-            String staff2 = (String) staffCombo.getSelectedItem();
-            RoomListItem room2 = (RoomListItem) roomCombo.getSelectedItem();
-
-            if (staff2 != null && room2 != null) {
-                swapRooms(staff1, room1, staff2, room2);
-                dialog.dispose();
-                parentDialog.dispose();
-                refreshTable();
-            }
-        });
-        buttonPanel.add(swapButton);
-
-        JButton cancelButton = new JButton("キャンセル");
-        cancelButton.addActionListener(e -> dialog.dispose());
-        buttonPanel.add(cancelButton);
-
-        dialog.add(buttonPanel, BorderLayout.SOUTH);
-
-        dialog.setSize(400, 200);
-        dialog.setLocationRelativeTo(parentDialog);
-        dialog.setVisible(true);
-    }
-
-    private void updateRoomCombo(JComboBox<RoomListItem> combo, String staffName, String roomType) {
-        combo.removeAllItems();
-        StaffData staff = staffDataMap.get(staffName);
-
-        if (staff != null && !staff.detailedRoomsByFloor.isEmpty()) {
-            for (Map.Entry<Integer, List<FileProcessor.Room>> entry : staff.detailedRoomsByFloor.entrySet()) {
-                int floor = entry.getKey();
-                for (FileProcessor.Room room : entry.getValue()) {
-                    if (room.roomType.equals(roomType)) {
-                        combo.addItem(new RoomListItem(room, floor));
-                    }
-                }
-            }
-        }
-    }
-
-    private void moveSpecificRoom(String fromStaffName, String toStaffName,
-                                  FileProcessor.Room room, int floor) {
-        StaffData fromStaff = staffDataMap.get(fromStaffName);
-        StaffData toStaff = staffDataMap.get(toStaffName);
-
-        if (fromStaff == null || toStaff == null) return;
-
-        List<FileProcessor.Room> fromRooms = fromStaff.detailedRoomsByFloor.get(floor);
-        if (fromRooms != null) {
-            fromRooms.remove(room);
-            if (fromRooms.isEmpty()) {
-                fromStaff.detailedRoomsByFloor.remove(floor);
-            }
-        }
-
-        toStaff.detailedRoomsByFloor.computeIfAbsent(floor, k -> new ArrayList<>()).add(room);
-
-        updateRoomAllocation(fromStaff, toStaff, floor, room.roomType, 1);
-
-        recalculateStaffPoints(fromStaff);
-        recalculateStaffPoints(toStaff);
-    }
-
-    private void swapRooms(String staff1Name, RoomListItem room1Item,
-                           String staff2Name, RoomListItem room2Item) {
-        moveSpecificRoom(staff1Name, staff2Name, room1Item.room, room1Item.floor);
-        moveSpecificRoom(staff2Name, staff1Name, room2Item.room, room2Item.floor);
-
-        statusLabel.setText(String.format("%sと%sの部屋を交換しました", staff1Name, staff2Name));
-    }
-
-    private void optimizeRoomProximity(String staffName) {
-        StaffData staff = staffDataMap.get(staffName);
-        if (staff == null || staff.detailedRoomsByFloor.isEmpty()) return;
-
-        for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
-            rooms.sort(Comparator.comparing(r -> r.roomNumber));
-        }
-
-        statusLabel.setText(staffName + "の部屋を番号順に並び替えました");
-    }
-
-    private void updateRoomAllocation(StaffData fromStaff, StaffData toStaff,
-                                      int floor, String roomType, int count) {
-        AdaptiveRoomOptimizer.RoomAllocation fromAlloc = fromStaff.roomsByFloor.get(floor);
-        if (fromAlloc != null) {
-            if ("エコ".equals(roomType)) {
-                fromAlloc = new AdaptiveRoomOptimizer.RoomAllocation(
-                        fromAlloc.roomCounts, fromAlloc.ecoRooms - count);
-            } else {
-                Map<String, Integer> newCounts = new HashMap<>(fromAlloc.roomCounts);
-                newCounts.compute(roomType, (k, v) -> v == null ? 0 : Math.max(0, v - count));
-                fromAlloc = new AdaptiveRoomOptimizer.RoomAllocation(newCounts, fromAlloc.ecoRooms);
-            }
-
-            if (fromAlloc.getTotalRooms() == 0) {
-                fromStaff.roomsByFloor.remove(floor);
-                fromStaff.floors.remove(Integer.valueOf(floor));
-            } else {
-                fromStaff.roomsByFloor.put(floor, fromAlloc);
-            }
-        }
-
-        if (!toStaff.floors.contains(floor)) {
-            toStaff.floors.add(floor);
-        }
-
-        AdaptiveRoomOptimizer.RoomAllocation toAlloc = toStaff.roomsByFloor.get(floor);
-        if (toAlloc == null) {
-            toAlloc = new AdaptiveRoomOptimizer.RoomAllocation(new HashMap<>(), 0);
-        }
-
-        if ("エコ".equals(roomType)) {
-            toAlloc = new AdaptiveRoomOptimizer.RoomAllocation(
-                    toAlloc.roomCounts, toAlloc.ecoRooms + count);
-        } else {
-            Map<String, Integer> newCounts = new HashMap<>(toAlloc.roomCounts);
-            newCounts.compute(roomType, (k, v) -> v == null ? count : v + count);
-            toAlloc = new AdaptiveRoomOptimizer.RoomAllocation(newCounts, toAlloc.ecoRooms);
-        }
-
-        toStaff.roomsByFloor.put(floor, toAlloc);
-    }
-
-    /**
-     * ★修正: Excel出力機能（全部屋一覧形式に変更）
-     */
-    private void exportToExcel() {
-        try {
-            // 全部屋データを収集
-            List<RoomExportData> allRoomsData = collectAllRoomsData();
-
-            if (allRoomsData.isEmpty()) {
-                JOptionPane.showMessageDialog(this,
-                        "出力する部屋データがありません", "情報", JOptionPane.INFORMATION_MESSAGE);
-                return;
-            }
-
-            // Excelファイル作成
-            Workbook workbook = new XSSFWorkbook();
-            Sheet sheet = workbook.createSheet("全部屋清掃一覧");
-
-            // ヘッダー行作成
-            Row headerRow = sheet.createRow(0);
-            headerRow.createCell(0).setCellValue("部屋番号");
-            headerRow.createCell(1).setCellValue("部屋タイプ");
-            headerRow.createCell(2).setCellValue("連泊/チェックアウト");
-            headerRow.createCell(3).setCellValue("清掃担当者");
-
-            // データ行作成
-            int rowNum = 1;
-            for (RoomExportData roomData : allRoomsData) {
-                Row row = sheet.createRow(rowNum++);
-                row.createCell(0).setCellValue(roomData.roomNumber);
-                row.createCell(1).setCellValue(roomData.roomType);
-                row.createCell(2).setCellValue(roomData.statusDisplay);
-                row.createCell(3).setCellValue(roomData.assignedStaff);
-            }
-
-            // 列幅自動調整
-            for (int i = 0; i < 4; i++) {
-                sheet.autoSizeColumn(i);
-            }
-
-            // ファイル保存
-            String fileName = "清掃割り当て一覧_" +
-                    java.time.LocalDateTime.now().format(
-                            DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".xlsx";
-
-            try (FileOutputStream fos = new FileOutputStream(fileName)) {
-                workbook.write(fos);
-            }
-
-            workbook.close();
-
-            JOptionPane.showMessageDialog(this,
-                    "Excelファイルを出力しました: " + fileName + "\n" +
-                            "総部屋数: " + allRoomsData.size() + "室\n" +
-                            "残し部屋: " + excludedRooms.size() + "室",
-                    "出力完了", JOptionPane.INFORMATION_MESSAGE);
-
-        } catch (IOException e) {
-            JOptionPane.showMessageDialog(this,
-                    "Excel出力中にエラーが発生しました: " + e.getMessage(),
-                    "エラー", JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    /**
-     * ★新規: 全部屋データの収集
-     */
-    private List<RoomExportData> collectAllRoomsData() {
-        List<RoomExportData> allRoomsData = new ArrayList<>();
-
-        // 清掃対象部屋の収集
-        for (StaffData staff : staffDataMap.values()) {
-            for (Map.Entry<Integer, List<FileProcessor.Room>> entry : staff.detailedRoomsByFloor.entrySet()) {
-                for (FileProcessor.Room room : entry.getValue()) {
-                    // 残し部屋でない場合のみ追加
-                    if (!excludedRooms.contains(room.roomNumber)) {
-                        RoomExportData roomData = new RoomExportData(
-                                room.roomNumber,
-                                room.roomType,
-                                determineRoomStatus(room.roomNumber),
-                                staff.name
-                        );
-                        allRoomsData.add(roomData);
-                    }
-                }
-            }
-        }
-
-        // 残し部屋の追加
-        for (String excludedRoom : excludedRooms) {
-            // 残し部屋の詳細情報を取得（元の割り当てから）
-            RoomExportData roomData = findOriginalRoomData(excludedRoom);
-            if (roomData != null) {
-                roomData.assignedStaff = "残し部屋";
-                allRoomsData.add(roomData);
-            }
-        }
-
-        // 部屋番号順にソート
-        allRoomsData.sort(Comparator.comparing(r -> r.roomNumber));
-
-        return allRoomsData;
-    }
-
-    /**
-     * ★新規: 部屋エクスポートデータクラス
-     */
-    private static class RoomExportData {
-        String roomNumber;
-        String roomType;
-        String statusDisplay;
-        String assignedStaff;
-
-        RoomExportData(String roomNumber, String roomType, String statusDisplay, String assignedStaff) {
-            this.roomNumber = roomNumber;
-            this.roomType = roomType;
-            this.statusDisplay = statusDisplay;
-            this.assignedStaff = assignedStaff;
-        }
-    }
-
-    /**
-     * ★新規: 元の部屋データを検索
-     */
-    private RoomExportData findOriginalRoomData(String roomNumber) {
-        // 処理結果から元の部屋データを検索
-        if (processingResult.cleaningDataObj != null) {
-            for (FileProcessor.Room room : processingResult.cleaningDataObj.roomsToClean) {
-                if (room.roomNumber.equals(roomNumber)) {
-                    return new RoomExportData(
-                            room.roomNumber,
-                            room.roomType,
-                            determineRoomStatus(room.roomNumber),
-                            "未割り当て"
-                    );
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * ★修正: 部屋状態の判定（FileProcessorから取得）
-     */
-    private String determineRoomStatus(String roomNumber) {
-        // FileProcessorから部屋状態を取得
-        String status = FileProcessor.getRoomStatus(roomNumber);
-        if (!status.isEmpty()) {
-            switch (status) {
-                case "2": return "チェックアウト";
-                case "3": return "連泊";
-                default: return status;
-            }
-        }
-        // データが見つからない場合はデフォルト値
-        return Math.random() > 0.5 ? "連泊" : "チェックアウト";
     }
 
     /**
@@ -925,104 +668,48 @@ public class AssignmentEditorGUI extends JFrame {
         }
         mainPanel.add(staffBCombo, gbc);
 
-        // 現在の担当状況表示エリア
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
-        gbc.insets = new Insets(20, 5, 5, 5);
-        JLabel currentStatusLabel = new JLabel("現在の担当状況", JLabel.CENTER);
-        currentStatusLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
-        mainPanel.add(currentStatusLabel, gbc);
-
-        gbc.gridy = 4; gbc.fill = GridBagConstraints.BOTH; gbc.weightx = 1.0; gbc.weighty = 1.0;
-        JTextArea statusArea = new JTextArea(8, 50);
-        statusArea.setEditable(false);
-        statusArea.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 11));
-        JScrollPane statusScrollPane = new JScrollPane(statusArea);
-        mainPanel.add(statusScrollPane, gbc);
-
-        // 状況表示を更新する関数
-        Runnable updateStatus = () -> {
-            String staffA = (String) staffACombo.getSelectedItem();
-            String staffB = (String) staffBCombo.getSelectedItem();
-
-            if (staffA != null && staffB != null && !staffA.equals(staffB)) {
-                StaffData dataA = staffDataMap.get(staffA);
-                StaffData dataB = staffDataMap.get(staffB);
-
-                StringBuilder sb = new StringBuilder();
-                sb.append("【入れ替え前】\n");
-                sb.append(String.format("%-10s: %d部屋 (%.1fポイント)\n",
-                        staffA, dataA.totalRooms, dataA.totalPoints));
-                sb.append(String.format("%-10s: %d部屋 (%.1fポイント)\n\n",
-                        staffB, dataB.totalRooms, dataB.totalPoints));
-
-                sb.append("【入れ替え後】\n");
-                sb.append(String.format("%-10s: %d部屋 (%.1fポイント) ← %sの担当\n",
-                        staffA, dataB.totalRooms, dataB.totalPoints, staffB));
-                sb.append(String.format("%-10s: %d部屋 (%.1fポイント) ← %sの担当\n\n",
-                        staffB, dataA.totalRooms, dataA.totalPoints, staffA));
-
-                sb.append("【部屋詳細】\n");
-                sb.append(String.format("%s → %s: %s\n",
-                        staffB, staffA, dataB.getDetailedRoomDisplay()));
-                sb.append(String.format("%s → %s: %s",
-                        staffA, staffB, dataA.getDetailedRoomDisplay()));
-
-                statusArea.setText(sb.toString());
-            } else {
-                statusArea.setText("異なるスタッフを選択してください");
-            }
-        };
-
-        // コンボボックス変更時の更新
-        staffACombo.addActionListener(e -> updateStatus.run());
-        staffBCombo.addActionListener(e -> updateStatus.run());
-
-        // 初期表示
-        updateStatus.run();
-
-        dialog.add(mainPanel, BorderLayout.CENTER);
-
         // ボタンパネル
         JPanel buttonPanel = new JPanel(new FlowLayout());
-
-        JButton swapButton = new JButton("入れ替え実行");
-        swapButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
-        swapButton.addActionListener(e -> {
+        JButton executeButton = new JButton("入れ替え実行");
+        executeButton.addActionListener(e -> {
             String staffA = (String) staffACombo.getSelectedItem();
             String staffB = (String) staffBCombo.getSelectedItem();
 
-            if (staffA != null && staffB != null && !staffA.equals(staffB)) {
-                int result = JOptionPane.showConfirmDialog(dialog,
-                        String.format("「%s」と「%s」の担当部屋を完全に入れ替えますか？", staffA, staffB),
-                        "入れ替え確認", JOptionPane.YES_NO_OPTION);
-
-                if (result == JOptionPane.YES_OPTION) {
-                    executeStaffSwap(staffA, staffB);
-                    dialog.dispose();
-                    refreshTable();
-                }
-            } else {
+            if (staffA.equals(staffB)) {
                 JOptionPane.showMessageDialog(dialog,
                         "異なるスタッフを選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            int confirm = JOptionPane.showConfirmDialog(dialog,
+                    String.format("「%s」と「%s」の担当を入れ替えますか？", staffA, staffB),
+                    "確認", JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                swapStaffAssignments(staffA, staffB);
+                refreshTable();
+                dialog.dispose();
             }
         });
-        buttonPanel.add(swapButton);
 
         JButton cancelButton = new JButton("キャンセル");
         cancelButton.addActionListener(e -> dialog.dispose());
+
+        buttonPanel.add(executeButton);
         buttonPanel.add(cancelButton);
 
+        dialog.add(mainPanel, BorderLayout.CENTER);
         dialog.add(buttonPanel, BorderLayout.SOUTH);
 
-        dialog.setSize(600, 500);
+        dialog.pack();
         dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
     }
 
     /**
-     * スタッフ入れ替え実行
+     * スタッフ割り当て入れ替え
      */
-    private void executeStaffSwap(String staffA, String staffB) {
+    private void swapStaffAssignments(String staffA, String staffB) {
         StaffData dataA = staffDataMap.get(staffA);
         StaffData dataB = staffDataMap.get(staffB);
 
@@ -1091,80 +778,280 @@ public class AssignmentEditorGUI extends JFrame {
         staff.totalRooms = totalRooms;
     }
 
-    protected void assignRoomNumbers() {
-        if (roomAssigner == null) return;
+    /**
+     * 部屋詳細編集ダイアログ（部屋入れ替え機能付き）
+     */
+    private void showRoomDetailEditor(String staffName) {
+        StaffData staffData = staffDataMap.get(staffName);
+        if (staffData == null) return;
 
-        Map<String, List<FileProcessor.Room>> assignments =
-                roomAssigner.assignDetailedRooms(currentAssignments);
+        JDialog dialog = new JDialog(this, staffName + " - 部屋詳細編集", true);
+        dialog.setLayout(new BorderLayout());
 
-        for (Map.Entry<String, List<FileProcessor.Room>> entry : assignments.entrySet()) {
-            String staffName = entry.getKey();
-            List<FileProcessor.Room> rooms = entry.getValue();
+        JPanel mainPanel = new JPanel(new BorderLayout());
+        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-            StaffData staffData = staffDataMap.get(staffName);
-            if (staffData != null) {
-                Map<Integer, List<FileProcessor.Room>> byFloor = rooms.stream()
-                        .collect(Collectors.groupingBy(r -> r.floor));
+        JPanel infoPanel = new JPanel(new GridLayout(2, 1));
+        infoPanel.setBorder(BorderFactory.createTitledBorder("スタッフ情報"));
+        infoPanel.add(new JLabel("スタッフ: " + staffName));
+        infoPanel.add(new JLabel("作業者タイプ: " + staffData.getWorkerTypeDisplay()));
+        mainPanel.add(infoPanel, BorderLayout.NORTH);
 
-                staffData.detailedRoomsByFloor = byFloor;
+        JPanel roomPanel = new JPanel(new BorderLayout());
+        roomPanel.setBorder(BorderFactory.createTitledBorder("担当部屋"));
+
+        DefaultListModel<RoomListItem> listModel = new DefaultListModel<>();
+
+        if (!staffData.detailedRoomsByFloor.isEmpty()) {
+            List<Integer> sortedFloors = new ArrayList<>(staffData.detailedRoomsByFloor.keySet());
+            Collections.sort(sortedFloors);
+
+            for (int floor : sortedFloors) {
+                List<FileProcessor.Room> rooms = staffData.detailedRoomsByFloor.get(floor);
+                for (FileProcessor.Room room : rooms) {
+                    listModel.addElement(new RoomListItem(room, floor));
+                }
             }
+        }
+
+        JList<RoomListItem> roomList = new JList<>(listModel);
+        roomList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        roomList.setCellRenderer(new RoomListCellRenderer());
+
+        JScrollPane scrollPane = new JScrollPane(roomList);
+        scrollPane.setPreferredSize(new Dimension(400, 300));
+        roomPanel.add(scrollPane, BorderLayout.CENTER);
+
+        JPanel roomButtonPanel = new JPanel(new FlowLayout());
+
+        JButton moveSelectedButton = new JButton("選択した部屋を移動");
+        moveSelectedButton.addActionListener(e -> {
+            List<RoomListItem> selected = roomList.getSelectedValuesList();
+            if (!selected.isEmpty()) {
+                moveSelectedRooms(staffName, selected, dialog);
+            }
+        });
+        roomButtonPanel.add(moveSelectedButton);
+
+        JButton swapRoomButton = new JButton("部屋交換");
+        swapRoomButton.addActionListener(e -> {
+            List<RoomListItem> selected = roomList.getSelectedValuesList();
+            if (selected.size() == 1) {
+                showRoomSwapDialog(staffName, selected.get(0), dialog);
+            } else {
+                JOptionPane.showMessageDialog(dialog,
+                        "交換する部屋を1つ選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+            }
+        });
+        roomButtonPanel.add(swapRoomButton);
+
+        roomPanel.add(roomButtonPanel, BorderLayout.SOUTH);
+        mainPanel.add(roomPanel, BorderLayout.CENTER);
+
+        JButton closeButton = new JButton("閉じる");
+        closeButton.addActionListener(e -> dialog.dispose());
+        mainPanel.add(closeButton, BorderLayout.SOUTH);
+
+        dialog.add(mainPanel);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+
+    /**
+     * 選択した部屋を他のスタッフに移動する
+     */
+    private void moveSelectedRooms(String fromStaff, List<RoomListItem> selectedRooms, JDialog parentDialog) {
+        String[] staffNames = staffDataMap.keySet().stream()
+                .filter(name -> !name.equals(fromStaff))
+                .toArray(String[]::new);
+
+        if (staffNames.length == 0) {
+            JOptionPane.showMessageDialog(parentDialog, "移動先のスタッフがいません", "エラー", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        String targetStaff = (String) JOptionPane.showInputDialog(
+                parentDialog,
+                "移動先のスタッフを選択してください:",
+                "部屋移動",
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                staffNames,
+                staffNames[0]
+        );
+
+        if (targetStaff != null) {
+            moveRoomsToStaff(fromStaff, targetStaff, selectedRooms);
+            parentDialog.dispose();
+            statusLabel.setText(String.format("%d室を %s から %s に移動しました",
+                    selectedRooms.size(), fromStaff, targetStaff));
+            refreshTable();
         }
     }
 
-    private JPanel createSummaryPanel() {
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        panel.setBorder(BorderFactory.createTitledBorder("サマリー"));
+    /**
+     * 部屋交換ダイアログを表示
+     */
+    private void showRoomSwapDialog(String staffName, RoomListItem roomToSwap, JDialog parentDialog) {
+        // 他のスタッフの部屋リストを作成
+        DefaultListModel<RoomListItem> swapCandidates = new DefaultListModel<>();
+        Map<String, StaffData> otherStaff = new HashMap<>();
 
-        int actualTotalRooms = 0;
-        int actualStaffCount = 0;
+        for (Map.Entry<String, StaffData> entry : staffDataMap.entrySet()) {
+            if (!entry.getKey().equals(staffName)) {
+                StaffData staff = entry.getValue();
+                otherStaff.put(entry.getKey(), staff);
 
-        if (processingResult.cleaningDataObj != null) {
-            actualTotalRooms = processingResult.cleaningDataObj.totalMainRooms +
-                    processingResult.cleaningDataObj.totalAnnexRooms;
+                for (Map.Entry<Integer, List<FileProcessor.Room>> floorEntry : staff.detailedRoomsByFloor.entrySet()) {
+                    int floor = floorEntry.getKey();
+                    for (FileProcessor.Room room : floorEntry.getValue()) {
+                        RoomListItem item = new RoomListItem(room, floor);
+                        swapCandidates.addElement(item);
+                    }
+                }
+            }
+        }
 
-            if (processingResult.optimizationResult != null &&
-                    processingResult.optimizationResult.config != null) {
-                actualStaffCount = processingResult.optimizationResult.config.availableStaff.size();
+        if (swapCandidates.isEmpty()) {
+            JOptionPane.showMessageDialog(parentDialog, "交換できる部屋がありません", "エラー", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        JDialog swapDialog = new JDialog(parentDialog, "部屋交換", true);
+        swapDialog.setLayout(new BorderLayout());
+
+        JPanel infoPanel = new JPanel(new GridLayout(2, 1));
+        infoPanel.setBorder(BorderFactory.createTitledBorder("交換する部屋"));
+        infoPanel.add(new JLabel("現在の部屋: " + roomToSwap.toString()));
+        infoPanel.add(new JLabel("担当スタッフ: " + staffName));
+        swapDialog.add(infoPanel, BorderLayout.NORTH);
+
+        JList<RoomListItem> candidateList = new JList<>(swapCandidates);
+        candidateList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        candidateList.setCellRenderer(new RoomListCellRenderer());
+
+        JScrollPane scrollPane = new JScrollPane(candidateList);
+        scrollPane.setPreferredSize(new Dimension(400, 200));
+        scrollPane.setBorder(BorderFactory.createTitledBorder("交換先の部屋を選択"));
+        swapDialog.add(scrollPane, BorderLayout.CENTER);
+
+        JPanel buttonPanel = new JPanel(new FlowLayout());
+        JButton executeButton = new JButton("交換実行");
+        executeButton.addActionListener(e -> {
+            RoomListItem selectedCandidate = candidateList.getSelectedValue();
+            if (selectedCandidate != null) {
+                // 交換先のスタッフを特定
+                String targetStaff = findStaffForRoom(selectedCandidate.room);
+                if (targetStaff != null) {
+                    swapRoomsBetweenStaff(staffName, roomToSwap, targetStaff, selectedCandidate);
+                    swapDialog.dispose();
+                    parentDialog.dispose();
+                    statusLabel.setText(String.format("部屋交換完了: %s ↔ %s",
+                            roomToSwap.room.roomNumber, selectedCandidate.room.roomNumber));
+                    refreshTable();
+                }
             } else {
-                actualStaffCount = staffDataMap.size();
+                JOptionPane.showMessageDialog(swapDialog, "交換先の部屋を選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
             }
-        } else {
-            actualTotalRooms = staffDataMap.values().stream()
-                    .mapToInt(s -> s.totalRooms)
-                    .sum();
-            actualStaffCount = staffDataMap.size();
-        }
+        });
 
-        double avgRooms = actualStaffCount > 0 ? (double) actualTotalRooms / actualStaffCount : 0;
+        JButton cancelButton = new JButton("キャンセル");
+        cancelButton.addActionListener(e -> swapDialog.dispose());
 
-        panel.add(new JLabel(String.format("総部屋数: %d | ", actualTotalRooms)));
-        panel.add(new JLabel(String.format("スタッフ数: %d | ", actualStaffCount)));
-        panel.add(new JLabel(String.format("平均部屋数: %.1f", avgRooms)));
+        buttonPanel.add(executeButton);
+        buttonPanel.add(cancelButton);
+        swapDialog.add(buttonPanel, BorderLayout.SOUTH);
 
-        // ★追加: 残し部屋数表示
-        if (!excludedRooms.isEmpty()) {
-            panel.add(new JLabel(String.format(" | 残し部屋: %d室", excludedRooms.size())));
-        }
+        swapDialog.pack();
+        swapDialog.setLocationRelativeTo(parentDialog);
+        swapDialog.setVisible(true);
+    }
 
-        if (staffDataMap.size() != actualStaffCount) {
-            panel.add(new JLabel(String.format(" (割当済: %d人)", staffDataMap.size())));
-        }
-
-        if (processingResult.cleaningDataObj != null) {
-            panel.add(new JLabel(" | "));
-            panel.add(new JLabel(String.format("本館: %d室", processingResult.cleaningDataObj.totalMainRooms)));
-            panel.add(new JLabel(String.format(" 別館: %d室", processingResult.cleaningDataObj.totalAnnexRooms)));
-
-            if (processingResult.cleaningDataObj.ecoRooms.size() > 0) {
-                panel.add(new JLabel(String.format(" エコ: %d室", processingResult.cleaningDataObj.ecoRooms.size())));
-            }
-
-            if (processingResult.cleaningDataObj.totalBrokenRooms > 0) {
-                panel.add(new JLabel(String.format(" 故障: %d室", processingResult.cleaningDataObj.totalBrokenRooms)));
+    /**
+     * 指定した部屋を担当しているスタッフを見つける
+     */
+    private String findStaffForRoom(FileProcessor.Room targetRoom) {
+        for (Map.Entry<String, StaffData> entry : staffDataMap.entrySet()) {
+            StaffData staff = entry.getValue();
+            for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                for (FileProcessor.Room room : rooms) {
+                    if (room.roomNumber.equals(targetRoom.roomNumber)) {
+                        return entry.getKey();
+                    }
+                }
             }
         }
+        return null;
+    }
 
-        return panel;
+    /**
+     * 部屋をスタッフ間で移動
+     */
+    private void moveRoomsToStaff(String fromStaff, String toStaff, List<RoomListItem> roomsToMove) {
+        StaffData fromData = staffDataMap.get(fromStaff);
+        StaffData toData = staffDataMap.get(toStaff);
+
+        if (fromData == null || toData == null) return;
+
+        // 移動する部屋を削除
+        for (RoomListItem roomItem : roomsToMove) {
+            removeRoomFromStaff(fromData, roomItem.room);
+            addRoomToStaff(toData, roomItem.room, roomItem.floor);
+        }
+
+        // ポイント再計算
+        recalculateStaffPoints(fromData);
+        recalculateStaffPoints(toData);
+    }
+
+    /**
+     * 2つのスタッフ間で部屋を交換
+     */
+    private void swapRoomsBetweenStaff(String staff1, RoomListItem room1, String staff2, RoomListItem room2) {
+        StaffData data1 = staffDataMap.get(staff1);
+        StaffData data2 = staffDataMap.get(staff2);
+
+        if (data1 == null || data2 == null) return;
+
+        // 部屋を削除
+        removeRoomFromStaff(data1, room1.room);
+        removeRoomFromStaff(data2, room2.room);
+
+        // 部屋を追加（交換）
+        addRoomToStaff(data1, room2.room, room2.floor);
+        addRoomToStaff(data2, room1.room, room1.floor);
+
+        // ポイント再計算
+        recalculateStaffPoints(data1);
+        recalculateStaffPoints(data2);
+    }
+
+    /**
+     * スタッフから部屋を削除
+     */
+    private void removeRoomFromStaff(StaffData staff, FileProcessor.Room room) {
+        for (Map.Entry<Integer, List<FileProcessor.Room>> entry : staff.detailedRoomsByFloor.entrySet()) {
+            List<FileProcessor.Room> rooms = entry.getValue();
+            rooms.removeIf(r -> r.roomNumber.equals(room.roomNumber));
+        }
+
+        // 空になったフロアを削除
+        staff.detailedRoomsByFloor.entrySet().removeIf(entry -> entry.getValue().isEmpty());
+        staff.floors = new ArrayList<>(staff.detailedRoomsByFloor.keySet());
+        Collections.sort(staff.floors);
+    }
+
+    /**
+     * スタッフに部屋を追加
+     */
+    private void addRoomToStaff(StaffData staff, FileProcessor.Room room, int floor) {
+        staff.detailedRoomsByFloor.computeIfAbsent(floor, k -> new ArrayList<>()).add(room);
+
+        if (!staff.floors.contains(floor)) {
+            staff.floors.add(floor);
+            Collections.sort(staff.floors);
+        }
     }
 
     protected void loadAssignmentData() {
@@ -1191,6 +1078,66 @@ public class AssignmentEditorGUI extends JFrame {
         add(summaryPanel, BorderLayout.NORTH);
         revalidate();
         repaint();
+    }
+
+    private void exportToExcel() {
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setDialogTitle("Excelファイルとして保存");
+        fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Excel Files", "xlsx"));
+
+        if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            try {
+                String filePath = fileChooser.getSelectedFile().getAbsolutePath();
+                if (!filePath.endsWith(".xlsx")) {
+                    filePath += ".xlsx";
+                }
+                createExcelFile(filePath);
+                statusLabel.setText("Excelファイルが保存されました: " + filePath);
+            } catch (IOException e) {
+                JOptionPane.showMessageDialog(this,
+                        "ファイル保存中にエラーが発生しました: " + e.getMessage(),
+                        "エラー", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private void createExcelFile(String filePath) throws IOException {
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("清掃割り当て");
+
+            // ヘッダー作成
+            Row headerRow = sheet.createRow(0);
+            String[] headers = {"スタッフ名", "作業者タイプ", "部屋数", "ポイント", "調整後スコア", "担当階・部屋詳細"};
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers[i]);
+            }
+
+            // データ行作成
+            int rowNum = 1;
+            for (StaffData staff : staffDataMap.values()) {
+                Row row = sheet.createRow(rowNum++);
+                row.createCell(0).setCellValue(staff.name);
+                row.createCell(1).setCellValue(staff.getWorkerTypeDisplay());
+                row.createCell(2).setCellValue(staff.totalRooms);
+                row.createCell(3).setCellValue(staff.totalPoints);
+                row.createCell(4).setCellValue(staff.adjustedScore);
+                row.createCell(5).setCellValue(staff.getDetailedRoomDisplay());
+            }
+
+            // 列幅自動調整
+            for (int i = 0; i < headers.length; i++) {
+                sheet.autoSizeColumn(i);
+            }
+
+            try (FileOutputStream fileOut = new FileOutputStream(filePath)) {
+                workbook.write(fileOut);
+            }
+        }
+    }
+
+    private String getRoomStatusDisplay(String status) {
+        return "3".equals(status) ? "連泊" : "チェックアウト";
     }
 
     private void finishEditing() {

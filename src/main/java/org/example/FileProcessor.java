@@ -99,23 +99,23 @@ public class FileProcessor {
         return ROOM_STATUS_MAP.getOrDefault(roomNumber, "");
     }
 
-    // 部屋番号から階数を抽出するメソッド
+    // ★修正: 部屋番号から階数を抽出するメソッド（別館対応）
     private static int extractFloor(String roomNumber) {
         try {
             // 数字以外を削除
             String numericPart = roomNumber.replaceAll("[^0-9]", "");
 
-            // 3桁の数字（本館）
+            // 3桁の数字（本館1-9階）
             if (numericPart.length() == 3) {
-                return Character.getNumericValue(numericPart.charAt(0));
+                return Integer.parseInt(numericPart.substring(0, 1));
             }
-            // 4桁の数字で10で始まる場合（本館）
+            // 4桁の数字で10で始まる場合（本館10階）
             else if (numericPart.length() == 4 && numericPart.startsWith("10")) {
                 return 10;
             }
-            // 4桁の数字（別館）
+            // 4桁の数字（別館）- 最初の2桁を階数として使用
             else if (numericPart.length() == 4) {
-                return Character.getNumericValue(numericPart.charAt(1));
+                return Integer.parseInt(numericPart.substring(0, 2));
             }
 
             // パターンに一致しない場合は0を返す

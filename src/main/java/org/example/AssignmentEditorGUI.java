@@ -478,7 +478,7 @@ public class AssignmentEditorGUI extends JFrame {
             }
             // その他の場合
             else if (numericPart.length() >= 2) {
-                // 最初の1〜2桁を階数として取得
+                // 最初の1～2桁を階数として取得
                 if (numericPart.length() >= 3) {
                     return Integer.parseInt(numericPart.substring(0, numericPart.length() - 2));
                 } else {
@@ -759,7 +759,39 @@ public class AssignmentEditorGUI extends JFrame {
         staff.hasAnnexBuilding = staff.floors.stream().anyMatch(f -> f > 10);
     }
 
+    /**
+     * ★新規追加: detailedRoomsByFloorからroomsByFloorを再構築
+     */
+    private void rebuildRoomsByFloor(StaffData staff) {
+        staff.roomsByFloor.clear();
+
+        for (Map.Entry<Integer, List<FileProcessor.Room>> entry : staff.detailedRoomsByFloor.entrySet()) {
+            int floor = entry.getKey();
+            List<FileProcessor.Room> rooms = entry.getValue();
+
+            Map<String, Integer> roomCounts = new HashMap<>();
+            int ecoRooms = 0;
+
+            for (FileProcessor.Room room : rooms) {
+                if (room.isEcoClean) {
+                    ecoRooms++;
+                } else {
+                    roomCounts.merge(room.roomType, 1, Integer::sum);
+                }
+            }
+
+            staff.roomsByFloor.put(floor, new AdaptiveRoomOptimizer.RoomAllocation(roomCounts, ecoRooms));
+        }
+
+        // フロア情報も更新
+        staff.floors = new ArrayList<>(staff.roomsByFloor.keySet());
+        Collections.sort(staff.floors);
+    }
+
     private void recalculateStaffPoints(StaffData staff) {
+        // ★修正: まずroomsByFloorを再構築
+        rebuildRoomsByFloor(staff);
+
         double totalPoints = 0;
         int totalRooms = 0;
 
@@ -774,8 +806,14 @@ public class AssignmentEditorGUI extends JFrame {
             totalRooms += allocation.ecoRooms;
         }
 
+        // 大浴場清掃のポイント調整
+        if (staff.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+            totalPoints += staff.bathCleaningType.reduction;
+        }
+
         staff.totalPoints = totalPoints;
         staff.totalRooms = totalRooms;
+        staff.adjustedScore = totalPoints;
     }
 
     /**
@@ -947,7 +985,7 @@ public class AssignmentEditorGUI extends JFrame {
                     swapRoomsBetweenStaff(staffName, roomToSwap, targetStaff, selectedCandidate);
                     swapDialog.dispose();
                     parentDialog.dispose();
-                    statusLabel.setText(String.format("部屋交換完了: %s ↔ %s",
+                    statusLabel.setText(String.format("部屋交換完了: %s ⇔ %s",
                             roomToSwap.room.roomNumber, selectedCandidate.room.roomNumber));
                     refreshTable();
                 }

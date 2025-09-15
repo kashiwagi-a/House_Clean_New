@@ -78,6 +78,7 @@ public class FileProcessor {
             switch (roomStatus) {
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
+                case "4": return "清掃要";  // ★追加: 状態4
                 default: return roomStatus.isEmpty() ? "不明" : roomStatus;
             }
         }
@@ -137,7 +138,7 @@ public class FileProcessor {
         }
     }
 
-    // ★修正版：部屋状態情報完全対応
+    // ★修正版：部屋状態情報完全対応 + デバッグログ強化版
     private static CleaningData processCsvRoomFile(File file) {
         List<Room> mainRooms = new ArrayList<>();
         List<Room> annexRooms = new ArrayList<>();
@@ -150,6 +151,13 @@ public class FileProcessor {
 
         // 選択された故障部屋を取得
         Set<String> selectedBrokenRooms = getSelectedBrokenRooms();
+
+        // ★デバッグ用カウンター
+        int totalLinesProcessed = 0;
+        int emptyRoomNumbers = 0;
+        int brokenRoomsSkipped = 0;
+        int cleaningStatusSkipped = 0;
+        int successfullyAdded = 0;
 
         if (!selectedBrokenRooms.isEmpty()) {
             LOGGER.info("清掃対象として選択された故障部屋: " + selectedBrokenRooms.size() + "室");
@@ -165,23 +173,12 @@ public class FileProcessor {
             while ((line = reader.readLine()) != null) {
                 lineNumber++;
 
-                // デバッグログ
-                if (lineNumber <= 10) {
-                    LOGGER.info("行 " + lineNumber + ": " + line);
-                }
-
                 // ヘッダー行をスキップ
-                if (lineNumber <= 4) continue;
+                if (lineNumber <= 0) continue;
+
+                totalLinesProcessed++;
 
                 String[] parts = line.split(",");
-
-                // デバッグログ
-                if (lineNumber <= 10) {
-                    LOGGER.info("列数: " + parts.length);
-                    for (int i = 0; i < parts.length; i++) {
-                        LOGGER.info("列 " + i + ": " + parts[i]);
-                    }
-                }
 
                 // 必要な列が存在しない場合はスキップ
                 if (parts.length < 7) {
@@ -191,6 +188,13 @@ public class FileProcessor {
 
                 // 部屋番号は2列目（インデックス1）
                 String roomNumber = parts.length > 1 ? parts[1].trim() : "";
+
+                // 部屋番号が空の場合はスキップ
+                if (roomNumber.isEmpty()) {
+                    emptyRoomNumbers++;
+                    LOGGER.info("★除外: 行 " + lineNumber + " は部屋番号が空です");
+                    continue;
+                }
 
                 // 部屋タイプは3列目（インデックス2）
                 String roomTypeCode = parts.length > 2 ? parts[2].trim() : "";
@@ -202,17 +206,8 @@ public class FileProcessor {
                 // ★重要: 清掃状態は7列目（インデックス6）
                 String roomStatus = parts.length > 6 ? parts[6].trim() : "";
 
-                // 部屋番号が空の場合はスキップ
-                if (roomNumber.isEmpty()) {
-                    LOGGER.fine("行 " + lineNumber + " は部屋番号が空です");
-                    continue;
-                }
-
                 // ★追加: 部屋状態をマップに保存
                 ROOM_STATUS_MAP.put(roomNumber, roomStatus);
-
-                LOGGER.info("処理中の部屋: " + roomNumber + ", タイプ: " + roomTypeCode +
-                        ", 故障: " + isBroken + ", 状態: " + roomStatus);
 
                 // 故障部屋の処理ロジック
                 boolean wasOriginallyBroken = isBroken;
@@ -227,17 +222,19 @@ public class FileProcessor {
                         // 清掃対象として続行するため故障フラグをfalseに変更
                         isBroken = false;
                     } else {
-                        LOGGER.info("故障部屋をスキップ: " + roomNumber);
+                        brokenRoomsSkipped++;
+                        LOGGER.info("★除外: 故障部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
                         continue;
                     }
                 }
 
-                // 清掃が必要な部屋のみ処理（2=チェックアウト、3=連泊）
+                // ★修正: 清掃状態による正しい除外処理（2, 3, 4のみ清掃対象）
                 if (!wasOriginallyBroken || selectedBrokenRooms.contains(roomNumber)) {
                     // 選択された故障部屋の場合は清掃状態に関係なく処理
                     if (!selectedBrokenRooms.contains(roomNumber) &&
-                            !roomStatus.equals("2") && !roomStatus.equals("3")) {
-                        LOGGER.info("清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
+                            !roomStatus.equals("2") && !roomStatus.equals("3") && !roomStatus.equals("4")) {
+                        cleaningStatusSkipped++;
+                        LOGGER.info("★除外: 清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
                         continue;
                     }
                 }
@@ -262,13 +259,15 @@ public class FileProcessor {
 
                 // 別館か本館かを判定して対応するリストに追加
                 if (isAnnexRoom(roomNumber)) {
-                    LOGGER.info("別館部屋を追加: " + roomNumber +
+                    LOGGER.info("★成功: 別館部屋を追加: " + roomNumber + " (状態: " + roomStatus + ")" +
                             (selectedBrokenRooms.contains(roomNumber) ? " (選択された故障部屋)" : ""));
                     annexRooms.add(room);
+                    successfullyAdded++;
                 } else {
-                    LOGGER.info("本館部屋を追加: " + roomNumber +
+                    LOGGER.info("★成功: 本館部屋を追加: " + roomNumber + " (状態: " + roomStatus + ")" +
                             (selectedBrokenRooms.contains(roomNumber) ? " (選択された故障部屋)" : ""));
                     mainRooms.add(room);
+                    successfullyAdded++;
                 }
 
                 // エコ清掃の場合はエコリストにも追加
@@ -276,6 +275,16 @@ public class FileProcessor {
                     ecoRooms.add(room);
                 }
             }
+
+            // ★詳細統計の出力
+            LOGGER.info("=== CSVファイル処理統計 ===");
+            LOGGER.info("総処理行数（ヘッダー除く）: " + totalLinesProcessed);
+            LOGGER.info("除外理由別統計:");
+            LOGGER.info("  - 部屋番号が空: " + emptyRoomNumbers + "行");
+            LOGGER.info("  - 故障部屋（未選択）: " + brokenRoomsSkipped + "室");
+            LOGGER.info("  - 清掃状態による除外: " + cleaningStatusSkipped + "室");
+            LOGGER.info("成功追加: " + successfullyAdded + "室");
+            LOGGER.info("合計除外: " + (emptyRoomNumbers + brokenRoomsSkipped + cleaningStatusSkipped) + "室");
 
             // 結果の確認
             LOGGER.info("読み込み完了: 行数=" + lineNumber);
@@ -317,10 +326,20 @@ public class FileProcessor {
                 switch (status) {
                     case "2": statusDisplay = "チェックアウト"; break;
                     case "3": statusDisplay = "連泊"; break;
+                    case "4": statusDisplay = "時間延長"; break;  //
                     default: statusDisplay = status.isEmpty() ? "不明" : status; break;
                 }
                 LOGGER.info("  " + statusDisplay + ": " + count + "室");
             });
+
+            // ★重要: 状態2,3,4の部屋のみが清掃対象として処理されることをログ出力
+            int totalProcessedRooms = mainRooms.size() + annexRooms.size();
+            LOGGER.info("★修正完了: 清掃対象（状態2,3,4）" + totalProcessedRooms + "室を処理しました");
+            LOGGER.info("  - 本館: " + mainRooms.size() + "室");
+            LOGGER.info("  - 別館: " + annexRooms.size() + "室");
+            LOGGER.info("  - 故障部屋（清掃対象外）: " + brokenRooms.size() + "室");
+            LOGGER.info("  - エコ清掃: " + ecoRooms.size() + "室");
+            LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）、4（清掃要）");
 
             return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms);
 
@@ -557,7 +576,7 @@ public class FileProcessor {
         int targetDay = targetDate.getDayOfMonth();
         LOGGER.info("検索対象の日: " + targetDay);
 
-        // G列(6)からAH列(33)までスキャン
+        // G列(6)からAH列(33)ま
         for (int i = 6; i <= 33; i++) {
             Cell cell = dateRow.getCell(i);
             if (cell == null) continue;

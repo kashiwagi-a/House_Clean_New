@@ -12,10 +12,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import java.util.OptionalInt;
 
 /**
  * 拡張版清掃割り当て編集GUI
  * スタッフ入れ替え機能・残し部屋設定機能追加版
+ * ★修正: エコ清掃部屋のポイント計算問題を修正
  */
 public class AssignmentEditorGUI extends JFrame {
 
@@ -35,13 +37,13 @@ public class AssignmentEditorGUI extends JFrame {
     // ★追加: 残し部屋管理
     private Set<String> excludedRooms = new HashSet<>();
 
-    // 部屋タイプ別のポイント
+    // ★修正: 部屋タイプ別のポイント（ECOは削除）
     private static final Map<String, Double> ROOM_POINTS = new HashMap<>() {{
         put("S", 1.0);
         put("D", 1.0);
         put("T", 1.67);
         put("FD", 2.0);
-        put("ECO", 0.2);
+        // put("ECO", 0.2); ← 削除（エコ清掃は部屋タイプではない）
     }};
 
     /**
@@ -74,6 +76,9 @@ public class AssignmentEditorGUI extends JFrame {
             calculatePoints();
         }
 
+        /**
+         * ★修正: ポイント計算メソッド（エコ清掃問題を修正）
+         */
         private void calculatePoints() {
             double totalPoints = 0;
             int totalRooms = 0;
@@ -85,8 +90,8 @@ public class AssignmentEditorGUI extends JFrame {
                     totalPoints += ROOM_POINTS.getOrDefault(type, 1.0) * count;
                     totalRooms += count;
                 }
-                totalPoints += ROOM_POINTS.get("ECO") * allocation.ecoRooms;
-                totalRooms += allocation.ecoRooms;
+                // ★修正: エコ部屋は別途処理しない（本来の部屋タイプでカウント済み）
+                totalRooms += allocation.ecoRooms;  // 部屋数にだけ加算
             }
 
             // 大浴場清掃のポイント調整
@@ -425,6 +430,7 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * ★追加: エコ清掃部屋を建物別に集計するメソッド
+     *
      * @param isMainBuilding true=本館、false=別館
      * @return 指定建物のエコ清掃部屋数
      */
@@ -452,6 +458,7 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * ★追加: 部屋番号から階数を抽出するヘルパーメソッド
+     *
      * @param roomNumber 部屋番号（例："201", "1201"）
      * @return 階数（例：2, 12）
      */
@@ -637,7 +644,9 @@ public class AssignmentEditorGUI extends JFrame {
         GridBagConstraints gbc = new GridBagConstraints();
 
         // タイトル
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.gridwidth = 2;
         gbc.insets = new Insets(0, 0, 20, 0);
         JLabel titleLabel = new JLabel("担当部屋を完全に入れ替えるスタッフを選択してください", JLabel.CENTER);
         titleLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 14));
@@ -647,21 +656,27 @@ public class AssignmentEditorGUI extends JFrame {
         String[] staffNames = staffDataMap.keySet().toArray(new String[0]);
         Arrays.sort(staffNames);
 
-        gbc.gridwidth = 1; gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.gridwidth = 1;
+        gbc.insets = new Insets(5, 5, 5, 5);
 
         // スタッフA
-        gbc.gridx = 0; gbc.gridy = 1;
+        gbc.gridx = 0;
+        gbc.gridy = 1;
         mainPanel.add(new JLabel("スタッフA:"), gbc);
 
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridx = 1;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         JComboBox<String> staffACombo = new JComboBox<>(staffNames);
         mainPanel.add(staffACombo, gbc);
 
         // スタッフB
-        gbc.gridx = 0; gbc.gridy = 2; gbc.fill = GridBagConstraints.NONE;
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.fill = GridBagConstraints.NONE;
         mainPanel.add(new JLabel("スタッフB:"), gbc);
 
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridx = 1;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         JComboBox<String> staffBCombo = new JComboBox<>(staffNames);
         if (staffNames.length > 1) {
             staffBCombo.setSelectedIndex(1); // 異なるスタッフを初期選択
@@ -760,7 +775,8 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★新規追加: detailedRoomsByFloorからroomsByFloorを再構築
+     * ★修正版: detailedRoomsByFloorからroomsByFloorを再構築
+     * エコ清掃部屋も本来の部屋タイプでポイント計算する
      */
     private void rebuildRoomsByFloor(StaffData staff) {
         staff.roomsByFloor.clear();
@@ -770,17 +786,14 @@ public class AssignmentEditorGUI extends JFrame {
             List<FileProcessor.Room> rooms = entry.getValue();
 
             Map<String, Integer> roomCounts = new HashMap<>();
-            int ecoRooms = 0;
 
             for (FileProcessor.Room room : rooms) {
-                if (room.isEcoClean) {
-                    ecoRooms++;
-                } else {
-                    roomCounts.merge(room.roomType, 1, Integer::sum);
-                }
+                // ★修正: エコ清掃かどうかに関係なく、本来の部屋タイプでカウント
+                roomCounts.merge(room.roomType, 1, Integer::sum);
             }
 
-            staff.roomsByFloor.put(floor, new AdaptiveRoomOptimizer.RoomAllocation(roomCounts, ecoRooms));
+            // ★修正: エコ部屋数は0に設定（ポイント計算では本来の部屋タイプを使用）
+            staff.roomsByFloor.put(floor, new AdaptiveRoomOptimizer.RoomAllocation(roomCounts, 0));
         }
 
         // フロア情報も更新
@@ -788,8 +801,11 @@ public class AssignmentEditorGUI extends JFrame {
         Collections.sort(staff.floors);
     }
 
+    /**
+     * ★修正版: ポイント再計算メソッド
+     */
     private void recalculateStaffPoints(StaffData staff) {
-        // ★修正: まずroomsByFloorを再構築
+        // まずroomsByFloorを再構築
         rebuildRoomsByFloor(staff);
 
         double totalPoints = 0;
@@ -802,7 +818,7 @@ public class AssignmentEditorGUI extends JFrame {
                 totalPoints += ROOM_POINTS.getOrDefault(type, 1.0) * count;
                 totalRooms += count;
             }
-            totalPoints += ROOM_POINTS.get("ECO") * allocation.ecoRooms;
+            // ★修正: エコ部屋は部屋数にのみ加算（ポイントは本来の部屋タイプで計算済み）
             totalRooms += allocation.ecoRooms;
         }
 
@@ -1095,7 +1111,10 @@ public class AssignmentEditorGUI extends JFrame {
     protected void loadAssignmentData() {
         tableModel.setRowCount(0);
 
-        for (StaffData staff : staffDataMap.values()) {
+        // スタッフをソート済みリストで処理
+        List<StaffData> sortedStaff = getSortedStaffList();
+
+        for (StaffData staff : sortedStaff) {
             Object[] row = {
                     staff.name,
                     staff.getWorkerTypeDisplay(),
@@ -1108,8 +1127,103 @@ public class AssignmentEditorGUI extends JFrame {
         }
     }
 
+    /**
+     * ★追加：ソート済みスタッフリストを取得
+     * 本館→別館の順で、各建物内では階数順に並べる
+     */
+    private List<StaffData> getSortedStaffList() {
+        List<StaffData> sortedStaff = new ArrayList<>(staffDataMap.values());
+
+        sortedStaff.sort((s1, s2) -> {
+            // 1. 建物分類による優先度比較
+            int priority1 = getBuildingPriority(s1);
+            int priority2 = getBuildingPriority(s2);
+
+            if (priority1 != priority2) {
+                return Integer.compare(priority1, priority2);
+            }
+
+            // 2. 同じ建物分類内では担当最小階数で比較
+            int minFloor1 = getRepresentativeFloor(s1);
+            int minFloor2 = getRepresentativeFloor(s2);
+
+            if (minFloor1 != minFloor2) {
+                return Integer.compare(minFloor1, minFloor2);
+            }
+
+            // 3. 階数も同じ場合はスタッフ名で比較
+            return s1.name.compareTo(s2.name);
+        });
+
+        return sortedStaff;
+    }
+
+    /**
+     * ★追加：建物分類の優先度を取得
+     *
+     * @param staff スタッフデータ
+     * @return 1:本館専任, 2:別館専任, 3:館跨ぎ
+     */
+    private int getBuildingPriority(StaffData staff) {
+        if (staff.hasMainBuilding && !staff.hasAnnexBuilding) {
+            return 1; // 本館専任
+        } else if (!staff.hasMainBuilding && staff.hasAnnexBuilding) {
+            return 2; // 別館専任
+        } else if (staff.hasMainBuilding && staff.hasAnnexBuilding) {
+            return 3; // 館跨ぎ
+        } else {
+            return 4; // 未分類（通常は発生しない）
+        }
+    }
+
+    /**
+     * ★追加：代表階数を取得（ソート用）
+     *
+     * @param staff スタッフデータ
+     * @return ソート用の代表階数
+     */
+    private int getRepresentativeFloor(StaffData staff) {
+        if (staff.floors.isEmpty()) {
+            return Integer.MAX_VALUE;
+        }
+
+        int buildingPriority = getBuildingPriority(staff);
+
+        switch (buildingPriority) {
+            case 1: // 本館専任
+                return getMinFloorInRange(staff.floors, 1, 10);
+
+            case 2: // 別館専任
+                return getMinFloorInRange(staff.floors, 11, Integer.MAX_VALUE);
+
+            case 3: // 館跨ぎ
+                // 館跨ぎの場合は本館の最小階を優先
+                int mainMin = getMinFloorInRange(staff.floors, 1, 10);
+                if (mainMin != Integer.MAX_VALUE) {
+                    return mainMin;
+                }
+                return getMinFloorInRange(staff.floors, 11, Integer.MAX_VALUE);
+
+            default:
+                return staff.floors.stream().mapToInt(Integer::intValue).min().orElse(Integer.MAX_VALUE);
+        }
+    }
+
+    /**
+     * ★追加：指定範囲内の最小階数を取得
+     */
+    private int getMinFloorInRange(List<Integer> floors, int minRange, int maxRange) {
+        OptionalInt result = floors.stream()
+                .filter(floor -> floor >= minRange && floor <= maxRange)
+                .mapToInt(Integer::intValue)
+                .min();
+
+        return result.orElse(Integer.MAX_VALUE);
+    }
+
+    // ★変更不要：既存のまま
     private void refreshTable() {
-        loadAssignmentData();
+        loadAssignmentData();  // 修正済みのloadAssignmentDataが呼ばれる
 
         remove(summaryPanel);
         summaryPanel = createSummaryPanel();
@@ -1118,6 +1232,7 @@ public class AssignmentEditorGUI extends JFrame {
         repaint();
     }
 
+    // ★変更不要：既存のまま
     private void exportToExcel() {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setDialogTitle("Excelファイルとして保存");
@@ -1139,6 +1254,7 @@ public class AssignmentEditorGUI extends JFrame {
         }
     }
 
+    // ★修正：Excel出力でも同じソート順を適用
     private void createExcelFile(String filePath) throws IOException {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet("清掃割り当て");
@@ -1151,9 +1267,11 @@ public class AssignmentEditorGUI extends JFrame {
                 cell.setCellValue(headers[i]);
             }
 
-            // データ行作成
+            // ★修正：ソート済みスタッフでデータ行作成
             int rowNum = 1;
-            for (StaffData staff : staffDataMap.values()) {
+            List<StaffData> sortedStaff = getSortedStaffList(); // ★追加：ソート済みリストを使用
+
+            for (StaffData staff : sortedStaff) {
                 Row row = sheet.createRow(rowNum++);
                 row.createCell(0).setCellValue(staff.name);
                 row.createCell(1).setCellValue(staff.getWorkerTypeDisplay());
@@ -1174,10 +1292,12 @@ public class AssignmentEditorGUI extends JFrame {
         }
     }
 
+    // ★変更不要：既存のまま
     private String getRoomStatusDisplay(String status) {
         return "3".equals(status) ? "連泊" : "チェックアウト";
     }
 
+    // ★変更不要：既存のまま
     private void finishEditing() {
         int result = JOptionPane.showConfirmDialog(this,
                 "編集を完了してよろしいですか？", "確認",

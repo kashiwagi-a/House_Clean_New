@@ -21,6 +21,7 @@ import java.util.Calendar;
  * ホテル清掃管理システム - メインアプリケーション
  * 部屋数制限機能統合版 - 簡易版カレンダー日付選択付き
  * 故障部屋選択機能追加版
+ * ★拡張: ポイント制限・建物指定・下限範囲対応版
  */
 public class RoomAssignmentApplication extends JFrame {
     private static final Logger LOGGER = Logger.getLogger(RoomAssignmentApplication.class.getName());
@@ -31,7 +32,7 @@ public class RoomAssignmentApplication extends JFrame {
     private JButton selectShiftFileButton;
     private JButton selectEcoDataButton;
     private JButton selectDateButton;
-    private JButton brokenRoomSettingsButton;  // ★追加: 故障部屋設定ボタン
+    private JButton brokenRoomSettingsButton;
     private JButton processButton;
     private JButton viewResultsButton;
 
@@ -41,8 +42,65 @@ public class RoomAssignmentApplication extends JFrame {
     private LocalDate selectedDate;
     private ProcessingResult lastResult;
 
-    // ★追加: 故障部屋選択関連
+    // 故障部屋選択関連
     private Set<String> selectedBrokenRoomsForCleaning = new HashSet<>();
+
+    // ★拡張: ポイント制限管理用データ構造
+    public static class StaffPointConstraint {
+        public final String staffId;
+        public final String staffName;
+        public final ConstraintType constraintType;
+        public final BuildingAssignment buildingAssignment;
+        public final double upperLimit;      // 上限ポイント
+        public final double lowerMinLimit;   // 下限最小ポイント
+        public final double lowerMaxLimit;   // 下限最大ポイント
+
+        public StaffPointConstraint(String staffId, String staffName,
+                                    ConstraintType constraintType,
+                                    BuildingAssignment buildingAssignment,
+                                    double upperLimit, double lowerMinLimit, double lowerMaxLimit) {
+            this.staffId = staffId;
+            this.staffName = staffName;
+            this.constraintType = constraintType;
+            this.buildingAssignment = buildingAssignment;
+            this.upperLimit = upperLimit;
+            this.lowerMinLimit = lowerMinLimit;
+            this.lowerMaxLimit = lowerMaxLimit;
+        }
+
+        public enum ConstraintType {
+            NONE("制限なし"),
+            UPPER_LIMIT("上限"),
+            LOWER_RANGE("下限範囲");
+
+            public final String displayName;
+            ConstraintType(String displayName) {
+                this.displayName = displayName;
+            }
+        }
+
+        public enum BuildingAssignment {
+            BOTH("両方"),
+            MAIN_ONLY("本館のみ"),
+            ANNEX_ONLY("別館のみ");
+
+            public final String displayName;
+            BuildingAssignment(String displayName) {
+                this.displayName = displayName;
+            }
+        }
+
+        public String getConstraintDisplay() {
+            switch (constraintType) {
+                case UPPER_LIMIT:
+                    return String.format("上限%.1fP", upperLimit);
+                case LOWER_RANGE:
+                    return String.format("下限%.1f〜%.1fP", lowerMinLimit, lowerMaxLimit);
+                default:
+                    return "制限なし";
+            }
+        }
+    }
 
     // 処理結果を保持するクラス
     public static class ProcessingResult {
@@ -65,7 +123,7 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     private void initializeGUI() {
-        setTitle("ホテル清掃管理システム - 部屋数制限機能付き");
+        setTitle("ホテル清掃管理システム - ポイント制限機能付き");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
 
@@ -98,7 +156,7 @@ public class RoomAssignmentApplication extends JFrame {
         setLocationRelativeTo(null);
 
         appendLog("ホテル清掃管理システムを開始しました。");
-        appendLog("部屋数制限機能が有効です。");
+        appendLog("ポイント制限機能が有効です。");
     }
 
     private JPanel createFileSelectionPanel() {
@@ -151,14 +209,14 @@ public class RoomAssignmentApplication extends JFrame {
     private JPanel createButtonPanel() {
         JPanel panel = new JPanel(new FlowLayout());
 
-        // ★追加: 故障部屋設定ボタン
+        // 故障部屋設定ボタン
         brokenRoomSettingsButton = new JButton("故障部屋設定");
         brokenRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
         brokenRoomSettingsButton.setPreferredSize(new Dimension(120, 35));
-        brokenRoomSettingsButton.setBackground(new Color(255, 140, 0)); // オレンジ色
+        brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
         brokenRoomSettingsButton.setForeground(Color.BLACK);
         brokenRoomSettingsButton.addActionListener(this::openBrokenRoomSettings);
-        brokenRoomSettingsButton.setEnabled(false); // 初期状態は無効
+        brokenRoomSettingsButton.setEnabled(false);
         panel.add(brokenRoomSettingsButton);
 
         processButton = new JButton("処理実行");
@@ -178,7 +236,7 @@ public class RoomAssignmentApplication extends JFrame {
         return panel;
     }
 
-    // ★追加: 故障部屋設定ダイアログを開く
+    // 故障部屋設定ダイアログを開く
     private void openBrokenRoomSettings(ActionEvent e) {
         if (selectedRoomFile == null) {
             JOptionPane.showMessageDialog(this,
@@ -203,9 +261,8 @@ public class RoomAssignmentApplication extends JFrame {
                     }
                 }
 
-                // ボタンの色を変更して設定済みを示す
-                brokenRoomSettingsButton.setBackground(new Color(34, 139, 34)); // 緑色
-                brokenRoomSettingsButton.setForeground(Color.BLACK); // 緑背景の場合は白文字
+                brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
+                brokenRoomSettingsButton.setForeground(Color.BLACK);
                 brokenRoomSettingsButton.setText("故障部屋設定済み");
             }
 
@@ -236,11 +293,10 @@ public class RoomAssignmentApplication extends JFrame {
             selectRoomFileButton.setText(selectedRoomFile.getName());
             appendLog("部屋データファイルを選択しました: " + selectedRoomFile.getName());
 
-            // ★追加: 部屋データファイルが選択されたら故障部屋設定ボタンを有効化
             brokenRoomSettingsButton.setEnabled(true);
             brokenRoomSettingsButton.setText("故障部屋設定");
-            brokenRoomSettingsButton.setBackground(new Color(255, 140, 0)); // オレンジ色に戻す
-            selectedBrokenRoomsForCleaning.clear(); // 前の設定をクリア
+            brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
+            selectedBrokenRoomsForCleaning.clear();
 
             updateButtonStates();
         }
@@ -293,22 +349,18 @@ public class RoomAssignmentApplication extends JFrame {
      * 簡易版カレンダー日付選択
      */
     private void selectDate(ActionEvent e) {
-        // 現在選択されている日付、または今日の日付を初期値に設定
         Date currentDate = selectedDate != null ?
                 java.sql.Date.valueOf(selectedDate) : new Date();
 
-        // 日付選択用のSpinner設定
         SpinnerDateModel model = new SpinnerDateModel(currentDate, null, null, Calendar.DAY_OF_MONTH);
         JSpinner spinner = new JSpinner(model);
         JSpinner.DateEditor editor = new JSpinner.DateEditor(spinner, "yyyy年MM月dd日");
         spinner.setEditor(editor);
         spinner.setFont(new Font("MS Gothic", Font.PLAIN, 14));
 
-        // 今日の日付ボタン
         JButton todayButton = new JButton("今日の日付");
         todayButton.addActionListener(evt -> spinner.setValue(new Date()));
 
-        // メッセージパネル作成
         JPanel messagePanel = new JPanel(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
 
@@ -329,7 +381,6 @@ public class RoomAssignmentApplication extends JFrame {
         gbc.insets = new Insets(10, 5, 5, 5);
         messagePanel.add(todayButton, gbc);
 
-        // ダイアログ表示
         int result = JOptionPane.showConfirmDialog(
                 this,
                 messagePanel,
@@ -338,7 +389,6 @@ public class RoomAssignmentApplication extends JFrame {
                 JOptionPane.PLAIN_MESSAGE
         );
 
-        // 結果処理
         if (result == JOptionPane.OK_OPTION) {
             Date selectedDateValue = (Date) spinner.getValue();
             selectedDate = selectedDateValue.toInstant()
@@ -354,8 +404,6 @@ public class RoomAssignmentApplication extends JFrame {
     private void updateButtonStates() {
         boolean canProcess = selectedRoomFile != null && selectedShiftFile != null && selectedDate != null;
         processButton.setEnabled(canProcess);
-
-        // 部屋データファイルが選択されている場合のみ故障部屋設定ボタンを有効化
         brokenRoomSettingsButton.setEnabled(selectedRoomFile != null);
     }
 
@@ -366,7 +414,6 @@ public class RoomAssignmentApplication extends JFrame {
             return;
         }
 
-        // 処理を別スレッドで実行
         SwingUtilities.invokeLater(() -> {
             processButton.setEnabled(false);
             processButton.setText("処理中...");
@@ -384,13 +431,11 @@ public class RoomAssignmentApplication extends JFrame {
         try {
             appendLog("\n=== 処理開始 ===");
 
-            // エコデータファイルのシステムプロパティ設定
             if (selectedEcoDataFile != null) {
                 System.setProperty("ecoDataFile", selectedEcoDataFile.getAbsolutePath());
                 appendLog("エコデータファイルを設定: " + selectedEcoDataFile.getName());
             }
 
-            // ★追加: 選択された故障部屋をシステムプロパティで渡す
             if (!selectedBrokenRoomsForCleaning.isEmpty()) {
                 String brokenRoomsStr = String.join(",", selectedBrokenRoomsForCleaning);
                 System.setProperty("selectedBrokenRooms", brokenRoomsStr);
@@ -409,7 +454,7 @@ public class RoomAssignmentApplication extends JFrame {
             // 2. スタッフデータの読み込み
             appendLog("スタッフデータを読み込み中...");
             List<FileProcessor.Staff> availableStaff = FileProcessor.getAvailableStaff(selectedShiftFile, selectedDate);
-            appendLog(String.format("利用可能スタッフ: %d名", availableStaff.size()));
+            appendLog(String.format("利用可能スタッフ: %d人", availableStaff.size()));
 
             if (availableStaff.isEmpty()) {
                 appendLog("警告: 利用可能なスタッフが見つかりませんでした。");
@@ -426,29 +471,27 @@ public class RoomAssignmentApplication extends JFrame {
             // 4. 大浴場清掃タイプの選択
             AdaptiveRoomOptimizer.BathCleaningType bathType = selectBathCleaningType();
 
-            // 5. 部屋数制限の設定（手動設定のみ）
-            appendLog("部屋数制限設定を確認中...");
-            Map<String, Integer> roomLimits = selectStaffRoomLimitsOptional(availableStaff);
-            if (!roomLimits.isEmpty()) {
-                appendLog(String.format("部屋数制限が設定されました: %d名", roomLimits.size()));
-                roomLimits.forEach((staffId, limit) -> {
-                    String staffName = availableStaff.stream()
-                            .filter(s -> s.id.equals(staffId))
-                            .map(s -> s.name)
-                            .findFirst().orElse(staffId);
-                    String limitType = limit < 0 ? "下限" : "上限";
-                    appendLog(String.format("  %s: %s %d室", staffName, limitType, Math.abs(limit)));
+            // 5. ★拡張: ポイント制限の設定（手動設定のみ）
+            appendLog("ポイント制限設定を確認中...");
+            List<StaffPointConstraint> pointConstraints = selectStaffPointConstraintsOptional(availableStaff);
+            if (!pointConstraints.isEmpty()) {
+                appendLog(String.format("ポイント制限が設定されました: %d人", pointConstraints.size()));
+                pointConstraints.forEach(constraint -> {
+                    appendLog(String.format("  %s: %s, %s",
+                            constraint.staffName,
+                            constraint.getConstraintDisplay(),
+                            constraint.buildingAssignment.displayName));
                 });
             } else {
-                appendLog("部屋数制限は設定されませんでした（全員均等配分）");
+                appendLog("ポイント制限は設定されませんでした（全員均等配分）");
             }
 
             // 6. 適応型設定の作成
             appendLog("最適化設定を作成中...");
             int totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithLimits(
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithPointConstraints(
                     availableStaff, totalRooms, cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                    bathType, roomLimits);
+                    bathType, pointConstraints);
 
             // 7. 最適化実行
             appendLog("最適化を実行中...");
@@ -477,9 +520,9 @@ public class RoomAssignmentApplication extends JFrame {
             appendLog("\n結果表示ボタンで詳細を確認できます。");
 
             JOptionPane.showMessageDialog(this,
-                    String.format("処理が完了しました。\n\n利用可能スタッフ: %d名\n清掃対象部屋: %d室\n" +
-                                    "制限設定スタッフ: %d名\n故障部屋(清掃対象): %d室\n\n結果表示ボタンで詳細を確認してください。",
-                            availableStaff.size(), totalRooms, roomLimits.size(), selectedBrokenRoomsForCleaning.size()),
+                    String.format("処理が完了しました。\n\n利用可能スタッフ: %d人\n清掃対象部屋: %d室\n" +
+                                    "制限設定スタッフ: %d人\n故障部屋(清掃対象): %d室\n\n結果表示ボタンで詳細を確認してください。",
+                            availableStaff.size(), totalRooms, pointConstraints.size(), selectedBrokenRoomsForCleaning.size()),
                     "処理完了", JOptionPane.INFORMATION_MESSAGE);
 
         } catch (Exception ex) {
@@ -493,72 +536,98 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     /**
-     * 部屋数制限選択（手動設定のみ）
+     * ★拡張: ポイント制限選択（手動設定のみ）
      */
-    private Map<String, Integer> selectStaffRoomLimitsOptional(List<FileProcessor.Staff> availableStaff) {
-        Map<String, Integer> roomLimits = new HashMap<>();
+    private List<StaffPointConstraint> selectStaffPointConstraintsOptional(List<FileProcessor.Staff> availableStaff) {
+        List<StaffPointConstraint> constraints = new ArrayList<>();
 
         int result = JOptionPane.showConfirmDialog(
                 parentFrame,
-                "部屋数制限を設定しますか？\n" +
-                        "・上限制限：体調不良等で最大部屋数を制限\n" +
-                        "・下限制限：ベテラン等で最低部屋数を保証",
-                "部屋数制限設定",
+                "ポイント制限を設定しますか？\n" +
+                        "・上限制限：体調不良等で最大ポイント数を制限\n" +
+                        "・下限範囲制限：ベテラン等で最低ポイント数を保証\n" +
+                        "・建物指定：本館のみ/別館のみの担当を指定",
+                "ポイント制限設定",
                 JOptionPane.YES_NO_OPTION,
                 JOptionPane.QUESTION_MESSAGE
         );
 
         if (result != JOptionPane.YES_OPTION) {
-            return roomLimits; // 空のマップを返す
+            return constraints;
         }
 
         // 手動設定ダイアログ
-        JDialog dialog = new JDialog(parentFrame, "部屋数制限設定", true);
+        JDialog dialog = new JDialog(parentFrame, "ポイント制限設定", true);
         dialog.setLayout(new BorderLayout());
-        dialog.setSize(500, 400);
+        dialog.setSize(800, 500);
         dialog.setLocationRelativeTo(parentFrame);
 
         // 説明パネル
-        JPanel infoPanel = new JPanel(new GridLayout(3, 1));
+        JPanel infoPanel = new JPanel(new GridLayout(4, 1));
         infoPanel.setBorder(BorderFactory.createTitledBorder("設定方法"));
-        infoPanel.add(new JLabel("• 上限制限：正の数値（例：8 = 最大8室まで）"));
-        infoPanel.add(new JLabel("• 下限制限：負の数値（例：-15 = 最低15室は確保）"));
-        infoPanel.add(new JLabel("• 未設定：0または空白"));
+        infoPanel.add(new JLabel("• 制限タイプ：「制限なし」「上限」「下限範囲」から選択"));
+        infoPanel.add(new JLabel("• 上限：正の数値（例：18.0 = 最大18.0ポイントまで）"));
+        infoPanel.add(new JLabel("• 下限範囲：最小〜最大（例：20.0〜25.0 = 20.0〜25.0ポイント確保）"));
+        infoPanel.add(new JLabel("• 建物指定：「両方」「本館のみ」「別館のみ」から選択"));
 
         // スタッフ設定パネル
         JPanel staffPanel = new JPanel(new BorderLayout());
         staffPanel.setBorder(BorderFactory.createTitledBorder("スタッフ別制限"));
 
         // テーブル作成
-        String[] columnNames = {"スタッフ名", "制限値", "制限タイプ"};
+        String[] columnNames = {"スタッフ名", "制限タイプ", "制限値", "建物指定", "設定状況"};
         DefaultTableModel tableModel = new DefaultTableModel(columnNames, 0);
 
         for (FileProcessor.Staff staff : availableStaff) {
-            Object[] row = {staff.name, "", "未設定"};
+            Object[] row = {staff.name, "制限なし", "", "両方", "未設定"};
             tableModel.addRow(row);
         }
 
         JTable table = new JTable(tableModel);
         table.getSelectionModel().setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
 
+        // 制限タイプのコンボボックス
+        String[] constraintTypes = {"制限なし", "上限", "下限範囲"};
+        JComboBox<String> constraintCombo = new JComboBox<>(constraintTypes);
+        table.getColumnModel().getColumn(1).setCellEditor(new DefaultCellEditor(constraintCombo));
+
+        // 建物指定のコンボボックス
+        String[] buildings = {"両方", "本館のみ", "別館のみ"};
+        JComboBox<String> buildingCombo = new JComboBox<>(buildings);
+        table.getColumnModel().getColumn(3).setCellEditor(new DefaultCellEditor(buildingCombo));
+
         // カスタムセルエディタ
-        table.getColumnModel().getColumn(1).setCellEditor(new DefaultCellEditor(new JTextField()) {
+        table.getColumnModel().getColumn(2).setCellEditor(new DefaultCellEditor(new JTextField()) {
             @Override
             public boolean stopCellEditing() {
                 String value = (String) getCellEditorValue();
                 int row = table.getSelectedRow();
+                String constraintType = (String) tableModel.getValueAt(row, 1);
 
                 if (!value.trim().isEmpty()) {
                     try {
-                        int limit = Integer.parseInt(value.trim());
-                        String type = limit > 0 ? "上限" + Math.abs(limit) + "室" :
-                                limit < 0 ? "下限" + Math.abs(limit) + "室" : "未設定";
-                        tableModel.setValueAt(type, row, 2);
+                        if ("上限".equals(constraintType)) {
+                            double limit = Double.parseDouble(value.trim());
+                            tableModel.setValueAt("設定済み(上限" + limit + "P)", row, 4);
+                        } else if ("下限範囲".equals(constraintType)) {
+                            if (value.contains("〜") || value.contains("-")) {
+                                String[] parts = value.split("[〜-]");
+                                if (parts.length == 2) {
+                                    double min = Double.parseDouble(parts[0].trim());
+                                    double max = Double.parseDouble(parts[1].trim());
+                                    tableModel.setValueAt("設定済み(下限" + min + "〜" + max + "P)", row, 4);
+                                } else {
+                                    tableModel.setValueAt("入力エラー", row, 4);
+                                }
+                            } else {
+                                tableModel.setValueAt("範囲形式エラー", row, 4);
+                            }
+                        }
                     } catch (NumberFormatException e) {
-                        tableModel.setValueAt("入力エラー", row, 2);
+                        tableModel.setValueAt("数値エラー", row, 4);
                     }
-                } else {
-                    tableModel.setValueAt("未設定", row, 2);
+                } else if ("制限なし".equals(constraintType)) {
+                    tableModel.setValueAt("制限なし", row, 4);
                 }
 
                 return super.stopCellEditing();
@@ -596,20 +665,51 @@ public class RoomAssignmentApplication extends JFrame {
         if (confirmed.get()) {
             for (int i = 0; i < tableModel.getRowCount(); i++) {
                 String staffName = (String) tableModel.getValueAt(i, 0);
-                String limitStr = (String) tableModel.getValueAt(i, 1);
+                String constraintType = (String) tableModel.getValueAt(i, 1);
+                String constraintValue = (String) tableModel.getValueAt(i, 2);
+                String buildingType = (String) tableModel.getValueAt(i, 3);
 
-                if (limitStr != null && !limitStr.trim().isEmpty()) {
+                if (!"制限なし".equals(constraintType) && constraintValue != null && !constraintValue.trim().isEmpty()) {
                     try {
-                        int limit = Integer.parseInt(limitStr.trim());
-                        if (limit != 0) {
-                            // スタッフIDを取得
-                            String staffId = availableStaff.stream()
-                                    .filter(s -> s.name.equals(staffName))
-                                    .map(s -> s.id)
-                                    .findFirst()
-                                    .orElse(staffName);
-                            roomLimits.put(staffId, limit);
+                        // スタッフIDを取得
+                        String staffId = availableStaff.stream()
+                                .filter(s -> s.name.equals(staffName))
+                                .map(s -> s.id)
+                                .findFirst()
+                                .orElse(staffName);
+
+                        StaffPointConstraint.ConstraintType cType;
+                        StaffPointConstraint.BuildingAssignment bType;
+                        double upperLimit = 0;
+                        double lowerMin = 0;
+                        double lowerMax = 0;
+
+                        // 制限タイプ
+                        if ("上限".equals(constraintType)) {
+                            cType = StaffPointConstraint.ConstraintType.UPPER_LIMIT;
+                            upperLimit = Double.parseDouble(constraintValue.trim());
+                        } else if ("下限範囲".equals(constraintType)) {
+                            cType = StaffPointConstraint.ConstraintType.LOWER_RANGE;
+                            String[] parts = constraintValue.split("[〜-]");
+                            lowerMin = Double.parseDouble(parts[0].trim());
+                            lowerMax = Double.parseDouble(parts[1].trim());
+                        } else {
+                            cType = StaffPointConstraint.ConstraintType.NONE;
                         }
+
+                        // 建物指定
+                        if ("本館のみ".equals(buildingType)) {
+                            bType = StaffPointConstraint.BuildingAssignment.MAIN_ONLY;
+                        } else if ("別館のみ".equals(buildingType)) {
+                            bType = StaffPointConstraint.BuildingAssignment.ANNEX_ONLY;
+                        } else {
+                            bType = StaffPointConstraint.BuildingAssignment.BOTH;
+                        }
+
+                        StaffPointConstraint constraint = new StaffPointConstraint(
+                                staffId, staffName, cType, bType, upperLimit, lowerMin, lowerMax);
+                        constraints.add(constraint);
+
                     } catch (NumberFormatException e) {
                         // 無効な値はスキップ
                     }
@@ -617,28 +717,28 @@ public class RoomAssignmentApplication extends JFrame {
             }
         }
 
-        return roomLimits;
+        return constraints;
     }
 
     /**
-     * 制限付き設定作成
+     * ★拡張: ポイント制限付き設定作成
      */
-    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createAdaptiveConfigWithLimits(
+    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createAdaptiveConfigWithPointConstraints(
             List<FileProcessor.Staff> availableStaff,
             int totalRooms,
             int mainBuildingRooms,
             int annexBuildingRooms,
             AdaptiveRoomOptimizer.BathCleaningType bathType,
-            Map<String, Integer> roomLimits) {
+            List<StaffPointConstraint> pointConstraints) {
 
         // 修正されたAdaptiveRoomOptimizerの制限対応メソッドを呼び出し
-        return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfig(
+        return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithPointConstraints(
                 availableStaff,
                 totalRooms,
                 mainBuildingRooms,
                 annexBuildingRooms,
                 bathType,
-                roomLimits  // 制限マップを渡す
+                pointConstraints  // ポイント制限リストを渡す
         );
     }
 

@@ -10,28 +10,28 @@ import java.util.logging.Level;
 /**
  * 適応型清掃管理最適化システム（建物分離ポイントベース版）
  * 清掃条件.txtの要件を反映した実装
- * ★改善: 本館・別館分離 + ポイントベース均等配分 + 階跨ぎ制約対応
+ * ★拡張: ポイント制限・建物指定・下限範囲対応版
  */
 public class AdaptiveRoomOptimizer {
 
     private static final Logger LOGGER = Logger.getLogger(AdaptiveRoomOptimizer.class.getName());
 
-    // 清掃条件の定数（publicに変更して外部からアクセス可能に）
-    public static final int MAX_MAIN_BUILDING_ROOMS = 99;  // 本館最大部屋数
-    public static final int MAX_ANNEX_BUILDING_ROOMS = 99; // 別館最大部屋数
-    public static final int BATH_CLEANING_REDUCTION = 4;   // 大浴場清掃の削減数
-    public static final int BATH_DRAINING_REDUCTION = 5;   // 大浴場湯抜きの削減数
-    public static final int BATH_CLEANING_STAFF_COUNT = 4; // 大浴場清掃必要人数
-    public static final double FLOOR_CROSSING_PENALTY = 0; // 階跨ぎペナルティ
-    public static final double BUILDING_CROSSING_PENALTY = 1.0; // 館跨ぎペナルティ
+    // 清掃条件の定数
+    public static final int MAX_MAIN_BUILDING_ROOMS = 99;
+    public static final int MAX_ANNEX_BUILDING_ROOMS = 99;
+    public static final int BATH_CLEANING_REDUCTION = 4;
+    public static final int BATH_DRAINING_REDUCTION = 5;
+    public static final int BATH_CLEANING_STAFF_COUNT = 4;
+    public static final double FLOOR_CROSSING_PENALTY = 0;
+    public static final double BUILDING_CROSSING_PENALTY = 1.0;
 
     // ★修正: 部屋タイプ別の実質ポイント（ポイントベース計算用）
     private static final Map<String, Double> ROOM_POINTS = new HashMap<>() {{
-        put("S", 1.0);   // シングル
-        put("D", 1.0);   // ダブル
-        put("T", 1.67);  // ツイン（T2室=S3室から計算: 3/2=1.5→1.67に修正）
-        put("FD", 2.0);  // ファミリーダブル（2人分）
-        put("ECO", 0.2); // エコ（1/5部屋分）
+        put("S", 1.0);
+        put("D", 1.0);
+        put("T", 1.67);
+        put("FD", 2.0);
+        put("ECO", 0.2);
     }};
 
     /**
@@ -130,8 +130,8 @@ public class AdaptiveRoomOptimizer {
         public final FileProcessor.Staff staff;
         public final BathCleaningType bathCleaning;
         public final BuildingAssignment preferredBuilding;
-        public final List<Integer> previousFloors;  // 前日担当した階
-        public final boolean isConsecutiveDay;      // 連続出勤かどうか
+        public final List<Integer> previousFloors;
+        public final boolean isConsecutiveDay;
 
         public ExtendedStaffInfo(FileProcessor.Staff staff, BathCleaningType bathCleaning,
                                  BuildingAssignment preferredBuilding,
@@ -143,14 +143,55 @@ public class AdaptiveRoomOptimizer {
             this.isConsecutiveDay = isConsecutiveDay;
         }
 
-        // デフォルトコンストラクタ
         public ExtendedStaffInfo(FileProcessor.Staff staff) {
             this(staff, BathCleaningType.NONE, BuildingAssignment.BOTH, new ArrayList<>(), false);
         }
     }
 
     /**
-     * ★新規追加: 建物別データクラス
+     * ★拡張: ポイント制限情報クラス
+     */
+    public static class PointConstraint {
+        public final String staffId;
+        public final ConstraintType type;
+        public final BuildingAssignment buildingAssignment;
+        public final double upperLimit;
+        public final double lowerMinLimit;
+        public final double lowerMaxLimit;
+
+        public PointConstraint(String staffId, ConstraintType type, BuildingAssignment buildingAssignment,
+                               double upperLimit, double lowerMinLimit, double lowerMaxLimit) {
+            this.staffId = staffId;
+            this.type = type;
+            this.buildingAssignment = buildingAssignment;
+            this.upperLimit = upperLimit;
+            this.lowerMinLimit = lowerMinLimit;
+            this.lowerMaxLimit = lowerMaxLimit;
+        }
+
+        public enum ConstraintType {
+            NONE, UPPER_LIMIT, LOWER_RANGE
+        }
+
+        public boolean hasUpperLimit() {
+            return type == ConstraintType.UPPER_LIMIT;
+        }
+
+        public boolean hasLowerRange() {
+            return type == ConstraintType.LOWER_RANGE;
+        }
+
+        public boolean isMainBuildingOnly() {
+            return buildingAssignment == BuildingAssignment.MAIN_ONLY;
+        }
+
+        public boolean isAnnexBuildingOnly() {
+            return buildingAssignment == BuildingAssignment.ANNEX_ONLY;
+        }
+    }
+
+    /**
+     * 建物別データクラス
      */
     public static class BuildingData {
         public final List<FloorInfo> mainFloors;
@@ -171,7 +212,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * ★新規追加: スタッフ配分結果クラス
+     * スタッフ配分結果クラス
      */
     public static class StaffAllocation {
         public final int mainStaff;
@@ -195,7 +236,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * 適応型負荷設定（拡張版）- 部屋数制限機能統合
+     * ★大幅拡張: 適応型負荷設定（ポイント制限統合版）
      */
     public static class AdaptiveLoadConfig {
         public final List<FileProcessor.Staff> availableStaff;
@@ -206,9 +247,11 @@ public class AdaptiveRoomOptimizer {
         public final Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType;
         public final Map<String, WorkerType> workerTypes;
         public final Map<String, BathCleaningType> bathCleaningAssignments;
-        public final Map<String, Integer> staffRoomLimits;  // ★追加: 個別制限
-        public final Map<String, Integer> upperLimits;     // ★追加: 上限制限
-        public final Map<String, Integer> lowerLimits;     // ★追加: 下限制限
+
+        // ★拡張: ポイント制限関連
+        public final Map<String, PointConstraint> pointConstraints;
+        public final Map<String, PointConstraint> upperLimitConstraints;
+        public final Map<String, PointConstraint> lowerRangeConstraints;
 
         private AdaptiveLoadConfig(
                 List<FileProcessor.Staff> availableStaff,
@@ -218,7 +261,7 @@ public class AdaptiveRoomOptimizer {
                 Map<AdaptiveWorkerType, Integer> targetRoomsMap,
                 Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType,
                 Map<String, BathCleaningType> bathCleaningAssignments,
-                Map<String, Integer> staffRoomLimits) {  // ★追加
+                Map<String, PointConstraint> pointConstraints) {
 
             this.availableStaff = new ArrayList<>(availableStaff);
             this.extendedStaffInfo = new ArrayList<>(extendedStaffInfo);
@@ -229,19 +272,14 @@ public class AdaptiveRoomOptimizer {
             this.workerTypes = convertToWorkerTypeMap(staffByType);
             this.bathCleaningAssignments = new HashMap<>(bathCleaningAssignments);
 
-            // ★追加: 制限情報の処理
-            this.staffRoomLimits = staffRoomLimits != null ? new HashMap<>(staffRoomLimits) : new HashMap<>();
-            this.upperLimits = new HashMap<>();
-            this.lowerLimits = new HashMap<>();
-
-            // 正負で上限・下限を分離
-            for (Map.Entry<String, Integer> entry : this.staffRoomLimits.entrySet()) {
-                if (entry.getValue() < 0) {
-                    lowerLimits.put(entry.getKey(), Math.abs(entry.getValue()));
-                } else {
-                    upperLimits.put(entry.getKey(), entry.getValue());
-                }
-            }
+            // ★拡張: ポイント制限情報の処理
+            this.pointConstraints = pointConstraints != null ? new HashMap<>(pointConstraints) : new HashMap<>();
+            this.upperLimitConstraints = this.pointConstraints.entrySet().stream()
+                    .filter(entry -> entry.getValue().hasUpperLimit())
+                    .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+            this.lowerRangeConstraints = this.pointConstraints.entrySet().stream()
+                    .filter(entry -> entry.getValue().hasLowerRange())
+                    .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
         private static Map<String, WorkerType> convertToWorkerTypeMap(
@@ -256,64 +294,126 @@ public class AdaptiveRoomOptimizer {
         }
 
         /**
-         * ★追加: 個別目標部屋数を取得（制限考慮版）
+         * ★拡張: 個別目標ポイント数を取得（制限考慮版）
          */
-        public int getIndividualTarget(String staffId, int baseTarget) {
-            LOGGER.fine(String.format("制限計算: %s, ベース: %d室", staffId, baseTarget));
+        public double getIndividualTargetPoints(String staffId, double baseTarget) {
+            LOGGER.fine(String.format("ポイント制限計算: %s, ベース: %.1fP", staffId, baseTarget));
 
             // 大浴場清掃による削減
             BathCleaningType bathType = bathCleaningAssignments.get(staffId);
-            int bathReduction = 0;
+            double bathReduction = 0;
             if (bathType != null && bathType != BathCleaningType.NONE) {
                 bathReduction = bathType.reduction;
-                LOGGER.fine(String.format("大浴場清掃: %s -%d室", staffId, bathReduction));
+                LOGGER.fine(String.format("大浴場清掃: %s -%.1fP", staffId, bathReduction));
             }
 
-            int target = baseTarget - bathReduction;
+            double target = baseTarget - bathReduction;
 
-            // 上限制限
-            if (upperLimits.containsKey(staffId)) {
-                int upperLimit = upperLimits.get(staffId);
-                target = Math.min(target, upperLimit);
-                LOGGER.fine(String.format("上限適用: %s %d室", staffId, upperLimit));
+            // ポイント制限の適用
+            PointConstraint constraint = pointConstraints.get(staffId);
+            if (constraint != null) {
+                if (constraint.hasUpperLimit()) {
+                    target = Math.min(target, constraint.upperLimit);
+                    LOGGER.fine(String.format("上限適用: %s %.1fP", staffId, constraint.upperLimit));
+                } else if (constraint.hasLowerRange()) {
+                    // 下限範囲は後で処理されるため、ここでは最小値のみ適用
+                    target = Math.max(target, constraint.lowerMinLimit);
+                    LOGGER.fine(String.format("下限最小適用: %s %.1fP", staffId, constraint.lowerMinLimit));
+                }
             }
 
-            // 下限制限
-            if (lowerLimits.containsKey(staffId)) {
-                int lowerLimit = lowerLimits.get(staffId);
-                target = Math.max(target, lowerLimit);
-                LOGGER.fine(String.format("下限適用: %s %d室", staffId, lowerLimit));
-            }
-
-            // 最低3室は保証
-            target = Math.max(3, target);
+            // 最低3ポイントは保証
+            target = Math.max(3.0, target);
 
             return target;
         }
 
         /**
-         * ★修正: 制限マップを受け取るオーバーロード版を追加
+         * ★新規: 建物制限チェック
          */
-        public static AdaptiveLoadConfig createAdaptiveConfig(
+        public boolean canAssignToBuilding(String staffId, boolean isMainBuilding) {
+            PointConstraint constraint = pointConstraints.get(staffId);
+            if (constraint == null) return true;
+
+            switch (constraint.buildingAssignment) {
+                case MAIN_ONLY:
+                    return isMainBuilding;
+                case ANNEX_ONLY:
+                    return !isMainBuilding;
+                default:
+                    return true;
+            }
+        }
+
+        /**
+         * ★新規: 上限制限スタッフの取得
+         */
+        public List<String> getUpperLimitStaffIds() {
+            return new ArrayList<>(upperLimitConstraints.keySet());
+        }
+
+        /**
+         * ★新規: 下限範囲制限スタッフの取得
+         */
+        public List<String> getLowerRangeStaffIds() {
+            return new ArrayList<>(lowerRangeConstraints.keySet());
+        }
+
+        /**
+         * ★新規: ポイント制限対応版設定作成メソッド
+         */
+        public static AdaptiveLoadConfig createAdaptiveConfigWithPointConstraints(
                 List<FileProcessor.Staff> availableStaff, int totalRooms,
                 int mainBuildingRooms, int annexBuildingRooms,
-                BathCleaningType bathType, Map<String, Integer> roomLimits) {
+                BathCleaningType bathType,
+                List<RoomAssignmentApplication.StaffPointConstraint> staffConstraints) {
 
-            LOGGER.info("=== 適応型設定作成（制限機能付き） ===");
+            LOGGER.info("=== 適応型設定作成（ポイント制限機能付き） ===");
             LOGGER.info(String.format("総部屋数: %d, 本館: %d, 別館: %d",
                     totalRooms, mainBuildingRooms, annexBuildingRooms));
 
-            // 制限情報のログ出力
-            if (roomLimits != null && !roomLimits.isEmpty()) {
-                LOGGER.info("部屋数制限設定:");
-                roomLimits.forEach((staffId, limit) -> {
-                    String staffName = availableStaff.stream()
-                            .filter(s -> s.id.equals(staffId))
-                            .map(s -> s.name)
-                            .findFirst().orElse(staffId);
-                    String limitType = limit < 0 ? "下限" : "上限";
-                    LOGGER.info(String.format("  %s: %s %d室", staffName, limitType, Math.abs(limit)));
-                });
+            // ポイント制限情報の変換
+            Map<String, PointConstraint> pointConstraints = new HashMap<>();
+            if (staffConstraints != null) {
+                LOGGER.info("ポイント制限設定:");
+                for (RoomAssignmentApplication.StaffPointConstraint staffConstraint : staffConstraints) {
+                    PointConstraint.ConstraintType cType;
+                    switch (staffConstraint.constraintType) {
+                        case UPPER_LIMIT:
+                            cType = PointConstraint.ConstraintType.UPPER_LIMIT;
+                            break;
+                        case LOWER_RANGE:
+                            cType = PointConstraint.ConstraintType.LOWER_RANGE;
+                            break;
+                        default:
+                            cType = PointConstraint.ConstraintType.NONE;
+                    }
+
+                    BuildingAssignment bAssignment;
+                    switch (staffConstraint.buildingAssignment) {
+                        case MAIN_ONLY:
+                            bAssignment = BuildingAssignment.MAIN_ONLY;
+                            break;
+                        case ANNEX_ONLY:
+                            bAssignment = BuildingAssignment.ANNEX_ONLY;
+                            break;
+                        default:
+                            bAssignment = BuildingAssignment.BOTH;
+                    }
+
+                    PointConstraint constraint = new PointConstraint(
+                            staffConstraint.staffId, cType, bAssignment,
+                            staffConstraint.upperLimit,
+                            staffConstraint.lowerMinLimit,
+                            staffConstraint.lowerMaxLimit);
+
+                    pointConstraints.put(staffConstraint.staffId, constraint);
+
+                    LOGGER.info(String.format("  %s: %s, %s",
+                            staffConstraint.staffName,
+                            staffConstraint.getConstraintDisplay(),
+                            staffConstraint.buildingAssignment.displayName));
+                }
             }
 
             // 拡張スタッフ情報の生成
@@ -332,9 +432,19 @@ public class AdaptiveRoomOptimizer {
 
                 // 大浴場清掃担当者の割り当て（4人必要）
                 if (bathStaffAssigned < maxBathStaff && finalBathType != BathCleaningType.NONE) {
-                    staffBathType = finalBathType;
-                    building = BuildingAssignment.MAIN_ONLY; // 大浴場担当は本館のみ
-                    bathStaffAssigned++;
+                    // ポイント制限で本館のみ指定されていない場合のみ大浴場担当に
+                    PointConstraint constraint = pointConstraints.get(staff.id);
+                    if (constraint == null || constraint.buildingAssignment != BuildingAssignment.ANNEX_ONLY) {
+                        staffBathType = finalBathType;
+                        building = BuildingAssignment.MAIN_ONLY; // 大浴場担当は本館のみ
+                        bathStaffAssigned++;
+                    }
+                }
+
+                // 個別制限がある場合は優先
+                PointConstraint constraint = pointConstraints.get(staff.id);
+                if (constraint != null && staffBathType == BathCleaningType.NONE) {
+                    building = constraint.buildingAssignment;
                 }
 
                 extendedInfo.add(new ExtendedStaffInfo(staff, staffBathType,
@@ -351,7 +461,7 @@ public class AdaptiveRoomOptimizer {
             int mainStaffCount = 12; // 本館担当者数（大浴場4人含む）
             int annexStaffCount = availableStaff.size() - mainStaffCount;
 
-            LOGGER.info(String.format("スタッフ配分: 本館%d名（大浴場%d名）、別館%d名",
+            LOGGER.info(String.format("スタッフ配分: 本館%d人（大浴場%d人）、別館%d人",
                     mainStaffCount, finalBathStaffAssigned, annexStaffCount));
             LOGGER.info(String.format("実質清掃必要数: 本館%d室（+大浴場分%d室）、別館%d室",
                     mainBuildingRooms, bathReductionTotal, annexBuildingRooms));
@@ -392,17 +502,28 @@ public class AdaptiveRoomOptimizer {
                             bathAssignments, mainEffectiveRooms, mainStaffCount, annexStaffCount);
 
             return new AdaptiveLoadConfig(availableStaff, extendedInfo, level,
-                    reductionMap, targetRoomsMap, staffByType, bathAssignments, roomLimits);
+                    reductionMap, targetRoomsMap, staffByType, bathAssignments, pointConstraints);
         }
 
-        // オーバーロード版（後方互換性のため）
+        // 既存メソッド（後方互換性のため）
+        public static AdaptiveLoadConfig createAdaptiveConfig(
+                List<FileProcessor.Staff> availableStaff, int totalRooms,
+                int mainBuildingRooms, int annexBuildingRooms,
+                BathCleaningType bathType, Map<String, Integer> roomLimits) {
+            // 旧形式から新形式に変換
+            List<RoomAssignmentApplication.StaffPointConstraint> constraints = new ArrayList<>();
+            // roomLimitsは無視（ポイント制限に移行）
+            return createAdaptiveConfigWithPointConstraints(
+                    availableStaff, totalRooms, mainBuildingRooms, annexBuildingRooms,
+                    bathType, constraints);
+        }
+
         public static AdaptiveLoadConfig createAdaptiveConfig(
                 List<FileProcessor.Staff> availableStaff, int totalRooms) {
-            // デフォルト値で呼び出し
-            int mainRooms = (int)(totalRooms * 0.55); // 概算値
+            int mainRooms = (int)(totalRooms * 0.55);
             int annexRooms = totalRooms - mainRooms;
-            return createAdaptiveConfig(availableStaff, totalRooms, mainRooms, annexRooms,
-                    BathCleaningType.NORMAL, new HashMap<>());
+            return createAdaptiveConfigWithPointConstraints(availableStaff, totalRooms, mainRooms, annexRooms,
+                    BathCleaningType.NORMAL, new ArrayList<>());
         }
 
         private static Map<AdaptiveWorkerType, List<FileProcessor.Staff>> assignStaffToTypes(
@@ -449,7 +570,6 @@ public class AdaptiveRoomOptimizer {
 
             Map<AdaptiveWorkerType, Integer> targetMap = new HashMap<>();
 
-            // 本館と別館の平均部屋数を計算
             double avgMainRooms = (double) mainEffectiveRooms / mainStaffCount;
             double avgAnnexRooms = (double) (totalRooms - mainEffectiveRooms +
                     BATH_CLEANING_STAFF_COUNT * BATH_CLEANING_REDUCTION) / annexStaffCount;
@@ -458,7 +578,6 @@ public class AdaptiveRoomOptimizer {
             int totalReduction = 0;
             int normalStaffCount = 0;
 
-            // 大浴場清掃による削減を考慮
             int bathReduction = 0;
             for (BathCleaningType bathType : bathAssignments.values()) {
                 if (bathType != BathCleaningType.NONE) {
@@ -477,13 +596,10 @@ public class AdaptiveRoomOptimizer {
                     totalReduction += staffCount * reduction;
                 }
 
-                // 基本目標を設定
                 int individualTarget = Math.max(3, baseTarget - reduction);
-
                 targetMap.put(type, individualTarget);
             }
 
-            // 通常スタッフに再配分を加算
             if (normalStaffCount > 0) {
                 int additionalPerNormal = (int) Math.ceil((double) totalReduction / normalStaffCount);
                 int normalTarget = targetMap.get(AdaptiveWorkerType.NORMAL) + additionalPerNormal;
@@ -510,7 +626,7 @@ public class AdaptiveRoomOptimizer {
         public final int floorNumber;
         public final Map<String, Integer> roomCounts;
         public final int ecoRooms;
-        public final boolean isMainBuilding;  // 本館かどうか
+        public final boolean isMainBuilding;
 
         public FloorInfo(int floorNumber, Map<String, Integer> roomCounts, int ecoRooms, boolean isMainBuilding) {
             this.floorNumber = floorNumber;
@@ -522,7 +638,6 @@ public class AdaptiveRoomOptimizer {
             this.isMainBuilding = isMainBuilding;
         }
 
-        // 後方互換性のためのコンストラクタ
         public FloorInfo(int floorNumber, Map<String, Integer> roomCounts, int ecoRooms) {
             this(floorNumber, roomCounts, ecoRooms, true);
         }
@@ -584,8 +699,8 @@ public class AdaptiveRoomOptimizer {
         public final Map<Integer, RoomAllocation> roomsByFloor;
         public final int totalRooms;
         public final double totalPoints;
-        public final double movementPenalty;  // 移動ペナルティ
-        public final double adjustedScore;    // 調整後スコア
+        public final double movementPenalty;
+        public final double adjustedScore;
         public final boolean hasMainBuilding;
         public final boolean hasAnnexBuilding;
 
@@ -600,7 +715,6 @@ public class AdaptiveRoomOptimizer {
             this.movementPenalty = calculateMovementPenalty();
             this.adjustedScore = totalPoints + movementPenalty;
 
-            // 建物判定（簡易版：階数で判定）
             this.hasMainBuilding = floors.stream().anyMatch(f -> f <= 10);
             this.hasAnnexBuilding = floors.stream().anyMatch(f -> f > 10);
         }
@@ -620,12 +734,10 @@ public class AdaptiveRoomOptimizer {
         private double calculateMovementPenalty() {
             double penalty = 0;
 
-            // ★修正: 階跨ぎ制約（最大2階まで、連続不要）
             if (floors.size() > 2) {
-                penalty += (floors.size() - 2) * 10.0; // 3階以上は大ペナルティ
+                penalty += (floors.size() - 2) * 10.0;
             }
 
-            // 館跨ぎペナルティ
             if (hasMainBuilding && hasAnnexBuilding) {
                 penalty += BUILDING_CROSSING_PENALTY;
             }
@@ -705,43 +817,48 @@ public class AdaptiveRoomOptimizer {
         }
 
         public void printDetailedSummary() {
-            System.out.println("\n=== 最適化結果（清掃条件適用版） ===");
+            System.out.println("\n=== 最適化結果（ポイント制限適用版） ===");
             System.out.printf("対象日: %s\n",
                     targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
-            System.out.printf("出勤スタッフ数: %d名\n", config.availableStaff.size());
+            System.out.printf("出勤スタッフ数: %d人\n", config.availableStaff.size());
 
             // 大浴場担当者の表示
             System.out.println("\n【大浴場清掃担当】");
             int bathCount = 0;
             for (Map.Entry<String, BathCleaningType> entry : config.bathCleaningAssignments.entrySet()) {
                 if (entry.getValue() != BathCleaningType.NONE) {
-                    System.out.printf("  %s: %s (-%d室)\n",
-                            entry.getKey(), entry.getValue().displayName, entry.getValue().reduction);
+                    System.out.printf("  %s: %s (-%.1fポイント)\n",
+                            entry.getKey(), entry.getValue().displayName, (double)entry.getValue().reduction);
                     bathCount++;
                 }
             }
-            System.out.printf("  大浴場清掃担当者数: %d名（本館のみ担当）\n", bathCount);
+            System.out.printf("  大浴場清掃担当者数: %d人（本館のみ担当）\n", bathCount);
 
-            // ★追加: 制限適用状況
-            if (!config.staffRoomLimits.isEmpty()) {
-                System.out.println("\n【部屋数制限適用状況】");
+            // ★拡張: ポイント制限適用状況
+            if (!config.pointConstraints.isEmpty()) {
+                System.out.println("\n【ポイント制限適用状況】");
                 for (StaffAssignment assignment : assignments) {
                     String staffId = assignment.staff.id;
-                    Integer limit = config.staffRoomLimits.get(staffId);
-                    if (limit != null) {
-                        String limitType = limit < 0 ? "下限" : "上限";
-                        int absLimit = Math.abs(limit);
-                        int actual = assignment.totalRooms;
+                    PointConstraint constraint = config.pointConstraints.get(staffId);
+                    if (constraint != null) {
+                        double actual = assignment.totalPoints;
+                        String status = "";
 
-                        String status;
-                        if (limit < 0) {
-                            status = actual >= absLimit ? "✓" : "⚠未達";
-                        } else {
-                            status = actual <= absLimit ? "✓" : "⚠超過";
+                        if (constraint.hasUpperLimit()) {
+                            status = actual <= constraint.upperLimit ? "✓" : "⚠ 超過";
+                            System.out.printf("  %s: 上限%.1fP → 実際%.1fP %s\n",
+                                    assignment.staff.name, constraint.upperLimit, actual, status);
+                        } else if (constraint.hasLowerRange()) {
+                            status = actual >= constraint.lowerMinLimit && actual <= constraint.lowerMaxLimit ?
+                                    "✓" : "⚠ 範囲外";
+                            System.out.printf("  %s: 下限%.1f〜%.1fP → 実際%.1fP %s\n",
+                                    assignment.staff.name, constraint.lowerMinLimit,
+                                    constraint.lowerMaxLimit, actual, status);
                         }
 
-                        System.out.printf("  %s: %s%d室 → 実際%d室 %s\n",
-                                assignment.staff.name, limitType, absLimit, actual, status);
+                        if (constraint.buildingAssignment != BuildingAssignment.BOTH) {
+                            System.out.printf("    建物指定: %s\n", constraint.buildingAssignment.displayName);
+                        }
                     }
                 }
             }
@@ -749,7 +866,7 @@ public class AdaptiveRoomOptimizer {
             System.out.println("\n【個別配分結果】");
             assignments.forEach(a -> System.out.println(a.getDetailedDescription()));
 
-            // 本館・別館の部屋数チェック
+            // 建物別部屋数チェック
             System.out.println("\n【建物別集計】");
             int mainBuildingTotal = 0;
             int annexBuildingTotal = 0;
@@ -803,7 +920,7 @@ public class AdaptiveRoomOptimizer {
             byType.forEach((type, list) -> {
                 double avgRooms = list.stream().mapToInt(a -> a.totalRooms).average().orElse(0);
                 double avgPoints = list.stream().mapToDouble(a -> a.adjustedScore).average().orElse(0);
-                System.out.printf("%s作業者: %d名, 平均%.1f室, 平均%.1fポイント\n",
+                System.out.printf("%s作業者: %d人, 平均%.1f室, 平均%.1fポイント\n",
                         type.displayName, list.size(), avgRooms, avgPoints);
             });
 
@@ -831,7 +948,7 @@ public class AdaptiveRoomOptimizer {
         }
 
         public OptimizationResult optimize(LocalDate targetDate) {
-            System.out.println("=== 建物分離型ポイントベース最適化開始 ===");
+            System.out.println("=== ポイント制限対応最適化開始 ===");
             System.out.printf("対象日: %s\n", targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
             System.out.printf("負荷レベル: %s\n", adaptiveConfig.loadLevel.displayName);
 
@@ -845,15 +962,15 @@ public class AdaptiveRoomOptimizer {
                     buildingData.mainTotalPoints + buildingData.annexTotalPoints,
                     buildingData.mainRoomCount + buildingData.annexRoomCount);
 
-            // 建物分離最適化実行
-            BuildingSeparatedOptimizer optimizer = new BuildingSeparatedOptimizer(buildingData, adaptiveConfig);
-            List<StaffAssignment> result = optimizer.optimizeWithPriority();
+            // ★拡張: ポイント制限対応最適化実行
+            PointConstraintOptimizer optimizer = new PointConstraintOptimizer(buildingData, adaptiveConfig);
+            List<StaffAssignment> result = optimizer.optimizeWithConstraints();
 
             return new OptimizationResult(result, adaptiveConfig, targetDate);
         }
 
         /**
-         * ★新規追加: 建物別データ分離
+         * 建物別データ分離
          */
         private BuildingData separateBuildingData() {
             List<FloorInfo> mainFloors = new ArrayList<>();
@@ -872,237 +989,191 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * ★新規追加: 建物分離最適化器
+     * ★新規追加: ポイント制限対応最適化器
      */
-    public static class BuildingSeparatedOptimizer {
+    public static class PointConstraintOptimizer {
         private final BuildingData buildingData;
         private final AdaptiveLoadConfig config;
 
-        public BuildingSeparatedOptimizer(BuildingData buildingData, AdaptiveLoadConfig config) {
+        public PointConstraintOptimizer(BuildingData buildingData, AdaptiveLoadConfig config) {
             this.buildingData = buildingData;
             this.config = config;
         }
 
         /**
-         * ★新規追加: 優先度付き最適化（1ポイント差 → 2ポイント差 → 館跨ぎ）
+         * ★新規: 制約付き最適化（上限→通常→下限の順で処理）
          */
-        public List<StaffAssignment> optimizeWithPriority() {
-            int totalStaff = config.availableStaff.size();
+        public List<StaffAssignment> optimizeWithConstraints() {
+            System.out.println("\n=== ポイント制限適用最適化実行 ===");
 
-            System.out.println("\n=== 段階的最適化実行 ===");
+            List<StaffAssignment> assignments = new ArrayList<>();
+            Map<Integer, RoomAllocation> remainingMainRooms = initializeRemainingRooms(buildingData.mainFloors);
+            Map<Integer, RoomAllocation> remainingAnnexRooms = initializeRemainingRooms(buildingData.annexFloors);
 
-            // 優先度1: 1ポイント差（館跨ぎなし）
-            StaffAllocation allocation = tryPointDifference(1.0, "1ポイント差");
-            if (allocation != null) {
-                return executeOptimization(allocation);
-            }
-
-            // 優先度2: 2ポイント差（館跨ぎなし）
-            allocation = tryPointDifference(2.0, "2ポイント差");
-            if (allocation != null) {
-                return executeOptimization(allocation);
-            }
-
-            // 優先度3: 館跨ぎで調整
-            System.out.println("🔄 館跨ぎ調整モードに移行");
-            return optimizeWithCrossBuilding();
-        }
-
-        /**
-         * ★新規追加: 指定ポイント差での最適化試行
-         */
-        private StaffAllocation tryPointDifference(double targetDiff, String method) {
-            System.out.printf("\n【%s試行】\n", method);
-
-            int totalStaff = config.availableStaff.size();
-            double tolerance = 0.3; // 許容範囲
-
-            for (int mainStaff = 1; mainStaff < totalStaff; mainStaff++) {
-                int annexStaff = totalStaff - mainStaff;
-
-                double mainAvg = buildingData.mainTotalPoints / mainStaff;
-                double annexAvg = buildingData.annexTotalPoints / annexStaff;
-                double actualDiff = mainAvg - annexAvg;
-
-                System.out.printf("  試行: 本館%d人(%.2fP) 別館%d人(%.2fP) 差%.2fP\n",
-                        mainStaff, mainAvg, annexStaff, annexAvg, actualDiff);
-
-                // 目標差±tolerance の範囲内か？
-                if (Math.abs(actualDiff - targetDiff) <= tolerance) {
-                    System.out.printf("✅ %s達成！\n", method);
-                    return new StaffAllocation(mainStaff, annexStaff, false, method,
-                            buildingData.mainTotalPoints, buildingData.annexTotalPoints);
+            // Phase 1: 上限制限スタッフを先に処理
+            List<String> upperLimitStaff = config.getUpperLimitStaffIds();
+            if (!upperLimitStaff.isEmpty()) {
+                System.out.println("\n【Phase 1: 上限制限スタッフ処理】");
+                for (String staffId : upperLimitStaff) {
+                    FileProcessor.Staff staff = findStaffById(staffId);
+                    if (staff != null) {
+                        StaffAssignment assignment = assignWithUpperLimit(staff,
+                                remainingMainRooms, remainingAnnexRooms);
+                        assignments.add(assignment);
+                        System.out.printf("  %s: %.1fP (%d室) - 上限制限適用\n",
+                                staff.name, assignment.totalPoints, assignment.totalRooms);
+                    }
                 }
             }
 
-            System.out.printf("❌ %sは達成困難\n", method);
-            return null;
-        }
+            // Phase 2: 通常スタッフ処理
+            List<String> processedStaffIds = assignments.stream()
+                    .map(a -> a.staff.id).collect(Collectors.toList());
+            List<FileProcessor.Staff> normalStaff = config.availableStaff.stream()
+                    .filter(s -> !processedStaffIds.contains(s.id) &&
+                            !config.getLowerRangeStaffIds().contains(s.id))
+                    .collect(Collectors.toList());
 
-        /**
-         * ★新規追加: 館跨ぎ調整での最適化
-         */
-        private List<StaffAssignment> optimizeWithCrossBuilding() {
-            int totalStaff = config.availableStaff.size();
+            if (!normalStaff.isEmpty()) {
+                System.out.println("\n【Phase 2: 通常スタッフ処理】");
+                double remainingMainPoints = calculateRemainingPoints(remainingMainRooms);
+                double remainingAnnexPoints = calculateRemainingPoints(remainingAnnexRooms);
+                double avgPointsPerStaff = (remainingMainPoints + remainingAnnexPoints) /
+                        (normalStaff.size() + config.getLowerRangeStaffIds().size());
 
-            // 6:4 の割合で分割を試行
-            int mainStaff = Math.max(1, (int) Math.round(totalStaff * 0.6)) - 1; // -1は館跨ぎスタッフ分
-            int annexStaff = totalStaff - mainStaff - 1; // -1は館跨ぎスタッフ分
-
-            if (mainStaff <= 0 || annexStaff <= 0) {
-                // フォールバック: 半分ずつに分ける
-                mainStaff = totalStaff / 2;
-                annexStaff = totalStaff - mainStaff - 1;
+                for (FileProcessor.Staff staff : normalStaff) {
+                    StaffAssignment assignment = assignNormalStaff(staff, avgPointsPerStaff,
+                            remainingMainRooms, remainingAnnexRooms);
+                    assignments.add(assignment);
+                    System.out.printf("  %s: %.1fP (%d室) - 通常配分\n",
+                            staff.name, assignment.totalPoints, assignment.totalRooms);
+                }
             }
 
-            double mainAvg = buildingData.mainTotalPoints / mainStaff;
-            double annexAvg = buildingData.annexTotalPoints / annexStaff;
-
-            System.out.printf("館跨ぎ前: 本館%d人(%.2fP) 別館%d人(%.2fP) 差%.2fP\n",
-                    mainStaff, mainAvg, annexStaff, annexAvg, mainAvg - annexAvg);
-
-            StaffAllocation allocation = new StaffAllocation(mainStaff, annexStaff, true, "館跨ぎ調整",
-                    buildingData.mainTotalPoints, buildingData.annexTotalPoints);
-
-            return executeOptimization(allocation);
-        }
-
-        /**
-         * ★新規追加: 最適化実行
-         */
-        private List<StaffAssignment> executeOptimization(StaffAllocation allocation) {
-            System.out.printf("\n📋 %sで最適化実行\n", allocation.method);
-            System.out.printf("配分: 本館%d人 別館%d人", allocation.mainStaff, allocation.annexStaff);
-            if (allocation.hasCrossBuilding) {
-                System.out.print(" +館跨ぎ1人");
-            }
-            System.out.println();
-
-            List<StaffAssignment> result = new ArrayList<>();
-
-            if (!allocation.hasCrossBuilding) {
-                // 館跨ぎなし: 完全分離最適化
-                List<FileProcessor.Staff> mainStaffList = config.availableStaff.subList(0, allocation.mainStaff);
-                List<FileProcessor.Staff> annexStaffList = config.availableStaff.subList(
-                        allocation.mainStaff, allocation.mainStaff + allocation.annexStaff);
-
-                result.addAll(optimizeBuilding(buildingData.mainFloors, mainStaffList, "本館"));
-                result.addAll(optimizeBuilding(buildingData.annexFloors, annexStaffList, "別館"));
-            } else {
-                // 館跨ぎあり: 1人を両建物担当
-                List<FileProcessor.Staff> mainStaffList = config.availableStaff.subList(0, allocation.mainStaff);
-                List<FileProcessor.Staff> annexStaffList = config.availableStaff.subList(
-                        allocation.mainStaff, allocation.mainStaff + allocation.annexStaff);
-                FileProcessor.Staff crossBuildingStaff = config.availableStaff.get(allocation.mainStaff + allocation.annexStaff);
-
-                result.addAll(optimizeBuilding(buildingData.mainFloors, mainStaffList, "本館"));
-                result.addAll(optimizeBuilding(buildingData.annexFloors, annexStaffList, "別館"));
-
-                // 館跨ぎスタッフの処理
-                result.add(createCrossBuildingAssignment(crossBuildingStaff));
-            }
-
-            return result;
-        }
-
-        /**
-         * ★新規追加: 建物別最適化
-         */
-        private List<StaffAssignment> optimizeBuilding(List<FloorInfo> floors,
-                                                       List<FileProcessor.Staff> staffList,
-                                                       String buildingName) {
-            if (staffList.isEmpty()) {
-                System.out.printf("⚠️ %sにスタッフが割り当てられていません\n", buildingName);
-                return new ArrayList<>();
-            }
-
-            System.out.printf("\n【%s最適化】スタッフ%d人\n", buildingName, staffList.size());
-
-            double totalPoints = floors.stream().mapToDouble(FloorInfo::getTotalPoints).sum();
-            double targetPointsPerStaff = totalPoints / staffList.size();
-
-            System.out.printf("目標: %.2fポイント/人\n", targetPointsPerStaff);
-
-            List<StaffAssignment> assignments = new ArrayList<>();
-
-            // ★ポイントベース配分実装
-            Map<Integer, RoomAllocation> remainingRooms = initializeRemainingRooms(floors);
-
-            for (FileProcessor.Staff staff : staffList) {
-                // 個別目標ポイントを計算（制限考慮）
-                double individualTarget = calculateIndividualTarget(staff.id, targetPointsPerStaff);
-
-                StaffAssignment assignment = assignToStaff(staff, individualTarget, remainingRooms, buildingName);
-                assignments.add(assignment);
-
-                System.out.printf("  %s: %.2fP (%d室) %s\n",
-                        staff.name, assignment.totalPoints, assignment.totalRooms,
-                        assignment.floors.size() > 2 ? "⚠️階数超過" : "");
+            // Phase 3: 下限範囲制限スタッフを最後に処理
+            List<String> lowerRangeStaff = config.getLowerRangeStaffIds();
+            if (!lowerRangeStaff.isEmpty()) {
+                System.out.println("\n【Phase 3: 下限範囲制限スタッフ処理】");
+                for (String staffId : lowerRangeStaff) {
+                    FileProcessor.Staff staff = findStaffById(staffId);
+                    if (staff != null) {
+                        StaffAssignment assignment = assignWithLowerRange(staff,
+                                remainingMainRooms, remainingAnnexRooms);
+                        assignments.add(assignment);
+                        System.out.printf("  %s: %.1fP (%d室) - 下限範囲制限適用\n",
+                                staff.name, assignment.totalPoints, assignment.totalRooms);
+                    }
+                }
             }
 
             return assignments;
         }
 
         /**
-         * ★新規追加: 個別目標ポイント計算
+         * 上限制限付きスタッフ割り当て
          */
-        private double calculateIndividualTarget(String staffId, double baseTarget) {
-            // 大浴場清掃による削減
-            BathCleaningType bathType = config.bathCleaningAssignments.get(staffId);
-            double reduction = 0;
+        private StaffAssignment assignWithUpperLimit(FileProcessor.Staff staff,
+                                                     Map<Integer, RoomAllocation> remainingMainRooms,
+                                                     Map<Integer, RoomAllocation> remainingAnnexRooms) {
+
+            PointConstraint constraint = config.pointConstraints.get(staff.id);
+            double targetPoints = constraint.upperLimit;
+
+            // 大浴場清掃減算
+            BathCleaningType bathType = config.bathCleaningAssignments.get(staff.id);
             if (bathType != null && bathType != BathCleaningType.NONE) {
-                reduction = bathType.reduction;
+                targetPoints -= bathType.reduction;
             }
 
-            double target = baseTarget - reduction;
-
-            // 制限の適用
-            if (config.upperLimits.containsKey(staffId)) {
-                target = Math.min(target, config.upperLimits.get(staffId));
-            }
-            if (config.lowerLimits.containsKey(staffId)) {
-                target = Math.max(target, config.lowerLimits.get(staffId));
-            }
-
-            return Math.max(3.0, target); // 最低3ポイントは保証
+            return assignToStaffWithTarget(staff, targetPoints, constraint.buildingAssignment,
+                    remainingMainRooms, remainingAnnexRooms);
         }
 
         /**
-         * ★新規追加: 残り部屋の初期化
+         * 通常スタッフ割り当て
          */
-        private Map<Integer, RoomAllocation> initializeRemainingRooms(List<FloorInfo> floors) {
-            Map<Integer, RoomAllocation> remaining = new HashMap<>();
-            for (FloorInfo floor : floors) {
-                remaining.put(floor.floorNumber,
-                        new RoomAllocation(new HashMap<>(floor.roomCounts), floor.ecoRooms));
+        private StaffAssignment assignNormalStaff(FileProcessor.Staff staff, double targetPoints,
+                                                  Map<Integer, RoomAllocation> remainingMainRooms,
+                                                  Map<Integer, RoomAllocation> remainingAnnexRooms) {
+
+            // 大浴場清掃減算
+            BathCleaningType bathType = config.bathCleaningAssignments.get(staff.id);
+            if (bathType != null && bathType != BathCleaningType.NONE) {
+                targetPoints -= bathType.reduction;
             }
-            return remaining;
+
+            // 建物制限チェック
+            PointConstraint constraint = config.pointConstraints.get(staff.id);
+            BuildingAssignment buildingAssignment = constraint != null ?
+                    constraint.buildingAssignment : BuildingAssignment.BOTH;
+
+            return assignToStaffWithTarget(staff, targetPoints, buildingAssignment,
+                    remainingMainRooms, remainingAnnexRooms);
         }
 
         /**
-         * ★新規追加: スタッフへの部屋割り当て（ポイントベース）
+         * 下限範囲制限付きスタッフ割り当て
          */
-        private StaffAssignment assignToStaff(FileProcessor.Staff staff, double targetPoints,
-                                              Map<Integer, RoomAllocation> remainingRooms, String buildingName) {
+        private StaffAssignment assignWithLowerRange(FileProcessor.Staff staff,
+                                                     Map<Integer, RoomAllocation> remainingMainRooms,
+                                                     Map<Integer, RoomAllocation> remainingAnnexRooms) {
+
+            PointConstraint constraint = config.pointConstraints.get(staff.id);
+            double targetPoints = (constraint.lowerMinLimit + constraint.lowerMaxLimit) / 2.0; // 中央値を目標
+
+            // 大浴場清掃減算
+            BathCleaningType bathType = config.bathCleaningAssignments.get(staff.id);
+            if (bathType != null && bathType != BathCleaningType.NONE) {
+                targetPoints -= bathType.reduction;
+            }
+
+            // 残り部屋から可能な限り多く割り当て
+            double remainingMainPoints = calculateRemainingPoints(remainingMainRooms);
+            double remainingAnnexPoints = calculateRemainingPoints(remainingAnnexRooms);
+            double maxAvailable = remainingMainPoints + remainingAnnexPoints;
+
+            // 下限最大値と利用可能ポイントの小さい方を採用
+            targetPoints = Math.min(constraint.lowerMaxLimit, maxAvailable);
+            targetPoints = Math.max(constraint.lowerMinLimit, targetPoints);
+
+            return assignToStaffWithTarget(staff, targetPoints, constraint.buildingAssignment,
+                    remainingMainRooms, remainingAnnexRooms);
+        }
+
+        /**
+         * 目標ポイントに基づくスタッフ割り当て
+         */
+        private StaffAssignment assignToStaffWithTarget(FileProcessor.Staff staff, double targetPoints,
+                                                        BuildingAssignment buildingAssignment,
+                                                        Map<Integer, RoomAllocation> remainingMainRooms,
+                                                        Map<Integer, RoomAllocation> remainingAnnexRooms) {
+
             Map<Integer, RoomAllocation> staffRooms = new HashMap<>();
             List<Integer> staffFloors = new ArrayList<>();
             double currentPoints = 0;
 
-            // 利用可能な階を取得（最大2階まで）
-            List<Integer> availableFloors = remainingRooms.entrySet().stream()
-                    .filter(entry -> !entry.getValue().isEmpty())
-                    .map(Map.Entry::getKey)
-                    .sorted()
-                    .collect(Collectors.toList());
+            // 建物制限に基づいて利用可能フロアを決定
+            List<Integer> availableFloors = new ArrayList<>();
+
+            if (buildingAssignment != BuildingAssignment.ANNEX_ONLY) {
+                availableFloors.addAll(getAvailableFloors(remainingMainRooms));
+            }
+            if (buildingAssignment != BuildingAssignment.MAIN_ONLY) {
+                availableFloors.addAll(getAvailableFloors(remainingAnnexRooms));
+            }
+
+            Collections.sort(availableFloors);
 
             // 最大2階まで割り当て
             for (int i = 0; i < Math.min(2, availableFloors.size()) && currentPoints < targetPoints; i++) {
                 int floor = availableFloors.get(i);
-                RoomAllocation available = remainingRooms.get(floor);
 
-                if (available.isEmpty()) continue;
+                Map<Integer, RoomAllocation> targetRemainingRooms =
+                        floor <= 10 ? remainingMainRooms : remainingAnnexRooms;
 
-                // この階から取得するポイント数を決定
+                RoomAllocation available = targetRemainingRooms.get(floor);
+                if (available == null || available.isEmpty()) continue;
+
                 double remainingTarget = targetPoints - currentPoints;
                 RoomAllocation allocation = calculateOptimalAllocation(available, remainingTarget);
 
@@ -1112,7 +1183,7 @@ public class AdaptiveRoomOptimizer {
                     currentPoints += allocation.getTotalPoints();
 
                     // 残り部屋を更新
-                    updateRemainingRooms(remainingRooms, floor, allocation);
+                    updateRemainingRooms(targetRemainingRooms, floor, allocation);
                 }
             }
 
@@ -1123,9 +1194,36 @@ public class AdaptiveRoomOptimizer {
             return new StaffAssignment(staff, workerType, staffFloors, staffRooms);
         }
 
-        /**
-         * ★新規追加: 最適配分計算
-         */
+        // ヘルパーメソッド群
+        private FileProcessor.Staff findStaffById(String staffId) {
+            return config.availableStaff.stream()
+                    .filter(s -> s.id.equals(staffId))
+                    .findFirst().orElse(null);
+        }
+
+        private Map<Integer, RoomAllocation> initializeRemainingRooms(List<FloorInfo> floors) {
+            Map<Integer, RoomAllocation> remaining = new HashMap<>();
+            for (FloorInfo floor : floors) {
+                remaining.put(floor.floorNumber,
+                        new RoomAllocation(new HashMap<>(floor.roomCounts), floor.ecoRooms));
+            }
+            return remaining;
+        }
+
+        private List<Integer> getAvailableFloors(Map<Integer, RoomAllocation> remainingRooms) {
+            return remainingRooms.entrySet().stream()
+                    .filter(entry -> !entry.getValue().isEmpty())
+                    .map(Map.Entry::getKey)
+                    .sorted()
+                    .collect(Collectors.toList());
+        }
+
+        private double calculateRemainingPoints(Map<Integer, RoomAllocation> remainingRooms) {
+            return remainingRooms.values().stream()
+                    .mapToDouble(RoomAllocation::getTotalPoints)
+                    .sum();
+        }
+
         private RoomAllocation calculateOptimalAllocation(RoomAllocation available, double targetPoints) {
             Map<String, Integer> bestCounts = new HashMap<>();
             int bestEco = 0;
@@ -1167,9 +1265,6 @@ public class AdaptiveRoomOptimizer {
             return new RoomAllocation(bestCounts, bestEco);
         }
 
-        /**
-         * ★新規追加: 残り部屋更新
-         */
         private void updateRemainingRooms(Map<Integer, RoomAllocation> remainingRooms,
                                           int floor, RoomAllocation allocated) {
             RoomAllocation current = remainingRooms.get(floor);
@@ -1181,28 +1276,6 @@ public class AdaptiveRoomOptimizer {
                 int newEco = Math.max(0, current.ecoRooms - allocated.ecoRooms);
                 remainingRooms.put(floor, new RoomAllocation(newCounts, newEco));
             }
-        }
-
-        /**
-         * ★新規追加: 館跨ぎスタッフ割り当て作成
-         */
-        private StaffAssignment createCrossBuildingAssignment(FileProcessor.Staff staff) {
-            System.out.printf("館跨ぎスタッフ作成: %s\n", staff.name);
-
-            // 簡易実装: 本館1階+別館1階を割り当て
-            Map<Integer, RoomAllocation> crossRooms = new HashMap<>();
-            List<Integer> crossFloors = Arrays.asList(2, 21); // 本館2階 + 別館1階
-
-            // 少量の部屋を割り当て（館跨ぎペナルティを考慮して）
-            Map<String, Integer> mainRooms = new HashMap<>();
-            mainRooms.put("S", 2);
-            crossRooms.put(2, new RoomAllocation(mainRooms, 0));
-
-            Map<String, Integer> annexRooms = new HashMap<>();
-            annexRooms.put("S", 2);
-            crossRooms.put(21, new RoomAllocation(annexRooms, 0));
-
-            return new StaffAssignment(staff, WorkerType.NORMAL_DUTY, crossFloors, crossRooms);
         }
     }
 }

@@ -10,7 +10,7 @@ import java.util.logging.Level;
 /**
  * 適応型清掃管理最適化システム（建物分離ポイントベース版）
  * 清掃条件.txtの要件を反映した実装
- * ★拡張: ポイント制限・建物指定・下限範囲対応版
+ * ★修正: ポイント制限機能に統一、不要な自動負荷軽減ロジックを削除
  */
 public class AdaptiveRoomOptimizer {
 
@@ -25,7 +25,7 @@ public class AdaptiveRoomOptimizer {
     public static final double FLOOR_CROSSING_PENALTY = 0;
     public static final double BUILDING_CROSSING_PENALTY = 1.0;
 
-    // ★修正: 部屋タイプ別の実質ポイント（ポイントベース計算用）
+    // 部屋タイプ別の実質ポイント（ポイントベース計算用）
     private static final Map<String, Double> ROOM_POINTS = new HashMap<>() {{
         put("S", 1.0);
         put("D", 1.0);
@@ -67,59 +67,16 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * 作業者タイプ列挙型
+     * 作業者タイプ（表示用のみ）
      */
     public enum WorkerType {
-        NORMAL_DUTY("通常", 0),
-        LIGHT_DUTY("軽減", 3);
+        NORMAL_DUTY("通常"),
+        LIGHT_DUTY("軽減");
 
         public final String displayName;
-        public final int reduction;
 
-        WorkerType(String displayName, int reduction) {
+        WorkerType(String displayName) {
             this.displayName = displayName;
-            this.reduction = reduction;
-        }
-    }
-
-    /**
-     * 負荷レベル列挙型
-     */
-    public enum LoadLevel {
-        LIGHT("軽負荷", 8),
-        NORMAL("通常負荷", 15),
-        HEAVY("重負荷", 999);
-
-        public final String displayName;
-        private final int threshold;
-
-        LoadLevel(String displayName, int threshold) {
-            this.displayName = displayName;
-            this.threshold = threshold;
-        }
-
-        public static LoadLevel fromAverage(double avgRooms) {
-            if (avgRooms < LIGHT.threshold) return LIGHT;
-            if (avgRooms < NORMAL.threshold) return NORMAL;
-            return HEAVY;
-        }
-    }
-
-    /**
-     * 適応型ワーカータイプ
-     */
-    public enum AdaptiveWorkerType {
-        SUPER_LIGHT("超軽減", 0.1),
-        LIGHT("軽減", 0.1),
-        MILD_LIGHT("やや軽減", 0.15),
-        NORMAL("通常", 0.65);
-
-        public final String displayName;
-        private final double ratio;
-
-        AdaptiveWorkerType(String displayName, double ratio) {
-            this.displayName = displayName;
-            this.ratio = ratio;
         }
     }
 
@@ -236,15 +193,11 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * ★大幅拡張: 適応型負荷設定（ポイント制限統合版）
+     * ★大幅簡素化: ポイント制限統合版設定クラス
      */
     public static class AdaptiveLoadConfig {
         public final List<FileProcessor.Staff> availableStaff;
         public final List<ExtendedStaffInfo> extendedStaffInfo;
-        public final LoadLevel loadLevel;
-        public final Map<AdaptiveWorkerType, Integer> reductionMap;
-        public final Map<AdaptiveWorkerType, Integer> targetRoomsMap;
-        public final Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType;
         public final Map<String, WorkerType> workerTypes;
         public final Map<String, BathCleaningType> bathCleaningAssignments;
 
@@ -256,20 +209,12 @@ public class AdaptiveRoomOptimizer {
         private AdaptiveLoadConfig(
                 List<FileProcessor.Staff> availableStaff,
                 List<ExtendedStaffInfo> extendedStaffInfo,
-                LoadLevel loadLevel,
-                Map<AdaptiveWorkerType, Integer> reductionMap,
-                Map<AdaptiveWorkerType, Integer> targetRoomsMap,
-                Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType,
                 Map<String, BathCleaningType> bathCleaningAssignments,
                 Map<String, PointConstraint> pointConstraints) {
 
             this.availableStaff = new ArrayList<>(availableStaff);
             this.extendedStaffInfo = new ArrayList<>(extendedStaffInfo);
-            this.loadLevel = loadLevel;
-            this.reductionMap = new HashMap<>(reductionMap);
-            this.targetRoomsMap = new HashMap<>(targetRoomsMap);
-            this.staffByType = new HashMap<>(staffByType);
-            this.workerTypes = convertToWorkerTypeMap(staffByType);
+            this.workerTypes = createWorkerTypeMap(availableStaff);
             this.bathCleaningAssignments = new HashMap<>(bathCleaningAssignments);
 
             // ★拡張: ポイント制限情報の処理
@@ -282,14 +227,12 @@ public class AdaptiveRoomOptimizer {
                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
-        private static Map<String, WorkerType> convertToWorkerTypeMap(
-                Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType) {
+        private static Map<String, WorkerType> createWorkerTypeMap(List<FileProcessor.Staff> availableStaff) {
             Map<String, WorkerType> result = new HashMap<>();
-            staffByType.forEach((type, staffList) -> {
-                WorkerType workerType = type == AdaptiveWorkerType.NORMAL ?
-                        WorkerType.NORMAL_DUTY : WorkerType.LIGHT_DUTY;
-                staffList.forEach(staff -> result.put(staff.id, workerType));
-            });
+            // 全スタッフを通常勤務として設定（表示用）
+            for (FileProcessor.Staff staff : availableStaff) {
+                result.put(staff.id, WorkerType.NORMAL_DUTY);
+            }
             return result;
         }
 
@@ -368,7 +311,7 @@ public class AdaptiveRoomOptimizer {
                 BathCleaningType bathType,
                 List<RoomAssignmentApplication.StaffPointConstraint> staffConstraints) {
 
-            LOGGER.info("=== 適応型設定作成（ポイント制限機能付き） ===");
+            LOGGER.info("=== 簡素化設定作成（ポイント制限機能付き）===");
             LOGGER.info(String.format("総部屋数: %d, 本館: %d, 別館: %d",
                     totalRooms, mainBuildingRooms, annexBuildingRooms));
 
@@ -452,57 +395,9 @@ public class AdaptiveRoomOptimizer {
                 bathAssignments.put(staff.id, staffBathType);
             }
 
-            // 本館と別館の実質的な必要部屋数を計算
-            final int finalBathStaffAssigned = bathStaffAssigned;
-            int bathReductionTotal = finalBathStaffAssigned * finalBathType.reduction;
-            int mainEffectiveRooms = mainBuildingRooms + bathReductionTotal;
+            LOGGER.info(String.format("大浴場清掃担当: %d人", bathStaffAssigned));
 
-            // スタッフの建物別配分を決定
-            int mainStaffCount = 12; // 本館担当者数（大浴場4人含む）
-            int annexStaffCount = availableStaff.size() - mainStaffCount;
-
-            LOGGER.info(String.format("スタッフ配分: 本館%d人（大浴場%d人）、別館%d人",
-                    mainStaffCount, finalBathStaffAssigned, annexStaffCount));
-            LOGGER.info(String.format("実質清掃必要数: 本館%d室（+大浴場分%d室）、別館%d室",
-                    mainBuildingRooms, bathReductionTotal, annexBuildingRooms));
-
-            double avgRooms = (double) totalRooms / availableStaff.size();
-            LoadLevel level = LoadLevel.fromAverage(avgRooms);
-
-            LOGGER.info(String.format("負荷レベル判定: 平均%.1f室/人 → %s",
-                    avgRooms, level.displayName));
-
-            Map<AdaptiveWorkerType, Integer> reductionMap = new HashMap<>();
-            switch (level) {
-                case LIGHT:
-                    reductionMap.put(AdaptiveWorkerType.SUPER_LIGHT, 2);
-                    reductionMap.put(AdaptiveWorkerType.LIGHT, 1);
-                    reductionMap.put(AdaptiveWorkerType.MILD_LIGHT, 1);
-                    reductionMap.put(AdaptiveWorkerType.NORMAL, 0);
-                    break;
-                case NORMAL:
-                    reductionMap.put(AdaptiveWorkerType.SUPER_LIGHT, 3);
-                    reductionMap.put(AdaptiveWorkerType.LIGHT, 2);
-                    reductionMap.put(AdaptiveWorkerType.MILD_LIGHT, 1);
-                    reductionMap.put(AdaptiveWorkerType.NORMAL, 0);
-                    break;
-                case HEAVY:
-                    reductionMap.put(AdaptiveWorkerType.SUPER_LIGHT, 4);
-                    reductionMap.put(AdaptiveWorkerType.LIGHT, 3);
-                    reductionMap.put(AdaptiveWorkerType.MILD_LIGHT, 2);
-                    reductionMap.put(AdaptiveWorkerType.NORMAL, 0);
-                    break;
-            }
-
-            Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType =
-                    assignStaffToTypes(availableStaff, level);
-
-            Map<AdaptiveWorkerType, Integer> targetRoomsMap =
-                    calculateTargetRooms(totalRooms, staffByType, reductionMap, avgRooms,
-                            bathAssignments, mainEffectiveRooms, mainStaffCount, annexStaffCount);
-
-            return new AdaptiveLoadConfig(availableStaff, extendedInfo, level,
-                    reductionMap, targetRoomsMap, staffByType, bathAssignments, pointConstraints);
+            return new AdaptiveLoadConfig(availableStaff, extendedInfo, bathAssignments, pointConstraints);
         }
 
         // 既存メソッド（後方互換性のため）
@@ -512,7 +407,6 @@ public class AdaptiveRoomOptimizer {
                 BathCleaningType bathType, Map<String, Integer> roomLimits) {
             // 旧形式から新形式に変換
             List<RoomAssignmentApplication.StaffPointConstraint> constraints = new ArrayList<>();
-            // roomLimitsは無視（ポイント制限に移行）
             return createAdaptiveConfigWithPointConstraints(
                     availableStaff, totalRooms, mainBuildingRooms, annexBuildingRooms,
                     bathType, constraints);
@@ -524,98 +418,6 @@ public class AdaptiveRoomOptimizer {
             int annexRooms = totalRooms - mainRooms;
             return createAdaptiveConfigWithPointConstraints(availableStaff, totalRooms, mainRooms, annexRooms,
                     BathCleaningType.NORMAL, new ArrayList<>());
-        }
-
-        private static Map<AdaptiveWorkerType, List<FileProcessor.Staff>> assignStaffToTypes(
-                List<FileProcessor.Staff> staff, LoadLevel level) {
-
-            Map<AdaptiveWorkerType, List<FileProcessor.Staff>> result = new HashMap<>();
-            List<FileProcessor.Staff> shuffled = new ArrayList<>(staff);
-
-            int index = 0;
-            for (AdaptiveWorkerType type : AdaptiveWorkerType.values()) {
-                double adjustedRatio = type.ratio;
-                if (level == LoadLevel.HEAVY && type != AdaptiveWorkerType.NORMAL) {
-                    adjustedRatio *= 1.2;
-                } else if (level == LoadLevel.LIGHT && type != AdaptiveWorkerType.NORMAL) {
-                    adjustedRatio *= 0.7;
-                }
-
-                int count = Math.max(1, (int) Math.round(staff.size() * adjustedRatio));
-                if (type == AdaptiveWorkerType.NORMAL) {
-                    count = staff.size() - index;
-                }
-
-                List<FileProcessor.Staff> typeStaff = new ArrayList<>();
-                for (int i = 0; i < count && index < staff.size(); i++, index++) {
-                    typeStaff.add(shuffled.get(index));
-                }
-
-                if (!typeStaff.isEmpty()) {
-                    result.put(type, typeStaff);
-                }
-            }
-            return result;
-        }
-
-        private static Map<AdaptiveWorkerType, Integer> calculateTargetRooms(
-                int totalRooms,
-                Map<AdaptiveWorkerType, List<FileProcessor.Staff>> staffByType,
-                Map<AdaptiveWorkerType, Integer> reductionMap,
-                double avgRooms,
-                Map<String, BathCleaningType> bathAssignments,
-                int mainEffectiveRooms,
-                int mainStaffCount,
-                int annexStaffCount) {
-
-            Map<AdaptiveWorkerType, Integer> targetMap = new HashMap<>();
-
-            double avgMainRooms = (double) mainEffectiveRooms / mainStaffCount;
-            double avgAnnexRooms = (double) (totalRooms - mainEffectiveRooms +
-                    BATH_CLEANING_STAFF_COUNT * BATH_CLEANING_REDUCTION) / annexStaffCount;
-
-            final int baseTarget = (int) Math.floor(avgRooms);
-            int totalReduction = 0;
-            int normalStaffCount = 0;
-
-            int bathReduction = 0;
-            for (BathCleaningType bathType : bathAssignments.values()) {
-                if (bathType != BathCleaningType.NONE) {
-                    bathReduction += bathType.reduction;
-                }
-            }
-
-            for (Map.Entry<AdaptiveWorkerType, List<FileProcessor.Staff>> entry : staffByType.entrySet()) {
-                AdaptiveWorkerType type = entry.getKey();
-                int staffCount = entry.getValue().size();
-                int reduction = reductionMap.get(type);
-
-                if (type == AdaptiveWorkerType.NORMAL) {
-                    normalStaffCount = staffCount;
-                } else {
-                    totalReduction += staffCount * reduction;
-                }
-
-                int individualTarget = Math.max(3, baseTarget - reduction);
-                targetMap.put(type, individualTarget);
-            }
-
-            if (normalStaffCount > 0) {
-                int additionalPerNormal = (int) Math.ceil((double) totalReduction / normalStaffCount);
-                int normalTarget = targetMap.get(AdaptiveWorkerType.NORMAL) + additionalPerNormal;
-                targetMap.put(AdaptiveWorkerType.NORMAL, normalTarget);
-            }
-
-            return targetMap;
-        }
-
-        public AdaptiveWorkerType getAdaptiveWorkerType(String staffId) {
-            for (Map.Entry<AdaptiveWorkerType, List<FileProcessor.Staff>> entry : staffByType.entrySet()) {
-                if (entry.getValue().stream().anyMatch(s -> s.id.equals(staffId))) {
-                    return entry.getKey();
-                }
-            }
-            return AdaptiveWorkerType.NORMAL;
         }
     }
 
@@ -817,7 +619,7 @@ public class AdaptiveRoomOptimizer {
         }
 
         public void printDetailedSummary() {
-            System.out.println("\n=== 最適化結果（ポイント制限適用版） ===");
+            System.out.println("\n=== 最適化結果（ポイント制限適用版）===");
             System.out.printf("対象日: %s\n",
                     targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
             System.out.printf("出勤スタッフ数: %d人\n", config.availableStaff.size());
@@ -882,47 +684,20 @@ public class AdaptiveRoomOptimizer {
             System.out.printf("別館合計: %d室 (上限%d室)\n", annexBuildingTotal, MAX_ANNEX_BUILDING_ROOMS);
             System.out.printf("差: %d室\n", Math.abs(mainBuildingTotal - annexBuildingTotal));
 
-            // ツイン部屋の分布
-            System.out.println("\n【ツイン部屋分布】");
-            Map<String, Integer> twinDistribution = new HashMap<>();
-            for (StaffAssignment assignment : assignments) {
-                int twinCount = 0;
-                for (RoomAllocation allocation : assignment.roomsByFloor.values()) {
-                    twinCount += allocation.roomCounts.getOrDefault("T", 0);
-                }
-                twinDistribution.put(assignment.staff.name, twinCount);
-            }
-            twinDistribution.forEach((name, count) ->
-                    System.out.printf("  %s: %d室\n", name, count));
-
             System.out.println("\n【統計サマリー】");
             double[] points = assignments.stream()
                     .mapToDouble(a -> a.totalPoints).toArray();
             double[] adjustedScores = assignments.stream()
                     .mapToDouble(a -> a.adjustedScore).toArray();
 
-            System.out.printf("基本点数範囲: %.2f ～ %.2f (差: %.2fポイント)\n",
+            System.out.printf("基本点数範囲: %.2f 〜 %.2f (差: %.2fポイント)\n",
                     Arrays.stream(points).min().orElse(0),
                     Arrays.stream(points).max().orElse(0),
                     pointDifference);
-            System.out.printf("調整後スコア範囲: %.2f ～ %.2f (差: %.2fポイント)\n",
+            System.out.printf("調整後スコア範囲: %.2f 〜 %.2f (差: %.2fポイント)\n",
                     Arrays.stream(adjustedScores).min().orElse(0),
                     Arrays.stream(adjustedScores).max().orElse(0),
                     adjustedScoreDifference);
-
-            System.out.println("\n【作業者タイプ別統計】");
-            Map<WorkerType, List<StaffAssignment>> byType = new HashMap<>();
-            for (StaffAssignment assignment : assignments) {
-                byType.computeIfAbsent(assignment.workerType, k -> new ArrayList<>())
-                        .add(assignment);
-            }
-
-            byType.forEach((type, list) -> {
-                double avgRooms = list.stream().mapToInt(a -> a.totalRooms).average().orElse(0);
-                double avgPoints = list.stream().mapToDouble(a -> a.adjustedScore).average().orElse(0);
-                System.out.printf("%s作業者: %d人, 平均%.1f室, 平均%.1fポイント\n",
-                        type.displayName, list.size(), avgRooms, avgPoints);
-            });
 
             System.out.println("\n【最適化評価】");
             if (adjustedScoreDifference <= 3.0) {
@@ -950,7 +725,6 @@ public class AdaptiveRoomOptimizer {
         public OptimizationResult optimize(LocalDate targetDate) {
             System.out.println("=== ポイント制限対応最適化開始 ===");
             System.out.printf("対象日: %s\n", targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
-            System.out.printf("負荷レベル: %s\n", adaptiveConfig.loadLevel.displayName);
 
             // 建物別データ分離
             BuildingData buildingData = separateBuildingData();
@@ -1187,9 +961,7 @@ public class AdaptiveRoomOptimizer {
                 }
             }
 
-            AdaptiveWorkerType type = config.getAdaptiveWorkerType(staff.id);
-            WorkerType workerType = type == AdaptiveWorkerType.NORMAL ?
-                    WorkerType.NORMAL_DUTY : WorkerType.LIGHT_DUTY;
+            WorkerType workerType = WorkerType.NORMAL_DUTY;
 
             return new StaffAssignment(staff, workerType, staffFloors, staffRooms);
         }

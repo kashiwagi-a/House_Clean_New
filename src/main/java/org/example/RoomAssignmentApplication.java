@@ -70,8 +70,8 @@ public class RoomAssignmentApplication extends JFrame {
 
         public enum ConstraintType {
             NONE("制限なし"),
-            UPPER_LIMIT("上限"),
-            LOWER_RANGE("下限範囲");
+            UPPER_LIMIT("故障者制限"),
+            LOWER_RANGE("リライアンス用");
 
             public final String displayName;
             ConstraintType(String displayName) {
@@ -544,8 +544,8 @@ public class RoomAssignmentApplication extends JFrame {
         int result = JOptionPane.showConfirmDialog(
                 parentFrame,
                 "ポイント制限を設定しますか？\n" +
-                        "・上限制限：体調不良等で最大ポイント数を制限\n" +
-                        "・下限範囲制限：ベテラン等で最低ポイント数を保証\n" +
+                        "・故障者制限：体調不良等で制限\n" +
+                        "・業者制限：リライアンスなど業者用　何処にでも振れます\n" +
                         "・建物指定：本館のみ/別館のみの担当を指定",
                 "ポイント制限設定",
                 JOptionPane.YES_NO_OPTION,
@@ -565,9 +565,9 @@ public class RoomAssignmentApplication extends JFrame {
         // 説明パネル
         JPanel infoPanel = new JPanel(new GridLayout(4, 1));
         infoPanel.setBorder(BorderFactory.createTitledBorder("設定方法"));
-        infoPanel.add(new JLabel("• 制限タイプ：「制限なし」「上限」「下限範囲」から選択"));
-        infoPanel.add(new JLabel("• 上限：正の数値（例：18.0 = 最大18.0ポイントまで）"));
-        infoPanel.add(new JLabel("• 下限範囲：最小〜最大（例：20.0〜25.0 = 20.0〜25.0ポイント確保）"));
+        infoPanel.add(new JLabel("• 制限タイプ：「制限なし」「故障者制限」「業者制限」から選択"));
+        infoPanel.add(new JLabel("• 故障者制限：正の数値（例：18.0 = 最大18.0ポイントまで）"));
+        infoPanel.add(new JLabel("• 業者制限：最小〜最大（例：20.0〜25.0 = 20.0〜25.0ポイント確保）"));
         infoPanel.add(new JLabel("• 建物指定：「両方」「本館のみ」「別館のみ」から選択"));
 
         // スタッフ設定パネル
@@ -587,7 +587,7 @@ public class RoomAssignmentApplication extends JFrame {
         table.getSelectionModel().setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
 
         // 制限タイプのコンボボックス
-        String[] constraintTypes = {"制限なし", "上限", "下限範囲"};
+        String[] constraintTypes = {"制限なし", "故障者制限", "業者制限"};
         JComboBox<String> constraintCombo = new JComboBox<>(constraintTypes);
         table.getColumnModel().getColumn(1).setCellEditor(new DefaultCellEditor(constraintCombo));
 
@@ -606,16 +606,16 @@ public class RoomAssignmentApplication extends JFrame {
 
                 if (!value.trim().isEmpty()) {
                     try {
-                        if ("上限".equals(constraintType)) {
+                        if ("故障者制限".equals(constraintType)) {
                             double limit = Double.parseDouble(value.trim());
-                            tableModel.setValueAt("設定済み(上限" + limit + "P)", row, 4);
-                        } else if ("下限範囲".equals(constraintType)) {
+                            tableModel.setValueAt("設定済み(故障者" + limit + "P)", row, 4);
+                        } else if ("業者制限".equals(constraintType)) {
                             if (value.contains("〜") || value.contains("-")) {
                                 String[] parts = value.split("[〜-]");
                                 if (parts.length == 2) {
                                     double min = Double.parseDouble(parts[0].trim());
                                     double max = Double.parseDouble(parts[1].trim());
-                                    tableModel.setValueAt("設定済み(下限" + min + "〜" + max + "P)", row, 4);
+                                    tableModel.setValueAt("設定済み(業者" + min + "〜" + max + "P)", row, 4);
                                 } else {
                                     tableModel.setValueAt("入力エラー", row, 4);
                                 }
@@ -685,10 +685,10 @@ public class RoomAssignmentApplication extends JFrame {
                         double lowerMax = 0;
 
                         // 制限タイプ
-                        if ("上限".equals(constraintType)) {
+                        if ("故障者制限".equals(constraintType)) {
                             cType = StaffPointConstraint.ConstraintType.UPPER_LIMIT;
                             upperLimit = Double.parseDouble(constraintValue.trim());
-                        } else if ("下限範囲".equals(constraintType)) {
+                        } else if ("業者制限".equals(constraintType)) {
                             cType = StaffPointConstraint.ConstraintType.LOWER_RANGE;
                             String[] parts = constraintValue.split("[〜-]");
                             lowerMin = Double.parseDouble(parts[0].trim());

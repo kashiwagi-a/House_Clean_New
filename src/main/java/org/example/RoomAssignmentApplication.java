@@ -21,7 +21,7 @@ import java.util.Calendar;
 /**
  * ホテル清掃管理システム - メインアプリケーション
  * 大浴場清掃スタッフ手動選択機能付き
- * ★拡張: 大浴場清掃スタッフをポイント設定画面で手動選択可能
+ * ★修正: 制限値入力エラー修正版
  */
 public class RoomAssignmentApplication extends JFrame {
     private static final Logger LOGGER = Logger.getLogger(RoomAssignmentApplication.class.getName());
@@ -562,7 +562,7 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     /**
-     * ★拡張: ポイント制限・大浴場清掃スタッフ選択（手動設定のみ）
+     * ★修正: ポイント制限・大浴場清掃スタッフ選択（制限値入力エラー修正版）
      */
     private List<StaffPointConstraint> selectStaffPointConstraintsWithBathCleaning(
             List<FileProcessor.Staff> availableStaff, AdaptiveRoomOptimizer.BathCleaningType bathType) {
@@ -650,60 +650,91 @@ public class RoomAssignmentApplication extends JFrame {
             @Override
             public boolean stopCellEditing() {
                 boolean selected = (Boolean) getCellEditorValue();
-                int row = table.getSelectedRow();
+                int editingRow = table.getEditingRow(); // ★修正: 編集中の行番号を正確に取得
 
-                // 大浴場清掃選択時の状況更新
-                if (selected) {
-                    tableModel.setValueAt("大浴場清掃担当", row, 5);
-                    // 大浴場清掃担当は本館のみに自動設定
-                    tableModel.setValueAt("本館のみ", row, 3);
-                } else {
-                    // 大浴場清掃を外した場合、設定状況を更新
-                    String constraintType = (String) tableModel.getValueAt(row, 1);
-                    if ("制限なし".equals(constraintType)) {
-                        tableModel.setValueAt("制限なし", row, 5);
+                if (editingRow >= 0) {
+                    // 大浴場清掃選択時の状況更新
+                    if (selected) {
+                        tableModel.setValueAt("大浴場清掃担当", editingRow, 5);
+                        // 大浴場清掃担当は本館のみに自動設定
+                        tableModel.setValueAt("本館のみ", editingRow, 3);
+                    } else {
+                        // 大浴場清掃を外した場合、設定状況を更新
+                        String constraintType = (String) tableModel.getValueAt(editingRow, 1);
+                        if ("制限なし".equals(constraintType)) {
+                            tableModel.setValueAt("制限なし", editingRow, 5);
+                        }
+                        // 建物指定を両方に戻す
+                        tableModel.setValueAt("両方", editingRow, 3);
                     }
-                    // 建物指定を両方に戻す
-                    tableModel.setValueAt("両方", row, 3);
                 }
 
                 return super.stopCellEditing();
             }
         });
 
-        // カスタムセルエディタ
+        // ★修正: カスタムセルエディター（制限値入力エラー修正版）
         table.getColumnModel().getColumn(2).setCellEditor(new DefaultCellEditor(new JTextField()) {
+            private int editingRow = -1;
+
+            @Override
+            public Component getTableCellEditorComponent(JTable table, Object value,
+                                                         boolean isSelected, int row, int column) {
+                editingRow = row; // ★修正: 編集開始時に行番号を記録
+                return super.getTableCellEditorComponent(table, value, isSelected, row, column);
+            }
+
             @Override
             public boolean stopCellEditing() {
                 String value = (String) getCellEditorValue();
-                int row = table.getSelectedRow();
-                String constraintType = (String) tableModel.getValueAt(row, 1);
 
-                if (!value.trim().isEmpty()) {
-                    try {
-                        if ("故障者制限".equals(constraintType)) {
-                            double limit = Double.parseDouble(value.trim());
-                            tableModel.setValueAt("設定済み(故障者" + limit + "P)", row, 5);
-                        } else if ("業者制限".equals(constraintType)) {
-                            if (value.contains("～") || value.contains("-")) {
-                                String[] parts = value.split("[～-]");
-                                if (parts.length == 2) {
-                                    double min = Double.parseDouble(parts[0].trim());
-                                    double max = Double.parseDouble(parts[1].trim());
-                                    tableModel.setValueAt("設定済み(業者" + min + "～" + max + "P)", row, 5);
+                // ★修正: 記録された行番号を使用
+                if (editingRow >= 0 && editingRow < tableModel.getRowCount()) {
+                    String constraintType = (String) tableModel.getValueAt(editingRow, 1);
+
+                    if (!value.trim().isEmpty()) {
+                        try {
+                            if ("故障者制限".equals(constraintType)) {
+                                double limit = Double.parseDouble(value.trim());
+                                if (limit > 0) {
+                                    tableModel.setValueAt("設定済み(故障者" + limit + "P)", editingRow, 5);
                                 } else {
-                                    tableModel.setValueAt("入力エラー", row, 5);
+                                    tableModel.setValueAt("正の数値を入力してください", editingRow, 5);
                                 }
-                            } else {
-                                tableModel.setValueAt("範囲形式エラー", row, 5);
+                            } else if ("業者制限".equals(constraintType)) {
+                                // ★修正: より柔軟な範囲入力対応
+                                if (value.contains("～") || value.contains("-") || value.contains("~")) {
+                                    String[] parts;
+                                    if (value.contains("～")) {
+                                        parts = value.split("～");
+                                    } else if (value.contains("~")) {
+                                        parts = value.split("~");
+                                    } else {
+                                        parts = value.split("-");
+                                    }
+
+                                    if (parts.length == 2) {
+                                        double min = Double.parseDouble(parts[0].trim());
+                                        double max = Double.parseDouble(parts[1].trim());
+                                        if (min > 0 && max > min) {
+                                            tableModel.setValueAt("設定済み(業者" + min + "～" + max + "P)", editingRow, 5);
+                                        } else {
+                                            tableModel.setValueAt("最小値 < 最大値で入力してください", editingRow, 5);
+                                        }
+                                    } else {
+                                        tableModel.setValueAt("範囲形式で入力してください（例：20.0～25.0）", editingRow, 5);
+                                    }
+                                } else {
+                                    tableModel.setValueAt("範囲形式で入力してください（例：20.0～25.0）", editingRow, 5);
+                                }
                             }
+                        } catch (NumberFormatException e) {
+                            tableModel.setValueAt("数値エラー", editingRow, 5);
                         }
-                    } catch (NumberFormatException e) {
-                        tableModel.setValueAt("数値エラー", row, 5);
+                    } else if ("制限なし".equals(constraintType)) {
+                        boolean isBathStaff = (Boolean) tableModel.getValueAt(editingRow, 4);
+                        tableModel.setValueAt(isBathStaff ? "大浴場清掃担当" : "制限なし", editingRow, 5);
                     }
-                } else if ("制限なし".equals(constraintType)) {
-                    boolean isBathStaff = (Boolean) tableModel.getValueAt(row, 4);
-                    tableModel.setValueAt(isBathStaff ? "大浴場清掃担当" : "制限なし", row, 5);
                 }
 
                 return super.stopCellEditing();
@@ -771,7 +802,15 @@ public class RoomAssignmentApplication extends JFrame {
                             upperLimit = Double.parseDouble(constraintValue.trim());
                         } else if ("業者制限".equals(constraintType)) {
                             cType = StaffPointConstraint.ConstraintType.LOWER_RANGE;
-                            String[] parts = constraintValue.split("[～-]");
+                            // ★修正: より柔軟な範囲解析
+                            String[] parts;
+                            if (constraintValue.contains("～")) {
+                                parts = constraintValue.split("～");
+                            } else if (constraintValue.contains("~")) {
+                                parts = constraintValue.split("~");
+                            } else {
+                                parts = constraintValue.split("-");
+                            }
                             lowerMin = Double.parseDouble(parts[0].trim());
                             lowerMax = Double.parseDouble(parts[1].trim());
                         } else {
@@ -796,6 +835,7 @@ public class RoomAssignmentApplication extends JFrame {
 
                     } catch (NumberFormatException e) {
                         // 無効な値はスキップ
+                        System.err.println("制限値解析エラー: " + staffName + " - " + constraintValue);
                     }
                 }
             }

@@ -10,7 +10,7 @@ import java.util.logging.Level;
 /**
  * 適応型清掃管理最適化システム（建物分離ポイントベース版）
  * 清掃条件.txtの要件を反映した実装
- * ★修正: 大浴場清掃スタッフ手動選択機能対応版
+ * ★修正: 大浴場清掃スタッフ手動選択機能対応版（優先処理ロジック追加）
  */
 public class AdaptiveRoomOptimizer {
 
@@ -192,7 +192,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * ★大幅簡素化: ポイント制限統合版設定クラス（大浴場清掃手動選択対応）
+     * ★大幅簡略化: ポイント制限統合版設定クラス（大浴場清掃手動選択対応）
      */
     public static class AdaptiveLoadConfig {
         public final List<FileProcessor.Staff> availableStaff;
@@ -302,7 +302,7 @@ public class AdaptiveRoomOptimizer {
         }
 
         /**
-         * ★新規: 大浴場清掃スタッフ手動選択対応版設定作成メソッド
+         * ★修正: 大浴場清掃スタッフ手動選択対応版設定作成メソッド
          */
         public static AdaptiveLoadConfig createAdaptiveConfigWithBathSelection(
                 List<FileProcessor.Staff> availableStaff, int totalRooms,
@@ -383,6 +383,16 @@ public class AdaptiveRoomOptimizer {
                 if (manualBathStaff.contains(staff.id) && bathType != BathCleaningType.NONE) {
                     staffBathType = bathType;
                     building = BuildingAssignment.MAIN_ONLY; // 大浴場担当は本館のみ
+
+                    // ★重要: 大浴場清掃スタッフが制限設定を持たない場合、デフォルト制限を追加
+                    if (!pointConstraints.containsKey(staff.id)) {
+                        PointConstraint bathStaffConstraint = new PointConstraint(
+                                staff.id, PointConstraint.ConstraintType.NONE, BuildingAssignment.MAIN_ONLY,
+                                0, 0, 0);
+                        pointConstraints.put(staff.id, bathStaffConstraint);
+                        LOGGER.info(String.format("大浴場清掃スタッフにデフォルト制限を追加: %s", staff.name));
+                    }
+
                     LOGGER.info(String.format("大浴場清掃担当に設定: %s (%s)",
                             staff.name, bathType.displayName));
                 }
@@ -786,7 +796,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * ★新規追加: ポイント制限対応最適化器
+     * ★修正版: ポイント制限対応最適化器（大浴場清掃スタッフ優先処理追加）
      */
     public static class PointConstraintOptimizer {
         private final BuildingData buildingData;
@@ -798,17 +808,35 @@ public class AdaptiveRoomOptimizer {
         }
 
         /**
-         * ★新規: 制約付き最適化（上限→通常→下限の順で処理）
+         * ★修正: 制約付き最適化（Phase 0追加：大浴場清掃スタッフ優先処理）
          */
         public List<StaffAssignment> optimizeWithConstraints() {
-            System.out.println("\n=== ポイント制限適用最適化実行 ===");
+            System.out.println("\n=== ポイント制限適用最適化実行（大浴場清掃スタッフ優先処理対応） ===");
 
             List<StaffAssignment> assignments = new ArrayList<>();
             Map<Integer, RoomAllocation> remainingMainRooms = initializeRemainingRooms(buildingData.mainFloors);
             Map<Integer, RoomAllocation> remainingAnnexRooms = initializeRemainingRooms(buildingData.annexFloors);
 
-            // Phase 1: 上限制限スタッフを先に処理
-            List<String> upperLimitStaff = config.getUpperLimitStaffIds();
+            // ★新規追加: Phase 0 - 大浴場清掃スタッフを最優先で処理
+            Set<String> bathStaffIds = getBathCleaningStaffIds();
+            if (!bathStaffIds.isEmpty()) {
+                System.out.println("\n【Phase 0: 大浴場清掃スタッフ優先処理】");
+                for (String staffId : bathStaffIds) {
+                    FileProcessor.Staff staff = findStaffById(staffId);
+                    if (staff != null) {
+                        StaffAssignment assignment = assignBathCleaningStaff(staff,
+                                remainingMainRooms, remainingAnnexRooms);
+                        assignments.add(assignment);
+                        System.out.printf("  %s: %.1fP (%d室) - 大浴場清掃スタッフ優先割当\n",
+                                staff.name, assignment.totalPoints, assignment.totalRooms);
+                    }
+                }
+            }
+
+            // Phase 1: 上限制限スタッフを先に処理（大浴場清掃スタッフ除く）
+            List<String> upperLimitStaff = config.getUpperLimitStaffIds().stream()
+                    .filter(id -> !bathStaffIds.contains(id))
+                    .collect(Collectors.toList());
             if (!upperLimitStaff.isEmpty()) {
                 System.out.println("\n【Phase 1: 上限制限スタッフ処理】");
                 for (String staffId : upperLimitStaff) {
@@ -823,7 +851,7 @@ public class AdaptiveRoomOptimizer {
                 }
             }
 
-            // Phase 2: 通常スタッフ処理
+            // Phase 2: 通常スタッフ処理（既に処理済みスタッフを除外）
             List<String> processedStaffIds = assignments.stream()
                     .map(a -> a.staff.id).collect(Collectors.toList());
             List<FileProcessor.Staff> normalStaff = config.availableStaff.stream()
@@ -864,6 +892,43 @@ public class AdaptiveRoomOptimizer {
             }
 
             return assignments;
+        }
+
+        /**
+         * ★新規追加: 大浴場清掃スタッフIDの取得
+         */
+        private Set<String> getBathCleaningStaffIds() {
+            return config.bathCleaningAssignments.entrySet().stream()
+                    .filter(entry -> entry.getValue() != BathCleaningType.NONE)
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toSet());
+        }
+
+        /**
+         * ★新規追加: 大浴場清掃スタッフ専用割り当て
+         */
+        private StaffAssignment assignBathCleaningStaff(FileProcessor.Staff staff,
+                                                        Map<Integer, RoomAllocation> remainingMainRooms,
+                                                        Map<Integer, RoomAllocation> remainingAnnexRooms) {
+
+            // 大浴場清掃スタッフは本館のみ + 大浴場清掃による減点
+            BathCleaningType bathType = config.bathCleaningAssignments.get(staff.id);
+            double remainingMainPoints = calculateRemainingPoints(remainingMainRooms);
+
+            // 他の大浴場清掃スタッフの数を考慮した平均ポイント
+            long bathStaffCount = getBathCleaningStaffIds().size();
+            double targetPoints = remainingMainPoints / bathStaffCount;
+
+            // 大浴場清掃減算
+            if (bathType != null && bathType != BathCleaningType.NONE) {
+                targetPoints -= bathType.reduction;
+            }
+
+            // 最低保証
+            targetPoints = Math.max(3.0, targetPoints);
+
+            return assignToStaffWithTarget(staff, targetPoints, BuildingAssignment.MAIN_ONLY,
+                    remainingMainRooms, remainingAnnexRooms);
         }
 
         /**

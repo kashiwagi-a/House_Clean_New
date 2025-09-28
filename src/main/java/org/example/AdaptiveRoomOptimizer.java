@@ -10,7 +10,7 @@ import java.util.logging.Level;
 /**
  * 適応型清掃管理最適化システム（建物分離ポイントベース版）
  * 清掃条件.txtの要件を反映した実装
- * ★修正: ポイント制限機能に統一、不要な自動負荷軽減ロジックを削除
+ * ★修正: 大浴場清掃スタッフ手動選択機能対応版
  */
 public class AdaptiveRoomOptimizer {
 
@@ -21,7 +21,6 @@ public class AdaptiveRoomOptimizer {
     public static final int MAX_ANNEX_BUILDING_ROOMS = 99;
     public static final int BATH_CLEANING_REDUCTION = 4;
     public static final int BATH_DRAINING_REDUCTION = 5;
-    public static final int BATH_CLEANING_STAFF_COUNT = 4;
     public static final double FLOOR_CROSSING_PENALTY = 0;
     public static final double BUILDING_CROSSING_PENALTY = 1.0;
 
@@ -193,7 +192,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * ★大幅簡素化: ポイント制限統合版設定クラス
+     * ★大幅簡素化: ポイント制限統合版設定クラス（大浴場清掃手動選択対応）
      */
     public static class AdaptiveLoadConfig {
         public final List<FileProcessor.Staff> availableStaff;
@@ -303,22 +302,24 @@ public class AdaptiveRoomOptimizer {
         }
 
         /**
-         * ★新規: ポイント制限対応版設定作成メソッド
+         * ★新規: 大浴場清掃スタッフ手動選択対応版設定作成メソッド
          */
-        public static AdaptiveLoadConfig createAdaptiveConfigWithPointConstraints(
+        public static AdaptiveLoadConfig createAdaptiveConfigWithBathSelection(
                 List<FileProcessor.Staff> availableStaff, int totalRooms,
                 int mainBuildingRooms, int annexBuildingRooms,
                 BathCleaningType bathType,
                 List<RoomAssignmentApplication.StaffPointConstraint> staffConstraints) {
 
-            LOGGER.info("=== 簡素化設定作成（ポイント制限機能付き）===");
+            LOGGER.info("=== 大浴場清掃手動選択対応設定作成 ===");
             LOGGER.info(String.format("総部屋数: %d, 本館: %d, 別館: %d",
                     totalRooms, mainBuildingRooms, annexBuildingRooms));
 
             // ポイント制限情報の変換
             Map<String, PointConstraint> pointConstraints = new HashMap<>();
+            Set<String> manualBathStaff = new HashSet<>(); // ★追加: 手動選択された大浴場清掃スタッフ
+
             if (staffConstraints != null) {
-                LOGGER.info("ポイント制限設定:");
+                LOGGER.info("スタッフ制限設定:");
                 for (RoomAssignmentApplication.StaffPointConstraint staffConstraint : staffConstraints) {
                     PointConstraint.ConstraintType cType;
                     switch (staffConstraint.constraintType) {
@@ -352,36 +353,38 @@ public class AdaptiveRoomOptimizer {
 
                     pointConstraints.put(staffConstraint.staffId, constraint);
 
-                    LOGGER.info(String.format("  %s: %s, %s",
-                            staffConstraint.staffName,
-                            staffConstraint.getConstraintDisplay(),
-                            staffConstraint.buildingAssignment.displayName));
+                    // ★追加: 大浴場清掃スタッフの記録
+                    if (staffConstraint.isBathCleaningStaff) {
+                        manualBathStaff.add(staffConstraint.staffId);
+                        LOGGER.info(String.format("  %s: %s, %s [大浴場清掃担当]",
+                                staffConstraint.staffName,
+                                staffConstraint.getConstraintDisplay(),
+                                staffConstraint.buildingAssignment.displayName));
+                    } else {
+                        LOGGER.info(String.format("  %s: %s, %s",
+                                staffConstraint.staffName,
+                                staffConstraint.getConstraintDisplay(),
+                                staffConstraint.buildingAssignment.displayName));
+                    }
                 }
             }
 
-            // 拡張スタッフ情報の生成
+            // ★修正: 大浴場清掃スタッフの手動割り当て
             List<ExtendedStaffInfo> extendedInfo = new ArrayList<>();
             Map<String, BathCleaningType> bathAssignments = new HashMap<>();
 
-            // 大浴場清掃担当者の設定（最初の4人を本館担当の大浴場清掃に）
-            int bathStaffAssigned = 0;
-            final BathCleaningType finalBathType = bathType;
-            final int maxBathStaff = BATH_CLEANING_STAFF_COUNT;
+            LOGGER.info(String.format("手動選択された大浴場清掃スタッフ: %d人", manualBathStaff.size()));
 
-            for (int i = 0; i < availableStaff.size(); i++) {
-                FileProcessor.Staff staff = availableStaff.get(i);
+            for (FileProcessor.Staff staff : availableStaff) {
                 BathCleaningType staffBathType = BathCleaningType.NONE;
                 BuildingAssignment building = BuildingAssignment.BOTH;
 
-                // 大浴場清掃担当者の割り当て（4人必要）
-                if (bathStaffAssigned < maxBathStaff && finalBathType != BathCleaningType.NONE) {
-                    // ポイント制限で本館のみ指定されていない場合のみ大浴場担当に
-                    PointConstraint constraint = pointConstraints.get(staff.id);
-                    if (constraint == null || constraint.buildingAssignment != BuildingAssignment.ANNEX_ONLY) {
-                        staffBathType = finalBathType;
-                        building = BuildingAssignment.MAIN_ONLY; // 大浴場担当は本館のみ
-                        bathStaffAssigned++;
-                    }
+                // ★修正: 手動選択された大浴場清掃スタッフかどうかをチェック
+                if (manualBathStaff.contains(staff.id) && bathType != BathCleaningType.NONE) {
+                    staffBathType = bathType;
+                    building = BuildingAssignment.MAIN_ONLY; // 大浴場担当は本館のみ
+                    LOGGER.info(String.format("大浴場清掃担当に設定: %s (%s)",
+                            staff.name, bathType.displayName));
                 }
 
                 // 個別制限がある場合は優先
@@ -395,9 +398,24 @@ public class AdaptiveRoomOptimizer {
                 bathAssignments.put(staff.id, staffBathType);
             }
 
-            LOGGER.info(String.format("大浴場清掃担当: %d人", bathStaffAssigned));
+            LOGGER.info(String.format("大浴場清掃担当設定完了: %d人", manualBathStaff.size()));
 
             return new AdaptiveLoadConfig(availableStaff, extendedInfo, bathAssignments, pointConstraints);
+        }
+
+        /**
+         * ★既存メソッド: ポイント制限対応版設定作成メソッド（後方互換性のため）
+         */
+        public static AdaptiveLoadConfig createAdaptiveConfigWithPointConstraints(
+                List<FileProcessor.Staff> availableStaff, int totalRooms,
+                int mainBuildingRooms, int annexBuildingRooms,
+                BathCleaningType bathType,
+                List<RoomAssignmentApplication.StaffPointConstraint> staffConstraints) {
+
+            // 新しいメソッドに委譲
+            return createAdaptiveConfigWithBathSelection(
+                    availableStaff, totalRooms, mainBuildingRooms, annexBuildingRooms,
+                    bathType, staffConstraints);
         }
 
         // 既存メソッド（後方互換性のため）
@@ -407,7 +425,7 @@ public class AdaptiveRoomOptimizer {
                 BathCleaningType bathType, Map<String, Integer> roomLimits) {
             // 旧形式から新形式に変換
             List<RoomAssignmentApplication.StaffPointConstraint> constraints = new ArrayList<>();
-            return createAdaptiveConfigWithPointConstraints(
+            return createAdaptiveConfigWithBathSelection(
                     availableStaff, totalRooms, mainBuildingRooms, annexBuildingRooms,
                     bathType, constraints);
         }
@@ -416,7 +434,7 @@ public class AdaptiveRoomOptimizer {
                 List<FileProcessor.Staff> availableStaff, int totalRooms) {
             int mainRooms = (int)(totalRooms * 0.55);
             int annexRooms = totalRooms - mainRooms;
-            return createAdaptiveConfigWithPointConstraints(availableStaff, totalRooms, mainRooms, annexRooms,
+            return createAdaptiveConfigWithBathSelection(availableStaff, totalRooms, mainRooms, annexRooms,
                     BathCleaningType.NORMAL, new ArrayList<>());
         }
     }
@@ -619,18 +637,23 @@ public class AdaptiveRoomOptimizer {
         }
 
         public void printDetailedSummary() {
-            System.out.println("\n=== 最適化結果（ポイント制限適用版）===");
+            System.out.println("\n=== 最適化結果（大浴場清掃手動選択適用版）===");
             System.out.printf("対象日: %s\n",
                     targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
             System.out.printf("出勤スタッフ数: %d人\n", config.availableStaff.size());
 
-            // 大浴場担当者の表示
+            // ★修正: 大浴場担当者の表示（手動選択版）
             System.out.println("\n【大浴場清掃担当】");
             int bathCount = 0;
             for (Map.Entry<String, BathCleaningType> entry : config.bathCleaningAssignments.entrySet()) {
                 if (entry.getValue() != BathCleaningType.NONE) {
-                    System.out.printf("  %s: %s (-%.1fポイント)\n",
-                            entry.getKey(), entry.getValue().displayName, (double)entry.getValue().reduction);
+                    String staffName = config.availableStaff.stream()
+                            .filter(s -> s.id.equals(entry.getKey()))
+                            .map(s -> s.name)
+                            .findFirst()
+                            .orElse(entry.getKey());
+                    System.out.printf("  %s: %s (-%.1fポイント) [手動選択]\n",
+                            staffName, entry.getValue().displayName, (double)entry.getValue().reduction);
                     bathCount++;
                 }
             }
@@ -653,7 +676,7 @@ public class AdaptiveRoomOptimizer {
                         } else if (constraint.hasLowerRange()) {
                             status = actual >= constraint.lowerMinLimit && actual <= constraint.lowerMaxLimit ?
                                     "✓" : "⚠ 範囲外";
-                            System.out.printf("  %s: 下限%.1f〜%.1fP → 実際%.1fP %s\n",
+                            System.out.printf("  %s: 下限%.1f～%.1fP → 実際%.1fP %s\n",
                                     assignment.staff.name, constraint.lowerMinLimit,
                                     constraint.lowerMaxLimit, actual, status);
                         }
@@ -690,11 +713,11 @@ public class AdaptiveRoomOptimizer {
             double[] adjustedScores = assignments.stream()
                     .mapToDouble(a -> a.adjustedScore).toArray();
 
-            System.out.printf("基本点数範囲: %.2f 〜 %.2f (差: %.2fポイント)\n",
+            System.out.printf("基本点数範囲: %.2f ～ %.2f (差: %.2fポイント)\n",
                     Arrays.stream(points).min().orElse(0),
                     Arrays.stream(points).max().orElse(0),
                     pointDifference);
-            System.out.printf("調整後スコア範囲: %.2f 〜 %.2f (差: %.2fポイント)\n",
+            System.out.printf("調整後スコア範囲: %.2f ～ %.2f (差: %.2fポイント)\n",
                     Arrays.stream(adjustedScores).min().orElse(0),
                     Arrays.stream(adjustedScores).max().orElse(0),
                     adjustedScoreDifference);
@@ -723,7 +746,7 @@ public class AdaptiveRoomOptimizer {
         }
 
         public OptimizationResult optimize(LocalDate targetDate) {
-            System.out.println("=== ポイント制限対応最適化開始 ===");
+            System.out.println("=== 大浴場清掃手動選択対応最適化開始 ===");
             System.out.printf("対象日: %s\n", targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
 
             // 建物別データ分離

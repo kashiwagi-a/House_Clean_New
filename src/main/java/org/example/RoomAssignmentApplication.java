@@ -3,6 +3,7 @@ package org.example;
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellRenderer;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
@@ -19,9 +20,8 @@ import java.util.Calendar;
 
 /**
  * ホテル清掃管理システム - メインアプリケーション
- * 部屋数制限機能統合版 - 簡易版カレンダー日付選択付き
- * 故障部屋選択機能追加版
- * ★拡張: ポイント制限・建物指定・下限範囲対応版
+ * 大浴場清掃スタッフ手動選択機能付き
+ * ★拡張: 大浴場清掃スタッフをポイント設定画面で手動選択可能
  */
 public class RoomAssignmentApplication extends JFrame {
     private static final Logger LOGGER = Logger.getLogger(RoomAssignmentApplication.class.getName());
@@ -45,7 +45,7 @@ public class RoomAssignmentApplication extends JFrame {
     // 故障部屋選択関連
     private Set<String> selectedBrokenRoomsForCleaning = new HashSet<>();
 
-    // ★拡張: ポイント制限管理用データ構造
+    // ★拡張: ポイント制限管理用データ構造（大浴場清掃フラグ追加）
     public static class StaffPointConstraint {
         public final String staffId;
         public final String staffName;
@@ -54,11 +54,13 @@ public class RoomAssignmentApplication extends JFrame {
         public final double upperLimit;      // 上限ポイント
         public final double lowerMinLimit;   // 下限最小ポイント
         public final double lowerMaxLimit;   // 下限最大ポイント
+        public final boolean isBathCleaningStaff; // ★追加: 大浴場清掃スタッフフラグ
 
         public StaffPointConstraint(String staffId, String staffName,
                                     ConstraintType constraintType,
                                     BuildingAssignment buildingAssignment,
-                                    double upperLimit, double lowerMinLimit, double lowerMaxLimit) {
+                                    double upperLimit, double lowerMinLimit, double lowerMaxLimit,
+                                    boolean isBathCleaningStaff) {
             this.staffId = staffId;
             this.staffName = staffName;
             this.constraintType = constraintType;
@@ -66,6 +68,16 @@ public class RoomAssignmentApplication extends JFrame {
             this.upperLimit = upperLimit;
             this.lowerMinLimit = lowerMinLimit;
             this.lowerMaxLimit = lowerMaxLimit;
+            this.isBathCleaningStaff = isBathCleaningStaff;
+        }
+
+        // ★既存コンストラクタとの互換性のため
+        public StaffPointConstraint(String staffId, String staffName,
+                                    ConstraintType constraintType,
+                                    BuildingAssignment buildingAssignment,
+                                    double upperLimit, double lowerMinLimit, double lowerMaxLimit) {
+            this(staffId, staffName, constraintType, buildingAssignment,
+                    upperLimit, lowerMinLimit, lowerMaxLimit, false);
         }
 
         public enum ConstraintType {
@@ -95,10 +107,15 @@ public class RoomAssignmentApplication extends JFrame {
                 case UPPER_LIMIT:
                     return String.format("上限%.1fP", upperLimit);
                 case LOWER_RANGE:
-                    return String.format("下限%.1f〜%.1fP", lowerMinLimit, lowerMaxLimit);
+                    return String.format("下限%.1f～%.1fP", lowerMinLimit, lowerMaxLimit);
                 default:
                     return "制限なし";
             }
+        }
+
+        // ★追加: 大浴場清掃表示
+        public String getBathCleaningDisplay() {
+            return isBathCleaningStaff ? "担当" : "";
         }
     }
 
@@ -123,7 +140,7 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     private void initializeGUI() {
-        setTitle("ホテル清掃管理システム - ポイント制限機能付き");
+        setTitle("ホテル清掃管理システム - 大浴場清掃手動選択機能付き");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
 
@@ -156,7 +173,7 @@ public class RoomAssignmentApplication extends JFrame {
         setLocationRelativeTo(null);
 
         appendLog("ホテル清掃管理システムを開始しました。");
-        appendLog("ポイント制限機能が有効です。");
+        appendLog("大浴場清掃スタッフ手動選択機能が有効です。");
     }
 
     private JPanel createFileSelectionPanel() {
@@ -471,16 +488,25 @@ public class RoomAssignmentApplication extends JFrame {
             // 4. 大浴場清掃タイプの選択
             AdaptiveRoomOptimizer.BathCleaningType bathType = selectBathCleaningType();
 
-            // 5. ★拡張: ポイント制限の設定（手動設定のみ）
-            appendLog("ポイント制限設定を確認中...");
-            List<StaffPointConstraint> pointConstraints = selectStaffPointConstraintsOptional(availableStaff);
+            // 5. ★拡張: ポイント制限の設定（大浴場清掃スタッフ選択機能付き）
+            appendLog("ポイント制限・大浴場清掃スタッフ設定を確認中...");
+            List<StaffPointConstraint> pointConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType);
+
+            // 大浴場清掃スタッフの集計
+            long bathStaffCount = pointConstraints.stream()
+                    .mapToLong(constraint -> constraint.isBathCleaningStaff ? 1 : 0)
+                    .sum();
+
             if (!pointConstraints.isEmpty()) {
                 appendLog(String.format("ポイント制限が設定されました: %d人", pointConstraints.size()));
+                appendLog(String.format("大浴場清掃スタッフ: %d人", bathStaffCount));
                 pointConstraints.forEach(constraint -> {
-                    appendLog(String.format("  %s: %s, %s",
+                    String bathInfo = constraint.isBathCleaningStaff ? " [大浴場清掃担当]" : "";
+                    appendLog(String.format("  %s: %s, %s%s",
                             constraint.staffName,
                             constraint.getConstraintDisplay(),
-                            constraint.buildingAssignment.displayName));
+                            constraint.buildingAssignment.displayName,
+                            bathInfo));
                 });
             } else {
                 appendLog("ポイント制限は設定されませんでした（全員均等配分）");
@@ -521,8 +547,8 @@ public class RoomAssignmentApplication extends JFrame {
 
             JOptionPane.showMessageDialog(this,
                     String.format("処理が完了しました。\n\n利用可能スタッフ: %d人\n清掃対象部屋: %d室\n" +
-                                    "制限設定スタッフ: %d人\n故障部屋(清掃対象): %d室\n\n結果表示ボタンで詳細を確認してください。",
-                            availableStaff.size(), totalRooms, pointConstraints.size(), selectedBrokenRoomsForCleaning.size()),
+                                    "制限設定スタッフ: %d人\n大浴場清掃スタッフ: %d人\n故障部屋(清掃対象): %d室\n\n結果表示ボタンで詳細を確認してください。",
+                            availableStaff.size(), totalRooms, pointConstraints.size(), bathStaffCount, selectedBrokenRoomsForCleaning.size()),
                     "処理完了", JOptionPane.INFORMATION_MESSAGE);
 
         } catch (Exception ex) {
@@ -536,18 +562,20 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     /**
-     * ★拡張: ポイント制限選択（手動設定のみ）
+     * ★拡張: ポイント制限・大浴場清掃スタッフ選択（手動設定のみ）
      */
-    private List<StaffPointConstraint> selectStaffPointConstraintsOptional(List<FileProcessor.Staff> availableStaff) {
+    private List<StaffPointConstraint> selectStaffPointConstraintsWithBathCleaning(
+            List<FileProcessor.Staff> availableStaff, AdaptiveRoomOptimizer.BathCleaningType bathType) {
         List<StaffPointConstraint> constraints = new ArrayList<>();
 
         int result = JOptionPane.showConfirmDialog(
                 parentFrame,
-                "ポイント制限を設定しますか？\n" +
+                "ポイント制限・大浴場清掃スタッフを設定しますか？\n" +
                         "・故障者制限：体調不良等で制限\n" +
                         "・業者制限：リライアンスなど業者用　何処にでも振れます\n" +
-                        "・建物指定：本館のみ/別館のみの担当を指定",
-                "ポイント制限設定",
+                        "・建物指定：本館のみ/別館のみの担当を指定\n" +
+                        "・大浴場清掃：担当スタッフを手動選択可能",
+                "ポイント制限・大浴場清掃設定",
                 JOptionPane.YES_NO_OPTION,
                 JOptionPane.QUESTION_MESSAGE
         );
@@ -557,29 +585,30 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         // 手動設定ダイアログ
-        JDialog dialog = new JDialog(parentFrame, "ポイント制限設定", true);
+        JDialog dialog = new JDialog(parentFrame, "ポイント制限・大浴場清掃設定", true);
         dialog.setLayout(new BorderLayout());
-        dialog.setSize(800, 500);
+        dialog.setSize(900, 500);
         dialog.setLocationRelativeTo(parentFrame);
 
         // 説明パネル
-        JPanel infoPanel = new JPanel(new GridLayout(4, 1));
+        JPanel infoPanel = new JPanel(new GridLayout(5, 1));
         infoPanel.setBorder(BorderFactory.createTitledBorder("設定方法"));
         infoPanel.add(new JLabel("• 制限タイプ：「制限なし」「故障者制限」「業者制限」から選択"));
         infoPanel.add(new JLabel("• 故障者制限：正の数値（例：18.0 = 最大18.0ポイントまで）"));
-        infoPanel.add(new JLabel("• 業者制限：最小〜最大（例：20.0〜25.0 = 20.0〜25.0ポイント確保）"));
+        infoPanel.add(new JLabel("• 業者制限：最小～最大（例：20.0～25.0 = 20.0～25.0ポイント確保）"));
         infoPanel.add(new JLabel("• 建物指定：「両方」「本館のみ」「別館のみ」から選択"));
+        infoPanel.add(new JLabel("• 大浴場清掃：チェックを入れたスタッフが大浴場清掃を担当"));
 
         // スタッフ設定パネル
         JPanel staffPanel = new JPanel(new BorderLayout());
         staffPanel.setBorder(BorderFactory.createTitledBorder("スタッフ別制限"));
 
-        // テーブル作成
-        String[] columnNames = {"スタッフ名", "制限タイプ", "制限値", "建物指定", "設定状況"};
+        // ★修正: テーブル作成（大浴場清掃列を追加）
+        String[] columnNames = {"スタッフ名", "制限タイプ", "制限値", "建物指定", "大浴場清掃", "設定状況"};
         DefaultTableModel tableModel = new DefaultTableModel(columnNames, 0);
 
         for (FileProcessor.Staff staff : availableStaff) {
-            Object[] row = {staff.name, "制限なし", "", "両方", "未設定"};
+            Object[] row = {staff.name, "制限なし", "", "両方", false, "未設定"};
             tableModel.addRow(row);
         }
 
@@ -596,6 +625,52 @@ public class RoomAssignmentApplication extends JFrame {
         JComboBox<String> buildingCombo = new JComboBox<>(buildings);
         table.getColumnModel().getColumn(3).setCellEditor(new DefaultCellEditor(buildingCombo));
 
+        // ★追加: 大浴場清掃チェックボックス列の設定
+        table.getColumnModel().getColumn(4).setCellRenderer(new TableCellRenderer() {
+            private final JCheckBox checkBox = new JCheckBox();
+
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value,
+                                                           boolean isSelected, boolean hasFocus, int row, int column) {
+                checkBox.setSelected(value != null && (Boolean) value);
+                checkBox.setHorizontalAlignment(JLabel.CENTER);
+
+                if (isSelected) {
+                    checkBox.setBackground(table.getSelectionBackground());
+                } else {
+                    checkBox.setBackground(table.getBackground());
+                }
+                checkBox.setOpaque(true);
+
+                return checkBox;
+            }
+        });
+
+        table.getColumnModel().getColumn(4).setCellEditor(new DefaultCellEditor(new JCheckBox()) {
+            @Override
+            public boolean stopCellEditing() {
+                boolean selected = (Boolean) getCellEditorValue();
+                int row = table.getSelectedRow();
+
+                // 大浴場清掃選択時の状況更新
+                if (selected) {
+                    tableModel.setValueAt("大浴場清掃担当", row, 5);
+                    // 大浴場清掃担当は本館のみに自動設定
+                    tableModel.setValueAt("本館のみ", row, 3);
+                } else {
+                    // 大浴場清掃を外した場合、設定状況を更新
+                    String constraintType = (String) tableModel.getValueAt(row, 1);
+                    if ("制限なし".equals(constraintType)) {
+                        tableModel.setValueAt("制限なし", row, 5);
+                    }
+                    // 建物指定を両方に戻す
+                    tableModel.setValueAt("両方", row, 3);
+                }
+
+                return super.stopCellEditing();
+            }
+        });
+
         // カスタムセルエディタ
         table.getColumnModel().getColumn(2).setCellEditor(new DefaultCellEditor(new JTextField()) {
             @Override
@@ -608,26 +683,27 @@ public class RoomAssignmentApplication extends JFrame {
                     try {
                         if ("故障者制限".equals(constraintType)) {
                             double limit = Double.parseDouble(value.trim());
-                            tableModel.setValueAt("設定済み(故障者" + limit + "P)", row, 4);
+                            tableModel.setValueAt("設定済み(故障者" + limit + "P)", row, 5);
                         } else if ("業者制限".equals(constraintType)) {
-                            if (value.contains("〜") || value.contains("-")) {
-                                String[] parts = value.split("[〜-]");
+                            if (value.contains("～") || value.contains("-")) {
+                                String[] parts = value.split("[～-]");
                                 if (parts.length == 2) {
                                     double min = Double.parseDouble(parts[0].trim());
                                     double max = Double.parseDouble(parts[1].trim());
-                                    tableModel.setValueAt("設定済み(業者" + min + "〜" + max + "P)", row, 4);
+                                    tableModel.setValueAt("設定済み(業者" + min + "～" + max + "P)", row, 5);
                                 } else {
-                                    tableModel.setValueAt("入力エラー", row, 4);
+                                    tableModel.setValueAt("入力エラー", row, 5);
                                 }
                             } else {
-                                tableModel.setValueAt("範囲形式エラー", row, 4);
+                                tableModel.setValueAt("範囲形式エラー", row, 5);
                             }
                         }
                     } catch (NumberFormatException e) {
-                        tableModel.setValueAt("数値エラー", row, 4);
+                        tableModel.setValueAt("数値エラー", row, 5);
                     }
                 } else if ("制限なし".equals(constraintType)) {
-                    tableModel.setValueAt("制限なし", row, 4);
+                    boolean isBathStaff = (Boolean) tableModel.getValueAt(row, 4);
+                    tableModel.setValueAt(isBathStaff ? "大浴場清掃担当" : "制限なし", row, 5);
                 }
 
                 return super.stopCellEditing();
@@ -668,8 +744,13 @@ public class RoomAssignmentApplication extends JFrame {
                 String constraintType = (String) tableModel.getValueAt(i, 1);
                 String constraintValue = (String) tableModel.getValueAt(i, 2);
                 String buildingType = (String) tableModel.getValueAt(i, 3);
+                Boolean isBathCleaning = (Boolean) tableModel.getValueAt(i, 4);
 
-                if (!"制限なし".equals(constraintType) && constraintValue != null && !constraintValue.trim().isEmpty()) {
+                // 何らかの設定がある場合のみ制約を追加
+                if ((!"制限なし".equals(constraintType) && constraintValue != null && !constraintValue.trim().isEmpty()) ||
+                        (isBathCleaning != null && isBathCleaning) ||
+                        !"両方".equals(buildingType)) {
+
                     try {
                         // スタッフIDを取得
                         String staffId = availableStaff.stream()
@@ -690,7 +771,7 @@ public class RoomAssignmentApplication extends JFrame {
                             upperLimit = Double.parseDouble(constraintValue.trim());
                         } else if ("業者制限".equals(constraintType)) {
                             cType = StaffPointConstraint.ConstraintType.LOWER_RANGE;
-                            String[] parts = constraintValue.split("[〜-]");
+                            String[] parts = constraintValue.split("[～-]");
                             lowerMin = Double.parseDouble(parts[0].trim());
                             lowerMax = Double.parseDouble(parts[1].trim());
                         } else {
@@ -706,8 +787,11 @@ public class RoomAssignmentApplication extends JFrame {
                             bType = StaffPointConstraint.BuildingAssignment.BOTH;
                         }
 
+                        // ★追加: 大浴場清掃フラグ
+                        boolean bathCleaningFlag = isBathCleaning != null && isBathCleaning;
+
                         StaffPointConstraint constraint = new StaffPointConstraint(
-                                staffId, staffName, cType, bType, upperLimit, lowerMin, lowerMax);
+                                staffId, staffName, cType, bType, upperLimit, lowerMin, lowerMax, bathCleaningFlag);
                         constraints.add(constraint);
 
                     } catch (NumberFormatException e) {
@@ -732,7 +816,7 @@ public class RoomAssignmentApplication extends JFrame {
             List<StaffPointConstraint> pointConstraints) {
 
         // 修正されたAdaptiveRoomOptimizerの制限対応メソッドを呼び出し
-        return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithPointConstraints(
+        return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithBathSelection(
                 availableStaff,
                 totalRooms,
                 mainBuildingRooms,

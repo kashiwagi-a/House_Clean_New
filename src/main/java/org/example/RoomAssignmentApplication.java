@@ -478,7 +478,7 @@ public class RoomAssignmentApplication extends JFrame {
             appendLog("通常清掃部屋の割り振りパターンを設定中...");
             Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution =
                     selectNormalRoomDistribution(cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                            pointConstraints, availableStaff);
+                            pointConstraints, availableStaff, bathType);
 
             // 大浴場清掃スタッフの集計
             long bathStaffCount = pointConstraints.stream()
@@ -564,29 +564,15 @@ public class RoomAssignmentApplication extends JFrame {
     private Map<String, NormalRoomDistributionDialog.StaffDistribution> selectNormalRoomDistribution(
             int mainRooms, int annexRooms,
             List<StaffPointConstraint> pointConstraints,
-            List<FileProcessor.Staff> availableStaff) {
-
-        int result = JOptionPane.showConfirmDialog(
-                parentFrame,
-                "通常清掃部屋の割り振りパターンを設定しますか？\n" +
-                        "・本館と別館の部屋数差を1部屋差または2部屋差で調整します\n" +
-                        "・割り振り後、手動で部屋数を調整できます\n" +
-                        "・スキップすると自動最適化が実行されます",
-                "通常清掃部屋割り振り設定",
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.QUESTION_MESSAGE
-        );
-
-        if (result != JOptionPane.YES_OPTION) {
-            return null;
-        }
+            List<FileProcessor.Staff> availableStaff,
+            AdaptiveRoomOptimizer.BathCleaningType bathType) {  // ★追加
 
         List<String> staffNamesList = availableStaff.stream()
                 .map(s -> s.name)
                 .collect(Collectors.toList());
 
         NormalRoomDistributionDialog dialog = new NormalRoomDistributionDialog(
-                parentFrame, mainRooms, annexRooms, pointConstraints, staffNamesList);
+                parentFrame, mainRooms, annexRooms, pointConstraints, staffNamesList, bathType);  // ★bathType追加
         dialog.setVisible(true);
 
         if (dialog.getDialogResult()) {

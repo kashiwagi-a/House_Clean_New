@@ -13,12 +13,12 @@ import java.util.stream.Collectors;
  * 本館・別館の部屋数差を1部屋差と2部屋差で計算し、選択・編集可能
  * ★改善: 本館・別館を個別に設定可能
  * ★修正: 正しい計算ロジック（ステップ1-12）を実装
+ * ★改善: ステッパー統合版（本館調整・別館調整ボタンを削除）
+ * ★改善: スピナーを常時表示し、クリックなしで直接操作可能
  */
 public class NormalRoomDistributionDialog extends JDialog {
 
     private JComboBox<String> patternSelector;
-    private JTable distributionTable;
-    private DefaultTableModel tableModel;
     private JLabel summaryLabel;
 
     private Map<String, StaffDistribution> oneDiffPattern;
@@ -32,6 +32,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     private AdaptiveRoomOptimizer.BathCleaningType bathCleaningType;
 
     private boolean dialogResult = false;
+    private JPanel dataPanel;
 
     /**
      * スタッフ割り振り情報（本館・別館個別管理版）
@@ -143,7 +144,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         this.currentPattern = deepCopyPattern(oneDiffPattern);
 
         initializeGUI();
-        setSize(1000, 600);
+        setSize(1200, 750);
         setLocationRelativeTo(parent);
     }
 
@@ -194,46 +195,143 @@ public class NormalRoomDistributionDialog extends JDialog {
         return panel;
     }
 
+    /**
+     * ★改善: スピナーを直接テーブルに埋め込む方式
+     */
     private JPanel createTablePanel() {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
-        String[] columnNames = {
-                "スタッフ名", "制約タイプ", "お風呂清掃", "本館部屋数", "本館調整",
-                "別館部屋数", "別館調整", "合計"
-        };
+        // ヘッダー付きテーブルパネルを作成
+        JPanel tablePanel = new JPanel(new BorderLayout());
 
-        tableModel = new DefaultTableModel(columnNames, 0) {
-            @Override
-            public boolean isCellEditable(int row, int column) {
-                return column == 4 || column == 6;
-            }
-        };
+        // カスタムヘッダーを作成
+        JPanel headerPanel = new JPanel(new GridLayout(1, 6));
+        headerPanel.setBackground(UIManager.getColor("TableHeader.background"));
+        headerPanel.setBorder(BorderFactory.createMatteBorder(1, 1, 1, 1, Color.GRAY));
 
-        distributionTable = new JTable(tableModel);
-        distributionTable.setRowHeight(25);
-        distributionTable.getTableHeader().setReorderingAllowed(false);
+        String[] headers = {"スタッフ名", "制限タイプ", "お風呂清掃", "本館部屋数", "別館部屋数", "合計"};
+        int[] widths = {120, 140, 100, 150, 150, 80};
 
-        distributionTable.getColumnModel().getColumn(0).setPreferredWidth(100);
-        distributionTable.getColumnModel().getColumn(1).setPreferredWidth(120);
-        distributionTable.getColumnModel().getColumn(2).setPreferredWidth(80);
-        distributionTable.getColumnModel().getColumn(3).setPreferredWidth(80);
-        distributionTable.getColumnModel().getColumn(4).setPreferredWidth(80);
-        distributionTable.getColumnModel().getColumn(5).setPreferredWidth(80);
-        distributionTable.getColumnModel().getColumn(6).setPreferredWidth(80);
-        distributionTable.getColumnModel().getColumn(7).setPreferredWidth(60);
+        for (int i = 0; i < headers.length; i++) {
+            JLabel headerLabel = new JLabel(headers[i], JLabel.CENTER);
+            headerLabel.setFont(new Font("MS Gothic", Font.BOLD, 12));
+            headerLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            headerLabel.setPreferredSize(new Dimension(widths[i], 25));
+            headerPanel.add(headerLabel);
+        }
 
-        distributionTable.getColumnModel().getColumn(4).setCellRenderer(new ButtonRenderer());
-        distributionTable.getColumnModel().getColumn(4).setCellEditor(new ButtonEditor(new JCheckBox(), true));
-        distributionTable.getColumnModel().getColumn(6).setCellRenderer(new ButtonRenderer());
-        distributionTable.getColumnModel().getColumn(6).setCellEditor(new ButtonEditor(new JCheckBox(), false));
+        tablePanel.add(headerPanel, BorderLayout.NORTH);
 
-        updateTable();
+        // データ行のパネル
+        dataPanel = new JPanel();
+        dataPanel.setLayout(new BoxLayout(dataPanel, BoxLayout.Y_AXIS));
 
-        JScrollPane scrollPane = new JScrollPane(distributionTable);
-        panel.add(scrollPane, BorderLayout.CENTER);
+        updateDataPanel();
+
+        JScrollPane scrollPane = new JScrollPane(dataPanel);
+        scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        tablePanel.add(scrollPane, BorderLayout.CENTER);
+
+        panel.add(tablePanel, BorderLayout.CENTER);
 
         return panel;
+    }
+
+    /**
+     * データパネルの更新（各行にスピナーを配置）
+     */
+    private void updateDataPanel() {
+        dataPanel.removeAll();
+
+        List<StaffDistribution> sortedStaff = new ArrayList<>(currentPattern.values());
+        sortedStaff.sort(Comparator.comparing(s -> s.staffName));
+
+        for (StaffDistribution staff : sortedStaff) {
+            JPanel rowPanel = new JPanel(new GridLayout(1, 6));
+            rowPanel.setBorder(BorderFactory.createMatteBorder(0, 1, 1, 1, Color.GRAY));
+            rowPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 35));
+            rowPanel.setPreferredSize(new Dimension(0, 35));
+
+            // スタッフ名
+            JLabel nameLabel = new JLabel(staff.staffName, JLabel.CENTER);
+            nameLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            rowPanel.add(nameLabel);
+
+            // 制限タイプ
+            JLabel constraintLabel = new JLabel(staff.constraintType, JLabel.CENTER);
+            constraintLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            rowPanel.add(constraintLabel);
+
+            // お風呂清掃
+            JLabel bathLabel = new JLabel(staff.isBathCleaning ? "○" : "", JLabel.CENTER);
+            bathLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            rowPanel.add(bathLabel);
+
+            // ★本館部屋数スピナー（常時表示・直接操作可能）
+            JPanel mainSpinnerPanel = new JPanel(new BorderLayout());
+            mainSpinnerPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            SpinnerNumberModel mainModel = new SpinnerNumberModel(staff.mainAssignedRooms, 0, 99, 1);
+            JSpinner mainSpinner = new JSpinner(mainModel);
+            mainSpinner.setFont(new Font("MS Gothic", Font.PLAIN, 14));
+            JComponent mainEditor = mainSpinner.getEditor();
+            if (mainEditor instanceof JSpinner.DefaultEditor) {
+                ((JSpinner.DefaultEditor) mainEditor).getTextField().setHorizontalAlignment(JTextField.CENTER);
+            }
+
+            mainModel.addChangeListener(e -> {
+                staff.mainAssignedRooms = mainModel.getNumber().intValue();
+                staff.updateTotal();
+                updateTotalLabel(rowPanel, staff);
+                updateSummary();
+            });
+
+            mainSpinnerPanel.add(mainSpinner, BorderLayout.CENTER);
+            rowPanel.add(mainSpinnerPanel);
+
+            // ★別館部屋数スピナー（常時表示・直接操作可能）
+            JPanel annexSpinnerPanel = new JPanel(new BorderLayout());
+            annexSpinnerPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            SpinnerNumberModel annexModel = new SpinnerNumberModel(staff.annexAssignedRooms, 0, 99, 1);
+            JSpinner annexSpinner = new JSpinner(annexModel);
+            annexSpinner.setFont(new Font("MS Gothic", Font.PLAIN, 14));
+            JComponent annexEditor = annexSpinner.getEditor();
+            if (annexEditor instanceof JSpinner.DefaultEditor) {
+                ((JSpinner.DefaultEditor) annexEditor).getTextField().setHorizontalAlignment(JTextField.CENTER);
+            }
+
+            annexModel.addChangeListener(e -> {
+                staff.annexAssignedRooms = annexModel.getNumber().intValue();
+                staff.updateTotal();
+                updateTotalLabel(rowPanel, staff);
+                updateSummary();
+            });
+
+            annexSpinnerPanel.add(annexSpinner, BorderLayout.CENTER);
+            rowPanel.add(annexSpinnerPanel);
+
+            // 合計
+            JLabel totalLabel = new JLabel(String.valueOf(staff.assignedRooms), JLabel.CENTER);
+            totalLabel.setFont(new Font("MS Gothic", Font.BOLD, 14));
+            rowPanel.add(totalLabel);
+
+            dataPanel.add(rowPanel);
+        }
+
+        dataPanel.revalidate();
+        dataPanel.repaint();
+        updateSummary();
+    }
+
+    /**
+     * 合計ラベルの更新
+     */
+    private void updateTotalLabel(JPanel rowPanel, StaffDistribution staff) {
+        Component[] components = rowPanel.getComponents();
+        if (components.length > 5) {
+            JLabel totalLabel = (JLabel) components[5];
+            totalLabel.setText(String.valueOf(staff.assignedRooms));
+        }
     }
 
     private JPanel createButtonPanel() {
@@ -245,9 +343,6 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JButton okButton = new JButton("OK");
         okButton.addActionListener(e -> {
-            if (distributionTable.isEditing()) {
-                distributionTable.getCellEditor().stopCellEditing();
-            }
             dialogResult = true;
             dispose();
         });
@@ -550,36 +645,13 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     private void switchPattern() {
-        if (distributionTable.isEditing()) {
-            distributionTable.getCellEditor().stopCellEditing();
-        }
-
         String selected = (String) patternSelector.getSelectedItem();
         if ("1部屋差パターン".equals(selected)) {
             currentPattern = deepCopyPattern(oneDiffPattern);
         } else {
             currentPattern = deepCopyPattern(twoDiffPattern);
         }
-        updateTable();
-    }
-
-    private void updateTable() {
-        tableModel.setRowCount(0);
-
-        for (StaffDistribution dist : currentPattern.values()) {
-            tableModel.addRow(new Object[]{
-                    dist.staffName,
-                    dist.constraintType,
-                    dist.isBathCleaning ? "○" : "",
-                    dist.mainAssignedRooms,
-                    "調整",
-                    dist.annexAssignedRooms,
-                    "調整",
-                    dist.assignedRooms
-            });
-        }
-
-        updateSummary();
+        updateDataPanel();
     }
 
     private void updateSummary() {
@@ -612,7 +684,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         } else {
             currentPattern = deepCopyPattern(twoDiffPattern);
         }
-        updateTable();
+        updateDataPanel();
     }
 
     private Map<String, StaffDistribution> deepCopyPattern(Map<String, StaffDistribution> original) {
@@ -633,92 +705,5 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     public Map<String, StaffDistribution> getCurrentDistribution() {
         return new HashMap<>(currentPattern);
-    }
-
-    // ボタンレンダラーとエディター
-    private class ButtonRenderer extends JButton implements TableCellRenderer {
-        public ButtonRenderer() {
-            setOpaque(true);
-        }
-
-        @Override
-        public Component getTableCellRendererComponent(JTable table, Object value,
-                                                       boolean isSelected, boolean hasFocus, int row, int column) {
-            setText(value != null ? value.toString() : "調整");
-            return this;
-        }
-    }
-
-    private class ButtonEditor extends DefaultCellEditor {
-        protected JButton button;
-        private String label;
-        private boolean clicked;
-        private final boolean isMainBuilding;
-
-        public ButtonEditor(JCheckBox checkBox, boolean isMainBuilding) {
-            super(checkBox);
-            this.isMainBuilding = isMainBuilding;
-            button = new JButton();
-            button.setOpaque(true);
-            button.addActionListener(e -> fireEditingStopped());
-        }
-
-        @Override
-        public Component getTableCellEditorComponent(JTable table, Object value,
-                                                     boolean isSelected, int row, int column) {
-            label = value != null ? value.toString() : "調整";
-            button.setText(label);
-            clicked = true;
-            return button;
-        }
-
-        @Override
-        public Object getCellEditorValue() {
-            if (clicked) {
-                int currentRow = distributionTable.getSelectedRow();
-                if (currentRow >= 0) {
-                    String staffName = (String) tableModel.getValueAt(currentRow, 0);
-                    StaffDistribution staff = currentPattern.get(staffName);
-
-                    if (staff != null) {
-                        String input = JOptionPane.showInputDialog(
-                                distributionTable,
-                                (isMainBuilding ? "本館" : "別館") + "の部屋数を入力してください:",
-                                isMainBuilding ? staff.mainAssignedRooms : staff.annexAssignedRooms
-                        );
-
-                        if (input != null) {
-                            try {
-                                int newRooms = Integer.parseInt(input);
-                                if (newRooms >= 0) {
-                                    if (isMainBuilding) {
-                                        staff.mainAssignedRooms = newRooms;
-                                    } else {
-                                        staff.annexAssignedRooms = newRooms;
-                                    }
-                                    staff.updateTotal();
-                                    updateTable();
-                                }
-                            } catch (NumberFormatException ex) {
-                                JOptionPane.showMessageDialog(distributionTable, "数値を入力してください。");
-                            }
-                        }
-                    }
-                }
-                clicked = false;
-            }
-            return label;
-        }
-
-        @Override
-        public boolean stopCellEditing() {
-            clicked = false;
-            return super.stopCellEditing();
-        }
-
-        @Override
-        protected void fireEditingStopped() {
-            super.fireEditingStopped();
-        }
     }
 }

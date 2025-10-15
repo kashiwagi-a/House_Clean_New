@@ -591,11 +591,11 @@ public class RoomAssignmentApplication extends JFrame {
 
         int result = JOptionPane.showConfirmDialog(
                 parentFrame,
-                "ポイント制限・大浴場清掃スタッフを設定しますか？\n" +
-                        "・故障者制限：体調不良等で制限\n" +
-                        "・業者制限：リライアンスなど業者用　何処にでも振れます\n" +
+                "清掃スタッフを設定しますか？\n" +
+                        "・故障者制限：体調不良者用\n" +
+                        "・業者制限：リライアンス用\n" +
                         "・建物指定：本館のみ/別館のみの担当を指定\n" +
-                        "・大浴場清掃：担当スタッフを手動選択可能",
+                        "・大浴場清掃：担当スタッフをチェック",
                 "ポイント制限・大浴場清掃設定",
                 JOptionPane.YES_NO_OPTION,
                 JOptionPane.QUESTION_MESSAGE
@@ -867,7 +867,7 @@ public class RoomAssignmentApplication extends JFrame {
 
         int choice = JOptionPane.showOptionDialog(
                 this,
-                "大浴場清掃のタイプを選択してください:",
+                "今日は？:",
                 "大浴場清掃設定",
                 JOptionPane.DEFAULT_OPTION,
                 JOptionPane.QUESTION_MESSAGE,

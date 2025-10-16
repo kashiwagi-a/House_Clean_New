@@ -613,10 +613,10 @@ public class RoomAssignmentApplication extends JFrame {
         JPanel infoPanel = new JPanel(new GridLayout(5, 1));
         infoPanel.setBorder(BorderFactory.createTitledBorder("設定方法"));
         infoPanel.add(new JLabel("• 制限タイプ：「制限なし」、「故障者制限」、「業者制限」から選択"));
-        infoPanel.add(new JLabel("• 故障者制限：正の数値（例：18.0 = 最大18.0ポイントまで）"));
-        infoPanel.add(new JLabel("• 業者制限：最小〜最大（例：20.0〜25.0 = 20.0〜25.0ポイント確保）"));
+        infoPanel.add(new JLabel("• 故障者制限：正の数値（例：18 = 最大18部屋まで）"));
+        infoPanel.add(new JLabel("• 業者制限：最小-最大（例：20-25 = 20から25部屋）"));
         infoPanel.add(new JLabel("• 建物指定：「両方」、「本館のみ」、「別館のみ」から選択"));
-        infoPanel.add(new JLabel("• 大浴場清掃：チェックを入れたスタッフが大浴場清掃を担当"));
+        infoPanel.add(new JLabel("• 大浴場清掃：チェックを入れて下さい"));
 
         JPanel staffPanel = new JPanel(new BorderLayout());
         staffPanel.setBorder(BorderFactory.createTitledBorder("スタッフ別制限"));

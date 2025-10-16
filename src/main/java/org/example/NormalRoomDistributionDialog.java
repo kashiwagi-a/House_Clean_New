@@ -15,6 +15,7 @@ import java.util.stream.Collectors;
  * ★修正: 正しい計算ロジック（ステップ1-12）を実装
  * ★改善: ステッパー統合版（本館調整・別館調整ボタンを削除）
  * ★改善: スピナーを常時表示し、クリックなしで直接操作可能
+ * ★修正: 表示順序の並び替え対応（計算ロジックは変更なし）
  */
 public class NormalRoomDistributionDialog extends JDialog {
 
@@ -240,12 +241,45 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     /**
      * データパネルの更新（各行にスピナーを配置）
+     * ★修正: 表示順序を希望の順番に並び替え（計算ロジックには影響なし）
      */
     private void updateDataPanel() {
         dataPanel.removeAll();
 
         List<StaffDistribution> sortedStaff = new ArrayList<>(currentPattern.values());
-        sortedStaff.sort(Comparator.comparing(s -> s.staffName));
+
+        // ★カスタムソート: 希望の順序で並べ替え
+        sortedStaff.sort((s1, s2) -> {
+            // 1. 大浴場清掃に○が付いているスタッフを最優先
+            if (s1.isBathCleaning != s2.isBathCleaning) {
+                return s1.isBathCleaning ? -1 : 1;
+            }
+
+            // 2. 故障者制限がかかっているスタッフ
+            boolean s1IsBroken = "故障者制限".equals(s1.constraintType);
+            boolean s2IsBroken = "故障者制限".equals(s2.constraintType);
+            if (s1IsBroken != s2IsBroken) {
+                return s1IsBroken ? -1 : 1;
+            }
+
+            // 3-5. 建物の割り振りで並べ替え
+            // 本館のみ(3) → 両方(4) → 別館のみ(5)
+            int s1BuildingPriority = getBuildingPriority(s1);
+            int s2BuildingPriority = getBuildingPriority(s2);
+            if (s1BuildingPriority != s2BuildingPriority) {
+                return Integer.compare(s1BuildingPriority, s2BuildingPriority);
+            }
+
+            // 6. 業者制限がかかっているスタッフ
+            boolean s1IsVendor = "業者制限".equals(s1.constraintType);
+            boolean s2IsVendor = "業者制限".equals(s2.constraintType);
+            if (s1IsVendor != s2IsVendor) {
+                return s1IsVendor ? 1 : -1;
+            }
+
+            // 同じカテゴリ内では名前順
+            return s1.staffName.compareTo(s2.staffName);
+        });
 
         for (StaffDistribution staff : sortedStaff) {
             JPanel rowPanel = new JPanel(new GridLayout(1, 6));
@@ -321,6 +355,28 @@ public class NormalRoomDistributionDialog extends JDialog {
         dataPanel.revalidate();
         dataPanel.repaint();
         updateSummary();
+    }
+
+    /**
+     * ★新規追加: 建物の割り振りによる優先順位を取得
+     * @param staff スタッフ情報
+     * @return 優先順位 (3=本館のみ, 4=両方, 5=別館のみ, 9=その他)
+     */
+    private int getBuildingPriority(StaffDistribution staff) {
+        // 本館のみに割り振られているスタッフ（本館部屋数あり、別館部屋数0）
+        if (staff.mainAssignedRooms > 0 && staff.annexAssignedRooms == 0) {
+            return 3;
+        }
+        // 別館のみに割り振られているスタッフ（本館部屋数0、別館部屋数あり）
+        else if (staff.mainAssignedRooms == 0 && staff.annexAssignedRooms > 0) {
+            return 5;
+        }
+        // どちらの建物も清掃するスタッフ（両方に部屋数あり）
+        else if (staff.mainAssignedRooms > 0 && staff.annexAssignedRooms > 0) {
+            return 4;
+        }
+        // その他（部屋数が両方0の場合など）
+        return 9;
     }
 
     /**

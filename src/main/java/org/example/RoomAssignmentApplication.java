@@ -561,27 +561,88 @@ public class RoomAssignmentApplication extends JFrame {
     /**
      * ★新機能: 通常清掃部屋の事前割り振り設定ダイアログ
      */
+    /**
+     * ★新機能: 通常清掃部屋の事前割り振り設定ダイアログ
+     * ★★修正: FileProcessorから直接部屋データを読み込み、4区分を集計
+     */
+    /**
+     * ★新機能: 通常清掃部屋の事前割り振り設定ダイアログ
+     * ★★修正: FileProcessorから直接部屋データを読み込み、4区分を集計
+     */
     private Map<String, NormalRoomDistributionDialog.StaffDistribution> selectNormalRoomDistribution(
             int mainRooms, int annexRooms,
             List<StaffPointConstraint> pointConstraints,
             List<FileProcessor.Staff> availableStaff,
-            AdaptiveRoomOptimizer.BathCleaningType bathType) {  // ★追加
+            AdaptiveRoomOptimizer.BathCleaningType bathType) {
+
+        // ★★追加: FileProcessorから部屋データを読み込んで4区分に集計
+        int totalMainSingleRooms = 0;
+        int totalMainTwinRooms = 0;
+        int totalAnnexSingleRooms = 0;
+        int totalAnnexTwinRooms = 0;
+
+        try {
+            // selectedRoomFileから部屋データを読み込み
+            FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile);
+
+            // 本館の部屋タイプ集計
+            for (FileProcessor.Room room : cleaningData.mainRooms) {
+                // FileProcessor.determineRoomType()で変換済みのroomTypeを使用
+                // 'T', 'NT', 'ANT', 'ADT' → 'T' に変換されている
+                if ("T".equals(room.roomType)) {
+                    totalMainTwinRooms++;
+                } else {
+                    totalMainSingleRooms++;
+                }
+            }
+
+            // 別館の部屋タイプ集計
+            for (FileProcessor.Room room : cleaningData.annexRooms) {
+                if ("T".equals(room.roomType)) {
+                    totalAnnexTwinRooms++;
+                } else {
+                    totalAnnexSingleRooms++;
+                }
+            }
+
+            appendLog(String.format("部屋タイプ集計: 本館(S:%d, T:%d), 別館(S:%d, T:%d)",
+                    totalMainSingleRooms, totalMainTwinRooms,
+                    totalAnnexSingleRooms, totalAnnexTwinRooms));
+
+        } catch (Exception e) {
+            // エラー時は全てシングル等として扱う
+            totalMainSingleRooms = mainRooms;
+            totalAnnexSingleRooms = annexRooms;
+            appendLog("警告: 部屋タイプ集計中にエラーが発生しました。全てシングル等として扱います。");
+            LOGGER.warning("部屋タイプ集計エラー: " + e.getMessage());
+        }
 
         List<String> staffNamesList = availableStaff.stream()
                 .map(s -> s.name)
                 .collect(Collectors.toList());
 
+        // ★★修正: 4区分のコンストラクタを使用
         NormalRoomDistributionDialog dialog = new NormalRoomDistributionDialog(
-                parentFrame, mainRooms, annexRooms, pointConstraints, staffNamesList, bathType);  // ★bathType追加
+                parentFrame,
+                totalMainSingleRooms,
+                totalMainTwinRooms,
+                totalAnnexSingleRooms,
+                totalAnnexTwinRooms,
+                pointConstraints,
+                staffNamesList,
+                bathType);
+
         dialog.setVisible(true);
 
+        // ★★修正: メソッド名を変更
         if (dialog.getDialogResult()) {
+            appendLog("通常清掃部屋の割り振りパターンが設定されました");
             return dialog.getCurrentDistribution();
+        } else {
+            appendLog("通常清掃部屋の割り振り設定がキャンセルされました");
+            return null;
         }
-
-        return null;
     }
-
     /**
      * ★修正: ポイント制限・大浴場清掃スタッフ選択（制限値入力エラー修正版）
      */

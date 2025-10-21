@@ -560,33 +560,25 @@ public class NormalRoomDistributionDialog extends JDialog {
      * ★★拡張: Step1に別館ツイン('ANT'/'ADT')換算処理を追加
      * トータル計算の前段階で別館ツインに換算係数を適用
      */
+    /**
+     * ★修正版: 正しいロジック（ステップ1-12）に従った計算
+     * ツイン均等配分機能を追加
+     */
     private Map<String, StaffDistribution> calculatePatternWithCorrectLogic(int annexDifference) {
         Map<String, StaffDistribution> pattern = new HashMap<>();
 
-        // ★★Step 1を拡張: 別館ツイン('ANT'/'ADT')の負荷換算を追加（トータル計算の前段階）
-        // 別館ツインの換算係数を適用
-        double annexTwinMultiplier = getAnnexTwinMultiplier(totalAnnexTwinRooms);
-        double convertedAnnexTwin = totalAnnexTwinRooms * annexTwinMultiplier;
-
-        // 換算後のトータル計算
-        // 本館シングル等 + 本館ツイン('T'/'NT') + 別館シングル等 + 別館ツイン('ANT'/'ADT')×換算係数
-        double convertedTotalRooms = totalMainSingleRooms + totalMainTwinRooms +
-                totalAnnexSingleRooms + convertedAnnexTwin;
-        int actualTotalRooms = totalMainRooms + totalAnnexRooms;
-
-        System.out.println("Step 1 (拡張): 本館S" + totalMainSingleRooms + "+T" + totalMainTwinRooms +
-                " + 別館S" + totalAnnexSingleRooms + "+T" + totalAnnexTwinRooms +
-                "×" + annexTwinMultiplier + "=" + convertedAnnexTwin +
-                " = 換算合計" + convertedTotalRooms + "室, 実際合計" + actualTotalRooms + "室");
+        // Step 1: 本館と別館のトータルを計算
+        int totalRooms = totalMainRooms + totalAnnexRooms;
+        System.out.println("Step 1: 本館" + totalMainRooms + "室 + 別館" + totalAnnexRooms + "室 = 合計" + totalRooms + "室");
 
         Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
         int totalStaff = staffInfo.size();
 
-        // Step 2: 換算合計をスタッフ数で割る
-        int baseRoomsPerStaff = (int) Math.ceil(convertedTotalRooms / totalStaff);
-        System.out.println("Step 2: 基本部屋数(換算後) = " + convertedTotalRooms + " ÷ " + totalStaff + " = " + baseRoomsPerStaff + " (切り上げ)");
+        // Step 2: 合計をスタッフのトータルで割る（切り上げ）
+        int baseRoomsPerStaff = (int) Math.ceil((double) totalRooms / totalStaff);
+        System.out.println("Step 2: 基本部屋数 = " + totalRooms + " ÷ " + totalStaff + " = " + baseRoomsPerStaff + " (切り上げ)");
 
-        // Step 3-12: 既存ロジックを保持
+        // Step 3: 大浴場清掃スタッフに先に割り振る
         Map<String, Integer> bathStaffRooms = new HashMap<>();
         int bathCleaningReduction = bathCleaningType.reduction;
 
@@ -595,9 +587,11 @@ public class NormalRoomDistributionDialog extends JDialog {
                 String staffName = entry.getKey();
                 int assignedRooms = baseRoomsPerStaff - bathCleaningReduction;
                 bathStaffRooms.put(staffName, Math.max(0, assignedRooms));
+                System.out.println("Step 3: " + staffName + " (大浴清掃) = " + assignedRooms + "室 (基本" + baseRoomsPerStaff + " - " + bathCleaningReduction + ")");
             }
         }
 
+        // Step 4: '故障者制限'と'業者制限'がかかるスタッフを割り振る
         for (Map.Entry<String, StaffConstraintInfo> entry : staffInfo.entrySet()) {
             String staffName = entry.getKey();
             StaffConstraintInfo info = entry.getValue();
@@ -607,34 +601,24 @@ public class NormalRoomDistributionDialog extends JDialog {
                 if ("故障者制限".equals(info.constraintType)) {
                     assignedRooms = info.maxRooms;
                 } else {
-                    assignedRooms = info.minRooms;
+                    assignedRooms = info.minRooms; // 業者制限の最低値
                 }
 
-                StaffDistribution dist;
                 if ("本館のみ".equals(info.buildingAssignment)) {
-                    dist = new StaffDistribution("", staffName, info.buildingAssignment,
-                            assignedRooms, 0, info.constraintType, false);
-                    // ★★本館のみ：ツイン('T'/'NT')を均等分配
-                    dist.mainTwinAssignedRooms = Math.min(assignedRooms / 2, totalMainTwinRooms);
-                    dist.mainSingleAssignedRooms = assignedRooms - dist.mainTwinAssignedRooms;
+                    pattern.put(staffName, new StaffDistribution("", staffName, info.buildingAssignment,
+                            assignedRooms, 0, info.constraintType, false));
                 } else if ("別館のみ".equals(info.buildingAssignment)) {
-                    dist = new StaffDistribution("", staffName, info.buildingAssignment,
-                            0, assignedRooms, info.constraintType, false);
-                    // ★★別館のみ：ツイン('ANT'/'ADT')を均等分配
-                    dist.annexTwinAssignedRooms = Math.min(assignedRooms / 2, totalAnnexTwinRooms);
-                    dist.annexSingleAssignedRooms = assignedRooms - dist.annexTwinAssignedRooms;
+                    pattern.put(staffName, new StaffDistribution("", staffName, info.buildingAssignment,
+                            0, assignedRooms, info.constraintType, false));
                 } else {
-                    dist = new StaffDistribution("", staffName, "両方",
-                            assignedRooms / 2, assignedRooms - assignedRooms / 2, info.constraintType, false);
-                    dist.mainTwinAssignedRooms = Math.min(dist.mainAssignedRooms / 2, totalMainTwinRooms / 2);
-                    dist.mainSingleAssignedRooms = dist.mainAssignedRooms - dist.mainTwinAssignedRooms;
-                    dist.annexTwinAssignedRooms = Math.min(dist.annexAssignedRooms / 2, totalAnnexTwinRooms / 2);
-                    dist.annexSingleAssignedRooms = dist.annexAssignedRooms - dist.annexTwinAssignedRooms;
+                    pattern.put(staffName, new StaffDistribution("", staffName, "両方",
+                            assignedRooms / 2, assignedRooms - assignedRooms / 2, info.constraintType, false));
                 }
-                pattern.put(staffName, dist);
+                System.out.println("Step 4: " + staffName + " (" + info.constraintType + ") = " + assignedRooms + "室");
             }
         }
 
+        // Step 5: 大浴清掃スタッフの担当部屋数の合計からそれぞれの建物の合計を引く
         int bathMainRooms = 0;
         int bathAnnexRooms = 0;
 
@@ -643,29 +627,23 @@ public class NormalRoomDistributionDialog extends JDialog {
             StaffConstraintInfo info = staffInfo.get(staffName);
             int rooms = entry.getValue();
 
-            StaffDistribution dist;
             if ("本館のみ".equals(info.buildingAssignment)) {
-                dist = new StaffDistribution("", staffName, info.buildingAssignment,
-                        rooms, 0, info.constraintType, true);
-                dist.mainTwinAssignedRooms = Math.min(rooms / 2, totalMainTwinRooms);
-                dist.mainSingleAssignedRooms = rooms - dist.mainTwinAssignedRooms;
+                pattern.put(staffName, new StaffDistribution("", staffName, info.buildingAssignment,
+                        rooms, 0, info.constraintType, true));
                 bathMainRooms += rooms;
             } else if ("別館のみ".equals(info.buildingAssignment)) {
-                dist = new StaffDistribution("", staffName, info.buildingAssignment,
-                        0, rooms, info.constraintType, true);
-                dist.annexTwinAssignedRooms = Math.min(rooms / 2, totalAnnexTwinRooms);
-                dist.annexSingleAssignedRooms = rooms - dist.annexTwinAssignedRooms;
+                pattern.put(staffName, new StaffDistribution("", staffName, info.buildingAssignment,
+                        0, rooms, info.constraintType, true));
                 bathAnnexRooms += rooms;
             } else {
-                dist = new StaffDistribution("", staffName, "本館のみ",
-                        rooms, 0, info.constraintType, true);
-                dist.mainTwinAssignedRooms = Math.min(rooms / 2, totalMainTwinRooms);
-                dist.mainSingleAssignedRooms = rooms - dist.mainTwinAssignedRooms;
+                // 両方の場合は本館に配置
+                pattern.put(staffName, new StaffDistribution("", staffName, "本館のみ",
+                        rooms, 0, info.constraintType, true));
                 bathMainRooms += rooms;
             }
-            pattern.put(staffName, dist);
         }
 
+        // 制約スタッフの部屋数も計算
         int constraintMainRooms = 0;
         int constraintAnnexRooms = 0;
         for (StaffDistribution dist : pattern.values()) {
@@ -678,6 +656,9 @@ public class NormalRoomDistributionDialog extends JDialog {
         int remainingMainRooms = totalMainRooms - bathMainRooms - constraintMainRooms;
         int remainingAnnexRooms = totalAnnexRooms - bathAnnexRooms - constraintAnnexRooms;
 
+        System.out.println("Step 5: 残り本館=" + remainingMainRooms + "室, 残り別館=" + remainingAnnexRooms + "室");
+
+        // 建物指定のない通常スタッフを取得
         List<String> normalStaff = new ArrayList<>();
         for (Map.Entry<String, StaffConstraintInfo> entry : staffInfo.entrySet()) {
             StaffConstraintInfo info = entry.getValue();
@@ -687,94 +668,152 @@ public class NormalRoomDistributionDialog extends JDialog {
             }
         }
 
-        if (normalStaff.isEmpty()) {
-            return pattern;
-        }
+        if (!normalStaff.isEmpty()) {
+            // Step 6: 本館から計算していく
+            int mainStaffNeeded = (int) Math.ceil((double) remainingMainRooms / baseRoomsPerStaff);
+            mainStaffNeeded = Math.min(mainStaffNeeded, normalStaff.size());
+            System.out.println("Step 6: 本館に必要なスタッフ数 = " + mainStaffNeeded);
 
-        int mainStaffNeeded = (int) Math.ceil((double) remainingMainRooms / baseRoomsPerStaff);
-        mainStaffNeeded = Math.min(mainStaffNeeded, normalStaff.size());
+            // Step 7: 建物指定のないスタッフから選出してstep2で計算した部屋数を当てる
+            for (int i = 0; i < mainStaffNeeded; i++) {
+                String staffName = normalStaff.get(i);
+                pattern.put(staffName, new StaffDistribution("", staffName, "本館のみ",
+                        baseRoomsPerStaff, 0, "制限なし", false));
+                System.out.println("Step 7: " + staffName + " (本館) = " + baseRoomsPerStaff + "室");
+            }
 
-        // ★★拡張: 本館ツイン('T'/'NT')と別館ツイン('ANT'/'ADT')の均等分配
-        int totalMainTwinRemaining = totalMainTwinRooms;
-        int totalAnnexTwinRemaining = totalAnnexTwinRooms;
+            // Step 8: 本館スタッフの担当部屋の合計を計算
+            int actualMainTotal = pattern.values().stream()
+                    .filter(d -> d.mainAssignedRooms > 0)
+                    .mapToInt(d -> d.mainAssignedRooms)
+                    .sum();
 
-        for (int i = 0; i < mainStaffNeeded; i++) {
-            String staffName = normalStaff.get(i);
-            StaffDistribution dist = new StaffDistribution("", staffName, "本館のみ",
-                    baseRoomsPerStaff, 0, "制限なし", false);
+            System.out.println("Step 8: 本館スタッフ合計=" + actualMainTotal + "室, 実際必要=" + totalMainRooms + "室");
 
-            // ★★本館ツイン('T'/'NT')を均等分配
-            int remainingStaff = normalStaff.size();
-            int mainTwinForThis = Math.min(
-                    (int) Math.ceil((double) totalMainTwinRemaining / remainingStaff),
-                    baseRoomsPerStaff
-            );
-            totalMainTwinRemaining -= mainTwinForThis;
-
-            dist.mainTwinAssignedRooms = mainTwinForThis;
-            dist.mainSingleAssignedRooms = baseRoomsPerStaff - mainTwinForThis;
-
-            pattern.put(staffName, dist);
-        }
-
-        int actualMainTotal = pattern.values().stream()
-                .filter(d -> d.mainAssignedRooms > 0)
-                .mapToInt(d -> d.mainAssignedRooms)
-                .sum();
-
-        if (actualMainTotal > totalMainRooms) {
-            int excess = actualMainTotal - totalMainRooms;
-            for (StaffDistribution dist : pattern.values()) {
-                if (dist.mainAssignedRooms > 0 && "制限なし".equals(dist.constraintType) && !dist.isBathCleaning) {
-                    int reduction = Math.min(excess, dist.mainAssignedRooms);
-                    // シングル等から優先的に減らす
-                    if (dist.mainSingleAssignedRooms >= reduction) {
-                        dist.mainSingleAssignedRooms -= reduction;
-                    } else {
-                        int remaining = reduction - dist.mainSingleAssignedRooms;
-                        dist.mainSingleAssignedRooms = 0;
-                        dist.mainTwinAssignedRooms -= remaining;
+            // Step 9: 実際清掃すべき本館の部屋数より多い場合、一人選んで調整
+            if (actualMainTotal > totalMainRooms) {
+                int excess = actualMainTotal - totalMainRooms;
+                for (StaffDistribution dist : pattern.values()) {
+                    if (dist.mainAssignedRooms > 0 && "制限なし".equals(dist.constraintType) && !dist.isBathCleaning) {
+                        int reduction = Math.min(excess, dist.mainAssignedRooms);
+                        dist.mainAssignedRooms -= reduction;
+                        dist.updateTotal();
+                        excess -= reduction;
+                        System.out.println("Step 9: " + dist.staffName + " の本館部屋数を" + reduction + "部屋減らす");
+                        if (excess <= 0) break;
                     }
-                    dist.updateTotal();
-                    excess -= reduction;
-                    if (excess <= 0) break;
                 }
+            }
+
+            // Step 10: 別館に残りのスタッフを割り振る
+            int annexRoomsPerStaff = baseRoomsPerStaff + annexDifference;
+            for (int i = mainStaffNeeded; i < normalStaff.size(); i++) {
+                String staffName = normalStaff.get(i);
+                pattern.put(staffName, new StaffDistribution("", staffName, "別館のみ",
+                        0, Math.max(0, annexRoomsPerStaff), "制限なし", false));
+                System.out.println("Step 10: " + staffName + " (別館) = " + annexRoomsPerStaff + "室");
+            }
+
+            // Step 11: 別館スタッフの部屋合計と実際清掃すべき部屋の合計を出す
+            int actualAnnexTotal = pattern.values().stream()
+                    .filter(d -> d.annexAssignedRooms > 0)
+                    .mapToInt(d -> d.annexAssignedRooms)
+                    .sum();
+
+            System.out.println("Step 11: 別館スタッフ合計=" + actualAnnexTotal + "室, 実際必要=" + totalAnnexRooms + "室");
+
+            // Step 12: 不足の場合の調整処理
+            if (actualAnnexTotal < totalAnnexRooms) {
+                adjustForShortfall(pattern, staffInfo, totalAnnexRooms - actualAnnexTotal, baseRoomsPerStaff);
             }
         }
 
-        int annexRoomsPerStaff = baseRoomsPerStaff + annexDifference;
+        // =====================================
+        // ★★最終段階: 全スタッフへツイン均等配分
+        // =====================================
 
-        for (int i = mainStaffNeeded; i < normalStaff.size(); i++) {
-            String staffName = normalStaff.get(i);
-            StaffDistribution dist = new StaffDistribution("", staffName, "別館のみ",
-                    0, Math.max(0, annexRoomsPerStaff), "制限なし", false);
-
-            // ★★別館ツイン('ANT'/'ADT')を均等分配
-            int remainingStaff = normalStaff.size() - i;
-            int annexTwinForThis = Math.min(
-                    (int) Math.ceil((double) totalAnnexTwinRemaining / remainingStaff),
-                    annexRoomsPerStaff
-            );
-            totalAnnexTwinRemaining -= annexTwinForThis;
-
-            dist.annexTwinAssignedRooms = annexTwinForThis;
-            dist.annexSingleAssignedRooms = annexRoomsPerStaff - annexTwinForThis;
-
-            pattern.put(staffName, dist);
+        // 本館担当スタッフのリストを作成
+        List<String> mainStaffList = new ArrayList<>();
+        for (Map.Entry<String, StaffDistribution> entry : pattern.entrySet()) {
+            if (entry.getValue().mainAssignedRooms > 0) {
+                mainStaffList.add(entry.getKey());
+            }
         }
 
-        int actualAnnexTotal = pattern.values().stream()
-                .filter(d -> d.annexAssignedRooms > 0)
-                .mapToInt(d -> d.annexAssignedRooms)
-                .sum();
-
-        if (actualAnnexTotal < totalAnnexRooms) {
-            adjustForShortfall(pattern, staffInfo, totalAnnexRooms - actualAnnexTotal, baseRoomsPerStaff);
+        // 本館担当スタッフ全員に対して、まず全てシングルとして初期化
+        for (String staffName : mainStaffList) {
+            StaffDistribution dist = pattern.get(staffName);
+            dist.mainSingleAssignedRooms = dist.mainAssignedRooms;
+            dist.mainTwinAssignedRooms = 0;
         }
+
+        // ★★本館ツインをラウンドロビンで1部屋ずつ全スタッフに均等配分
+        int mainTwinRemaining = totalMainTwinRooms;
+        int staffIndex = 0;
+        while (mainTwinRemaining > 0 && !mainStaffList.isEmpty()) {
+            String staffName = mainStaffList.get(staffIndex % mainStaffList.size());
+            StaffDistribution dist = pattern.get(staffName);
+
+            // シングルをツインに変換（担当部屋の上限を超えない範囲で）
+            if (dist.mainSingleAssignedRooms > 0) {
+                dist.mainSingleAssignedRooms--;
+                dist.mainTwinAssignedRooms++;
+                mainTwinRemaining--;
+            }
+
+            staffIndex++;
+
+            // 無限ループ防止：全スタッフの合計部屋数を超えたら終了
+            if (staffIndex >= mainStaffList.size() * 100) {
+                System.out.println("警告: 本館ツイン配分で想定外のループ");
+                break;
+            }
+        }
+
+        System.out.println("本館ツイン配分完了: " + mainStaffList.size() + "名に均等配分");
+
+        // 別館担当スタッフのリストを作成
+        List<String> annexStaffList = new ArrayList<>();
+        for (Map.Entry<String, StaffDistribution> entry : pattern.entrySet()) {
+            if (entry.getValue().annexAssignedRooms > 0) {
+                annexStaffList.add(entry.getKey());
+            }
+        }
+
+        // 別館担当スタッフ全員に対して、まず全てシングルとして初期化
+        for (String staffName : annexStaffList) {
+            StaffDistribution dist = pattern.get(staffName);
+            dist.annexSingleAssignedRooms = dist.annexAssignedRooms;
+            dist.annexTwinAssignedRooms = 0;
+        }
+
+        // ★★別館ツインをラウンドロビンで1部屋ずつ全スタッフに均等配分
+        int annexTwinRemaining = totalAnnexTwinRooms;
+        staffIndex = 0;
+        while (annexTwinRemaining > 0 && !annexStaffList.isEmpty()) {
+            String staffName = annexStaffList.get(staffIndex % annexStaffList.size());
+            StaffDistribution dist = pattern.get(staffName);
+
+            // シングルをツインに変換（担当部屋の上限を超えない範囲で）
+            if (dist.annexSingleAssignedRooms > 0) {
+                dist.annexSingleAssignedRooms--;
+                dist.annexTwinAssignedRooms++;
+                annexTwinRemaining--;
+            }
+
+            staffIndex++;
+
+            // 無限ループ防止：全スタッフの合計部屋数を超えたら終了
+            if (staffIndex >= annexStaffList.size() * 100) {
+                System.out.println("警告: 別館ツイン配分で想定外のループ");
+                break;
+            }
+        }
+
+        System.out.println("別館ツイン配分完了: " + annexStaffList.size() + "名に均等配分");
 
         return pattern;
     }
-
     private void adjustForShortfall(Map<String, StaffDistribution> pattern,
                                     Map<String, StaffConstraintInfo> staffInfo,
                                     int shortfall, int baseRoomsPerStaff) {

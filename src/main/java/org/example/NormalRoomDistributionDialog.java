@@ -939,16 +939,37 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         int totalActual = totalAssignedMainSingle + totalAssignedMainTwin +
                 totalAssignedAnnexSingle + totalAssignedAnnexTwin;
+        String mainSingleText = formatWithColor(totalAssignedMainSingle, totalMainSingleRooms, "S");
+        String mainTwinText = formatWithColor(totalAssignedMainTwin, totalMainTwinRooms, "T");
+        String annexSingleText = formatWithColor(totalAssignedAnnexSingle, totalAnnexSingleRooms, "S");
+        String annexTwinText = formatWithColor(totalAssignedAnnexTwin, totalAnnexTwinRooms, "T");
 
         String summaryText = String.format(
-                "割り当て済み: 本館S%d+T%d, 別館S%d+T%d | 実際合計: %d室, 換算合計: %.1f室",
-                totalAssignedMainSingle, totalAssignedMainTwin,
-                totalAssignedAnnexSingle, totalAssignedAnnexTwin,
+                "<html>割り当て済み: 本館%s+%s, 別館%s+%s | 実際合計: %d室, 換算合計: %.1f室</html>",
+                mainSingleText, mainTwinText,
+                annexSingleText, annexTwinText,
                 totalActual,
                 totalConvertedRooms
         );
 
         summaryLabel.setText(summaryText);
+    }
+    /**
+     * ★★新規メソッド: 値を比較して色付きテキストを生成
+     * @param assignedValue 割り当て済みの値
+     * @param targetValue ファイルから読み取った目標値
+     * @param prefix 接頭辞（"S"または"T"）
+     * @return 色付きHTMLテキスト（一致していなければ赤色）
+     */
+    private String formatWithColor(int assignedValue, int targetValue, String prefix) {
+        String text = prefix + assignedValue;
+        if (assignedValue != targetValue) {
+            // 一致していない場合は赤色
+            return "<font color='red'>" + text + "</font>";
+        } else {
+            // 一致している場合は通常の黒色
+            return text;
+        }
     }
 
     private void resetPattern() {

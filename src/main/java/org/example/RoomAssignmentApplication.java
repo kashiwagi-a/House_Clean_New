@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
  * ホテル清掃管理システム - メインアプリケーション
  * 大浴場清掃スタッフ手動選択機能付き
  * ★修正: 制限値入力エラー修正版 + 通常清掃部屋割り振り機能追加
+ * ★データベース対応版
  */
 public class RoomAssignmentApplication extends JFrame {
     private static final Logger LOGGER = Logger.getLogger(RoomAssignmentApplication.class.getName());
@@ -195,8 +196,9 @@ public class RoomAssignmentApplication extends JFrame {
         panel.add(new JLabel("エコデータ（オプション）:"), gbc);
 
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
-        selectEcoDataButton = new JButton("Excelファイルを選択...");
-        selectEcoDataButton.addActionListener(this::selectEcoDataFile);
+        selectEcoDataButton = new JButton("データベースを選択...");
+        selectEcoDataButton.setToolTipText("EcoRoomClean.pyで作成されたhotel_cleaning.dbデータベースを選択してください");
+        selectEcoDataButton.addActionListener(e -> selectEcoDatabase());
         panel.add(selectEcoDataButton, gbc);
 
         gbc.gridx = 0; gbc.gridy = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
@@ -326,24 +328,38 @@ public class RoomAssignmentApplication extends JFrame {
         }
     }
 
-    private void selectEcoDataFile(ActionEvent e) {
+    /**
+     * ★データベース対応: エコ清掃データベースファイルを選択
+     */
+    private void selectEcoDatabase() {
         JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setDialogTitle("エコ清掃データベースを選択");
+
+        // SQLiteデータベースファイルのフィルタを設定
         fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
             @Override
             public boolean accept(File f) {
-                return f.isDirectory() || f.getName().toLowerCase().endsWith(".xlsx");
+                return f.isDirectory() || f.getName().toLowerCase().endsWith(".db");
             }
 
             @Override
             public String getDescription() {
-                return "Excelファイル (*.xlsx)";
+                return "SQLiteデータベース (*.db)";
             }
         });
 
-        if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+        // デフォルトで hotel_cleaning.db を探す
+        File currentDir = new File(System.getProperty("user.dir"));
+        File defaultDb = new File(currentDir, "hotel_cleaning.db");
+        if (defaultDb.exists()) {
+            fileChooser.setSelectedFile(defaultDb);
+        }
+
+        int result = fileChooser.showOpenDialog(this);
+        if (result == JFileChooser.APPROVE_OPTION) {
             selectedEcoDataFile = fileChooser.getSelectedFile();
             selectEcoDataButton.setText(selectedEcoDataFile.getName());
-            appendLog("エコデータファイルを選択しました: " + selectedEcoDataFile.getName());
+            appendLog("エコ清掃データベースを選択しました: " + selectedEcoDataFile.getName());
         }
     }
 
@@ -432,7 +448,8 @@ public class RoomAssignmentApplication extends JFrame {
 
             if (selectedEcoDataFile != null) {
                 System.setProperty("ecoDataFile", selectedEcoDataFile.getAbsolutePath());
-                appendLog("エコデータファイルを設定: " + selectedEcoDataFile.getName());
+                appendLog("エコ清掃データベースを設定: " + selectedEcoDataFile.getName());
+                appendLog("  → " + selectedEcoDataFile.getAbsolutePath());
             }
 
             if (!selectedBrokenRoomsForCleaning.isEmpty()) {
@@ -445,7 +462,7 @@ public class RoomAssignmentApplication extends JFrame {
 
             // 1. 部屋データの読み込み
             appendLog("部屋データを読み込み中...");
-            FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile);
+            FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
             appendLog(String.format("部屋データ読み込み完了: 本館%d室, 別館%d室, エコ%d室, 故障%d室",
                     cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
                     cleaningData.ecoRooms.size(), cleaningData.totalBrokenRooms));
@@ -560,13 +577,6 @@ public class RoomAssignmentApplication extends JFrame {
 
     /**
      * ★新機能: 通常清掃部屋の事前割り振り設定ダイアログ
-     */
-    /**
-     * ★新機能: 通常清掃部屋の事前割り振り設定ダイアログ
-     * ★★修正: FileProcessorから直接部屋データを読み込み、4区分を集計
-     */
-    /**
-     * ★新機能: 通常清掃部屋の事前割り振り設定ダイアログ
      * ★★修正: FileProcessorから直接部屋データを読み込み、4区分を集計
      */
     private Map<String, NormalRoomDistributionDialog.StaffDistribution> selectNormalRoomDistribution(
@@ -583,12 +593,10 @@ public class RoomAssignmentApplication extends JFrame {
 
         try {
             // selectedRoomFileから部屋データを読み込み
-            FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile);
+            FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
 
             // 本館の部屋タイプ集計
             for (FileProcessor.Room room : cleaningData.mainRooms) {
-                // FileProcessor.determineRoomType()で変換済みのroomTypeを使用
-                // 'T', 'NT', 'ANT', 'ADT' → 'T' に変換されている
                 if ("T".equals(room.roomType)) {
                     totalMainTwinRooms++;
                 } else {
@@ -621,7 +629,6 @@ public class RoomAssignmentApplication extends JFrame {
                 .map(s -> s.name)
                 .collect(Collectors.toList());
 
-        // ★★修正: 4区分のコンストラクタを使用
         NormalRoomDistributionDialog dialog = new NormalRoomDistributionDialog(
                 parentFrame,
                 totalMainSingleRooms,
@@ -634,7 +641,6 @@ public class RoomAssignmentApplication extends JFrame {
 
         dialog.setVisible(true);
 
-        // ★★修正: メソッド名を変更
         if (dialog.getDialogResult()) {
             appendLog("通常清掃部屋の割り振りパターンが設定されました");
             return dialog.getCurrentDistribution();
@@ -643,6 +649,7 @@ public class RoomAssignmentApplication extends JFrame {
             return null;
         }
     }
+
     /**
      * ★修正: ポイント制限・大浴場清掃スタッフ選択（制限値入力エラー修正版）
      */

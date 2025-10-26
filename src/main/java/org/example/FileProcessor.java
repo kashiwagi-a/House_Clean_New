@@ -8,6 +8,11 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 
 public class FileProcessor {
     private static final Logger LOGGER = Logger.getLogger(FileProcessor.class.getName());
@@ -127,24 +132,29 @@ public class FileProcessor {
         }
     }
 
-    // ファイルから部屋データを読み込むメソッド
-    public static CleaningData processRoomFile(File file) {
+    // ★修正: ファイルから部屋データを読み込むメソッド（対象日付指定版）
+    public static CleaningData processRoomFile(File file, LocalDate targetDate) {
         String fileName = file.getName().toLowerCase();
 
         if (fileName.endsWith(".csv")) {
-            return processCsvRoomFile(file);
+            return processCsvRoomFile(file, targetDate);
         } else {
             throw new IllegalArgumentException("サポートされていないファイル形式です: " + fileName);
         }
     }
 
-    // ★修正版：部屋状態情報完全対応 + デバッグログ強化版
-    private static CleaningData processCsvRoomFile(File file) {
+    // 後方互換性のため（対象日=今日）
+    public static CleaningData processRoomFile(File file) {
+        return processRoomFile(file, LocalDate.now());
+    }
+
+    // ★修正版：部屋状態情報完全対応 + デバッグログ強化版 + 対象日付対応
+    private static CleaningData processCsvRoomFile(File file, LocalDate targetDate) {
         List<Room> mainRooms = new ArrayList<>();
         List<Room> annexRooms = new ArrayList<>();
         List<Room> ecoRooms = new ArrayList<>();
         List<Room> brokenRooms = new ArrayList<>();
-        Map<String, List<String>> ecoRoomMap = loadEcoRoomInfo();
+        Map<String, List<String>> ecoRoomMap = loadEcoRoomInfo(targetDate);
 
         // 部屋状態マップをクリア
         ROOM_STATUS_MAP.clear();
@@ -242,15 +252,14 @@ public class FileProcessor {
                 // 部屋タイプをコードから判定
                 String roomType = determineRoomType(roomTypeCode);
 
-                // エコ清掃かどうかの判定
+                // ★修正: エコ清掃かどうかの判定（対象日付を使用）
                 boolean isEcoClean = false;
-                LocalDate today = LocalDate.now();
-                String todayStr = today.format(DateTimeFormatter.ofPattern("yyyy/MM/dd"));
+                String targetDateStr = targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
 
-                if (ecoRoomMap.containsKey(todayStr)) {
-                    isEcoClean = ecoRoomMap.get(todayStr).contains(roomNumber);
+                if (ecoRoomMap.containsKey(targetDateStr)) {
+                    isEcoClean = ecoRoomMap.get(targetDateStr).contains(roomNumber);
                     if (isEcoClean) {
-                        LOGGER.info("エコ清掃部屋: " + roomNumber);
+                        LOGGER.info("エコ清掃部屋: " + roomNumber + " (日付: " + targetDateStr + ")");
                     }
                 }
 
@@ -286,10 +295,45 @@ public class FileProcessor {
             LOGGER.info("成功追加: " + successfullyAdded + "室");
             LOGGER.info("合計除外: " + (emptyRoomNumbers + brokenRoomsSkipped + cleaningStatusSkipped) + "室");
 
+            // ★改善版: エコ清掃の本館・別館を分けて表示
+            int ecoMainRooms = 0;
+            int ecoAnnexRooms = 0;
+            for (Room room : ecoRooms) {
+                if (isAnnexRoom(room.roomNumber)) {
+                    ecoAnnexRooms++;
+                } else {
+                    ecoMainRooms++;
+                }
+            }
+
+            // 通常清掃の計算
+            int normalMainRooms = mainRooms.size() - ecoMainRooms;
+            int normalAnnexRooms = annexRooms.size() - ecoAnnexRooms;
+
             // 結果の確認
             LOGGER.info("読み込み完了: 行数=" + lineNumber);
-            LOGGER.info(String.format("読み込まれた部屋数: 本館=%d, 別館=%d, エコ清掃=%d, 故障=%d",
-                    mainRooms.size(), annexRooms.size(), ecoRooms.size(), brokenRooms.size()));
+            LOGGER.info("=== 清掃部屋詳細統計 ===");
+            LOGGER.info(String.format("【本館】合計=%d室 (通常清掃=%d室, エコ清掃=%d室)",
+                    mainRooms.size(), normalMainRooms, ecoMainRooms));
+            LOGGER.info(String.format("【別館】合計=%d室 (通常清掃=%d室, エコ清掃=%d室)",
+                    annexRooms.size(), normalAnnexRooms, ecoAnnexRooms));
+            LOGGER.info(String.format("【総合計】%d室 (通常清掃=%d室, エコ清掃=%d室, 故障=%d室)",
+                    mainRooms.size() + annexRooms.size(),
+                    normalMainRooms + normalAnnexRooms,
+                    ecoMainRooms + ecoAnnexRooms,
+                    brokenRooms.size()));
+
+            // エコデータベース情報の表示
+            if (!ecoRoomMap.isEmpty()) {
+                LOGGER.info("★エコ清掃データベースから読み込まれた情報:");
+                int totalEcoFromDb = ecoRoomMap.values().stream()
+                        .mapToInt(List::size)
+                        .sum();
+                LOGGER.info("  データベース内エコ部屋総数: " + totalEcoFromDb + "室");
+                LOGGER.info("  対象日のエコ部屋数: " + ecoRooms.size() + "室");
+            } else {
+                LOGGER.info("★エコ清掃データベースが設定されていないか、データが見つかりませんでした");
+            }
 
             // 選択された故障部屋の処理結果をログ出力
             if (!selectedBrokenRooms.isEmpty()) {
@@ -326,7 +370,7 @@ public class FileProcessor {
                 switch (status) {
                     case "2": statusDisplay = "チェックアウト"; break;
                     case "3": statusDisplay = "連泊"; break;
-                    case "4": statusDisplay = "時間延長"; break;  //
+                    case "4": statusDisplay = "時間延長"; break;
                     default: statusDisplay = status.isEmpty() ? "不明" : status; break;
                 }
                 LOGGER.info("  " + statusDisplay + ": " + count + "室");
@@ -405,76 +449,126 @@ public class FileProcessor {
         }
     }
 
-    // エコ清掃情報をExcelファイルから読み込む
-    private static Map<String, List<String>> loadEcoRoomInfo() {
+    // ★修正: エコ清掃情報をデータベースから読み込む（対象日付指定版）
+    private static Map<String, List<String>> loadEcoRoomInfo(LocalDate targetDate) {
         Map<String, List<String>> ecoRoomsByDate = new HashMap<>();
 
-        // システムプロパティからEcoデータファイルのパスを取得
-        String ecoFilePath = System.getProperty("ecoDataFile");
-        if (ecoFilePath == null || ecoFilePath.isEmpty()) {
-            LOGGER.warning("エコ清掃情報ファイルが設定されていません");
+        String dbPath = System.getProperty("ecoDataFile");
+        if (dbPath == null || dbPath.isEmpty()) {
+            LOGGER.warning("エコ清掃情報データベースが設定されていません");
             return ecoRoomsByDate;
         }
 
-        File ecoFile = new File(ecoFilePath);
-        if (!ecoFile.exists()) {
-            LOGGER.warning("エコ清掃情報ファイルが見つかりません: " + ecoFile.getAbsolutePath());
+        File dbFile = new File(dbPath);
+        if (!dbFile.exists()) {
+            LOGGER.warning("エコ清掃情報データベースが見つかりません: " + dbFile.getAbsolutePath());
             return ecoRoomsByDate;
         }
 
-        try (FileInputStream fis = new FileInputStream(ecoFile);
-             Workbook workbook = new XSSFWorkbook(fis)) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
 
-            Sheet sheet = workbook.getSheetAt(0);
-            Row headerRow = sheet.getRow(0);
+        try {
+            Class.forName("org.sqlite.JDBC");
+            String jdbcUrl = "jdbc:sqlite:" + dbFile.getAbsolutePath();
+            conn = DriverManager.getConnection(jdbcUrl);
 
-            // 日付列の位置を特定（4列目から）
-            Map<Integer, String> dateColumns = new HashMap<>();
-            for (int i = 3; i < headerRow.getLastCellNum(); i++) {
-                Cell cell = headerRow.getCell(i);
-                if (cell != null) {
-                    String dateStr = getCellValueAsString(cell);
-                    if (!dateStr.isEmpty()) {
-                        dateColumns.put(i, dateStr);
-                        LOGGER.info("日付列検出: " + i + " = " + dateStr);
-                    }
+            LOGGER.info("エコ清掃データベースに接続しました: " + dbFile.getAbsolutePath());
+
+            // ★診断1: データベース内の全cleaning_statusの値を確認
+            LOGGER.info("=== データベース診断開始 ===");
+            PreparedStatement diagStmt = conn.prepareStatement(
+                    "SELECT DISTINCT cleaning_status FROM cleaning_schedule ORDER BY cleaning_status");
+            ResultSet diagRs = diagStmt.executeQuery();
+
+            LOGGER.info("データベース内の全cleaning_status値:");
+            while (diagRs.next()) {
+                String status = diagRs.getString("cleaning_status");
+                LOGGER.info("  - [" + (status == null ? "NULL" : status) + "]");
+            }
+            diagRs.close();
+            diagStmt.close();
+
+            // ★診断2: 対象日付のデータを確認
+            String targetDateStr = targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
+            LOGGER.info("検索対象日: " + targetDateStr);
+
+            PreparedStatement todayStmt = conn.prepareStatement(
+                    "SELECT COUNT(*) as cnt FROM cleaning_schedule WHERE cleaning_date = ?");
+            todayStmt.setString(1, targetDateStr);
+            ResultSet todayRs = todayStmt.executeQuery();
+            if (todayRs.next()) {
+                LOGGER.info("対象日のレコード数: " + todayRs.getInt("cnt"));
+            }
+            todayRs.close();
+            todayStmt.close();
+
+            // ★修正版: 全てのcleaning_statusを取得（'×'と'エコドア'に限定しない）
+            String sql = "SELECT room_number, cleaning_date, cleaning_status " +
+                    "FROM cleaning_schedule " +
+                    "WHERE cleaning_status IS NOT NULL AND cleaning_status != '' " +
+                    "AND cleaning_status != 'C/O' " +  // チェックアウトは除外
+                    "ORDER BY cleaning_date, room_number";
+
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+
+            int totalEcoRecords = 0;
+            Map<String, Integer> statusCount = new HashMap<>();
+
+            while (rs.next()) {
+                String roomNumber = rs.getString("room_number");
+                String cleaningDate = rs.getString("cleaning_date");
+                String cleaningStatus = rs.getString("cleaning_status");
+
+                // ステータスのカウント
+                statusCount.merge(cleaningStatus, 1, Integer::sum);
+
+                // エコ清掃の判定条件を緩和
+                boolean isEco = cleaningStatus.equals("×") ||
+                        cleaningStatus.equals("エコドア") ||
+                        cleaningStatus.toLowerCase().contains("eco") ||
+                        cleaningStatus.toLowerCase().contains("エコ");
+
+                if (isEco) {
+                    ecoRoomsByDate.computeIfAbsent(cleaningDate, k -> new ArrayList<>()).add(roomNumber);
+                    totalEcoRecords++;
+                    LOGGER.fine(String.format("エコ部屋: %s (%s) - ステータス: %s",
+                            roomNumber, cleaningDate, cleaningStatus));
                 }
             }
 
-            // 各日付に対応する部屋のエコ状態を収集
-            for (int rowNum = 1; rowNum <= sheet.getLastRowNum(); rowNum++) {
-                Row row = sheet.getRow(rowNum);
-                if (row == null) continue;
+            LOGGER.info("=== エコデータベース読み込み結果 ===");
+            LOGGER.info(String.format("エコ清掃データベースから読み込み完了: %d件のエコ清掃記録", totalEcoRecords));
+            LOGGER.info(String.format("対象日数: %d日", ecoRoomsByDate.size()));
 
-                Cell roomCell = row.getCell(0); // 部屋番号は1列目
-                if (roomCell == null) continue;
+            // ステータスごとの件数を表示
+            LOGGER.info("cleaning_statusごとの件数:");
+            statusCount.forEach((status, count) ->
+                    LOGGER.info(String.format("  [%s]: %d件", status, count)));
 
-                String roomNumber = getCellValueAsString(roomCell).trim();
-                if (roomNumber.isEmpty()) continue;
+            // 各日付のエコ部屋数を表示
+            LOGGER.info("日付別エコ部屋数:");
+            ecoRoomsByDate.forEach((date, rooms) -> {
+                LOGGER.info(String.format("  %s: %d部屋 (例: %s)", date, rooms.size(),
+                        rooms.size() > 0 ? rooms.get(0) + (rooms.size() > 1 ? ", " + rooms.get(1) + "..." : "") : ""));
+            });
 
-                // 各日付列について確認
-                for (Map.Entry<Integer, String> entry : dateColumns.entrySet()) {
-                    int columnIndex = entry.getKey();
-                    String dateStr = entry.getValue();
-
-                    Cell ecoCell = row.getCell(columnIndex);
-                    String ecoStatus = getCellValueAsString(ecoCell).trim();
-
-                    if (ecoStatus.equalsIgnoreCase("eco")) {
-                        // この日のエコ部屋リストを取得または作成
-                        ecoRoomsByDate.computeIfAbsent(dateStr, k -> new ArrayList<>())
-                                .add(roomNumber);
-                    }
-                }
+        } catch (ClassNotFoundException e) {
+            LOGGER.severe("SQLiteドライバが見つかりません。sqlite-jdbc-x.x.x.jarをクラスパスに追加してください");
+            LOGGER.severe("エラー詳細: " + e.getMessage());
+        } catch (SQLException e) {
+            LOGGER.severe("データベース読み込み中にエラーが発生しました: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            try {
+                if (rs != null) rs.close();
+                if (pstmt != null) pstmt.close();
+                if (conn != null) conn.close();
+            } catch (SQLException e) {
+                LOGGER.warning("リソースのクローズ中にエラーが発生しました: " + e.getMessage());
             }
-
-            // デバッグログ
-            for (Map.Entry<String, List<String>> entry : ecoRoomsByDate.entrySet()) {
-                LOGGER.info(entry.getKey() + "のエコ部屋: " + entry.getValue().size() + "部屋");
-            }
-
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "エコ情報の読み込み中にエラーが発生しました: " + e.getMessage(), e);
         }
 
         return ecoRoomsByDate;
@@ -576,7 +670,7 @@ public class FileProcessor {
         int targetDay = targetDate.getDayOfMonth();
         LOGGER.info("検索対象の日: " + targetDay);
 
-        // G列(6)からAH列(33)ま
+        // G列(6)からAH列(33)まで
         for (int i = 6; i <= 33; i++) {
             Cell cell = dateRow.getCell(i);
             if (cell == null) continue;

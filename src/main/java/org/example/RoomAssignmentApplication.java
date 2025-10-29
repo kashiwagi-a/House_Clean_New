@@ -592,27 +592,42 @@ public class RoomAssignmentApplication extends JFrame {
             // selectedRoomFileから部屋データを読み込み
             FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
 
-            // 本館の部屋タイプ集計
+            // エコ清掃の部屋数をカウント（参考情報）
+            int ecoMainRooms = 0;
+            int ecoAnnexRooms = 0;
+
+            // 本館の部屋タイプ集計（エコ清掃の部屋を除外）
             for (FileProcessor.Room room : cleaningData.mainRooms) {
-                if ("T".equals(room.roomType)) {
-                    totalMainTwinRooms++;
+                if (room.isEcoClean) {
+                    ecoMainRooms++;  // エコ清掃の部屋数をカウント
                 } else {
-                    totalMainSingleRooms++;
+                    // 通常清掃の部屋のみカウント
+                    if ("T".equals(room.roomType)) {
+                        totalMainTwinRooms++;
+                    } else {
+                        totalMainSingleRooms++;
+                    }
                 }
             }
 
-            // 別館の部屋タイプ集計
+            // 別館の部屋タイプ集計（エコ清掃の部屋を除外）
             for (FileProcessor.Room room : cleaningData.annexRooms) {
-                if ("T".equals(room.roomType)) {
-                    totalAnnexTwinRooms++;
+                if (room.isEcoClean) {
+                    ecoAnnexRooms++;  // エコ清掃の部屋数をカウント
                 } else {
-                    totalAnnexSingleRooms++;
+                    // 通常清掃の部屋のみカウント
+                    if ("T".equals(room.roomType)) {
+                        totalAnnexTwinRooms++;
+                    } else {
+                        totalAnnexSingleRooms++;
+                    }
                 }
             }
 
             appendLog(String.format("部屋タイプ集計: 本館(S:%d, T:%d), 別館(S:%d, T:%d)",
                     totalMainSingleRooms, totalMainTwinRooms,
                     totalAnnexSingleRooms, totalAnnexTwinRooms));
+            appendLog(String.format("エコ清掃除外: 本館 %d室, 別館 %d室", ecoMainRooms, ecoAnnexRooms));
 
         } catch (Exception e) {
             // エラー時は全てシングル等として扱う

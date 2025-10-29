@@ -30,13 +30,15 @@ public class FileProcessor {
         public final int totalMainRooms;
         public final int totalAnnexRooms;
         public final int totalBrokenRooms;
+        public final List<String> ecoWarnings;  // ★追加: エコ清掃警告リスト
 
         public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
-                            List<Room> ecoRooms, List<Room> brokenRooms) {
+                            List<Room> ecoRooms, List<Room> brokenRooms, List<String> ecoWarnings) {
             this.mainRooms = mainRooms;
             this.annexRooms = annexRooms;
             this.ecoRooms = ecoRooms;
             this.brokenRooms = brokenRooms;
+            this.ecoWarnings = ecoWarnings != null ? ecoWarnings : new ArrayList<>();
 
             // 清掃対象の全部屋リストを作成
             this.roomsToClean = new ArrayList<>();
@@ -46,6 +48,12 @@ public class FileProcessor {
             this.totalMainRooms = mainRooms.size();
             this.totalAnnexRooms = annexRooms.size();
             this.totalBrokenRooms = brokenRooms.size();
+        }
+
+        // 後方互換性のためのコンストラクタ
+        public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
+                            List<Room> ecoRooms, List<Room> brokenRooms) {
+            this(mainRooms, annexRooms, ecoRooms, brokenRooms, new ArrayList<>());
         }
     }
 
@@ -148,12 +156,17 @@ public class FileProcessor {
         return processRoomFile(file, LocalDate.now());
     }
 
-    // ★修正版：部屋状態情報完全対応 + デバッグログ強化版 + 対象日付対応
+    // ★修正版：部屋状態情報完全対応 + デバッグログ強化版 + 対象日付対応 + エコ清掃検証機能追加
     private static CleaningData processCsvRoomFile(File file, LocalDate targetDate) {
         List<Room> mainRooms = new ArrayList<>();
         List<Room> annexRooms = new ArrayList<>();
         List<Room> ecoRooms = new ArrayList<>();
         List<Room> brokenRooms = new ArrayList<>();
+        List<String> ecoWarnings = new ArrayList<>();  // ★追加: 警告リスト
+
+        // ★追加: 全部屋のマップを作成（部屋番号 → Room オブジェクト）
+        Map<String, Room> allRoomsMap = new HashMap<>();
+
         Map<String, List<String>> ecoRoomMap = loadEcoRoomInfo(targetDate);
 
         // 部屋状態マップをクリア
@@ -266,6 +279,9 @@ public class FileProcessor {
                 // ★修正: 部屋状態情報を含むRoomオブジェクトを作成
                 Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus);
 
+                // ★追加: 全部屋マップに追加
+                allRoomsMap.put(roomNumber, room);
+
                 // 別館か本館かを判定して対応するリストに追加
                 if (isAnnexRoom(roomNumber)) {
                     LOGGER.info("★成功: 別館部屋を追加: " + roomNumber + " (状態: " + roomStatus + ")" +
@@ -282,6 +298,51 @@ public class FileProcessor {
                 // エコ清掃の場合はエコリストにも追加
                 if (isEcoClean) {
                     ecoRooms.add(room);
+                }
+            }
+
+            // ★追加: エコ清掃情報の検証
+            String targetDateStr = targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
+            if (ecoRoomMap.containsKey(targetDateStr)) {
+                List<String> ecoRoomNumbers = ecoRoomMap.get(targetDateStr);
+
+                LOGGER.info("\n=== エコ清掃情報の検証開始 ===");
+                LOGGER.info("対象日: " + targetDateStr);
+                LOGGER.info("データベースのエコ部屋数: " + ecoRoomNumbers.size() + "室");
+
+                int notFoundCount = 0;
+                int checkoutEcoCount = 0;
+
+                for (String ecoRoomNumber : ecoRoomNumbers) {
+                    // 検証1: 部屋データに存在するか
+                    if (!allRoomsMap.containsKey(ecoRoomNumber)) {
+                        String warning = String.format("【警告】エコ清掃対象の部屋 %s が部屋データに存在しません", ecoRoomNumber);
+                        ecoWarnings.add(warning);
+                        LOGGER.warning(warning);
+                        notFoundCount++;
+                        continue;
+                    }
+
+                    // 検証2: チェックアウト（状態2）なのにエコ清掃対象か
+                    Room room = allRoomsMap.get(ecoRoomNumber);
+                    if ("2".equals(room.roomStatus)) {
+                        String warning = String.format("【警告】部屋 %s はチェックアウト（状態2）ですがエコ清掃対象になっています",
+                                ecoRoomNumber);
+                        ecoWarnings.add(warning);
+                        LOGGER.warning(warning);
+                        checkoutEcoCount++;
+                    }
+                }
+
+                LOGGER.info("=== エコ清掃検証結果 ===");
+                LOGGER.info("部屋データに存在しないエコ部屋: " + notFoundCount + "室");
+                LOGGER.info("チェックアウトなのにエコ清掃: " + checkoutEcoCount + "室");
+                LOGGER.info("警告総数: " + ecoWarnings.size() + "件");
+
+                if (ecoWarnings.isEmpty()) {
+                    LOGGER.info("✓ エコ清掃情報に問題はありません");
+                } else {
+                    LOGGER.warning("! エコ清掃情報に " + ecoWarnings.size() + " 件の警告があります");
                 }
             }
 
@@ -385,7 +446,7 @@ public class FileProcessor {
             LOGGER.info("  - エコ清掃: " + ecoRooms.size() + "室");
             LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）、4（清掃要）");
 
-            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms);
+            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings);
 
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "部屋データの読み込み中にエラーが発生しました", e);

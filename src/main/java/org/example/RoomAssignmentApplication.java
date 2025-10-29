@@ -464,6 +464,45 @@ public class RoomAssignmentApplication extends JFrame {
                     cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
                     cleaningData.ecoRooms.size(), cleaningData.totalBrokenRooms));
 
+            // ★★★ エコ清掃の警告チェック（追加部分） ★★★
+            if (!cleaningData.ecoWarnings.isEmpty()) {
+                appendLog("\n【エコ清掃警告】");
+                appendLog("エコ清掃情報に以下の問題が検出されました:");
+                for (String warning : cleaningData.ecoWarnings) {
+                    appendLog("  " + warning);
+                }
+                appendLog("");
+
+                // 警告ダイアログを表示
+                StringBuilder warningMessage = new StringBuilder();
+                warningMessage.append("エコ清掃情報に ").append(cleaningData.ecoWarnings.size())
+                        .append(" 件の警告があります:\n\n");
+
+                int displayCount = Math.min(10, cleaningData.ecoWarnings.size());
+                for (int i = 0; i < displayCount; i++) {
+                    warningMessage.append("• ").append(cleaningData.ecoWarnings.get(i)).append("\n");
+                }
+
+                if (cleaningData.ecoWarnings.size() > 10) {
+                    warningMessage.append("\n... 他 ").append(cleaningData.ecoWarnings.size() - 10)
+                            .append(" 件の警告があります。\n詳細はログをご確認ください。");
+                }
+
+                int result = JOptionPane.showConfirmDialog(
+                        this,
+                        warningMessage.toString(),
+                        "エコ清掃情報の警告",
+                        JOptionPane.OK_CANCEL_OPTION,
+                        JOptionPane.WARNING_MESSAGE
+                );
+
+                if (result != JOptionPane.OK_OPTION) {
+                    appendLog("処理がユーザーによってキャンセルされました。");
+                    return;
+                }
+            }
+            // ★★★ 警告チェック終了 ★★★
+
             // 2. スタッフデータの読み込み
             appendLog("スタッフデータを読み込み中...");
             List<FileProcessor.Staff> availableStaff = FileProcessor.getAvailableStaff(selectedShiftFile, selectedDate);

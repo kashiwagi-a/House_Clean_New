@@ -464,7 +464,7 @@ public class RoomAssignmentApplication extends JFrame {
                     cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
                     cleaningData.ecoRooms.size(), cleaningData.totalBrokenRooms));
 
-            // ★★★ エコ清掃の警告チェック（追加部分） ★★★
+            // エコ清掃警告チェック
             if (!cleaningData.ecoWarnings.isEmpty()) {
                 appendLog("\n【エコ清掃警告】");
                 appendLog("エコ清掃情報に以下の問題が検出されました:");
@@ -473,7 +473,6 @@ public class RoomAssignmentApplication extends JFrame {
                 }
                 appendLog("");
 
-                // 警告ダイアログを表示
                 StringBuilder warningMessage = new StringBuilder();
                 warningMessage.append("エコ清掃情報に ").append(cleaningData.ecoWarnings.size())
                         .append(" 件の警告があります:\n\n");
@@ -501,7 +500,6 @@ public class RoomAssignmentApplication extends JFrame {
                     return;
                 }
             }
-            // ★★★ 警告チェック終了 ★★★
 
             // 2. スタッフデータの読み込み
             appendLog("スタッフデータを読み込み中...");
@@ -562,12 +560,12 @@ public class RoomAssignmentApplication extends JFrame {
                 });
             }
 
-            // 6. 適応型設定の作成
+            // 6. ★修正: 適応型設定の作成（roomDistribution を含む）
             appendLog("最適化設定を作成中...");
             int totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithPointConstraints(
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithRoomDistribution(
                     availableStaff, totalRooms, cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                    bathType, pointConstraints);
+                    bathType, pointConstraints, roomDistribution);
 
             // 7. 最適化実行
             appendLog("最適化を実行中...");
@@ -595,10 +593,15 @@ public class RoomAssignmentApplication extends JFrame {
 
             appendLog("\n結果表示ボタンで詳細を確認できます。");
 
+            long selectedBrokenRoomsForCleaningCount = cleaningData.brokenRooms.stream()
+                    .filter(r -> cleaningData.mainRooms.contains(r) || cleaningData.annexRooms.contains(r))
+                    .count();
+
             JOptionPane.showMessageDialog(this,
                     String.format("処理が完了しました。\n\n利用可能スタッフ: %d人\n清掃対象部屋: %d室\n" +
                                     "制限設定スタッフ: %d人\n大浴場清掃スタッフ: %d人\n故障部屋(清掃対象): %d室\n\n結果表示ボタンで詳細を確認してください。",
-                            availableStaff.size(), totalRooms, pointConstraints.size(), bathStaffCount, selectedBrokenRoomsForCleaning.size()),
+                            availableStaff.size(), totalRooms, pointConstraints.size(), bathStaffCount,
+                            selectedBrokenRoomsForCleaningCount),
                     "処理完了", JOptionPane.INFORMATION_MESSAGE);
 
         } catch (Exception ex) {
@@ -609,6 +612,27 @@ public class RoomAssignmentApplication extends JFrame {
 
             JOptionPane.showMessageDialog(this, errorMsg, "エラー", JOptionPane.ERROR_MESSAGE);
         }
+    }
+    /**
+     * ★新規追加: roomDistribution を含む AdaptiveLoadConfig を作成
+     */
+    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createAdaptiveConfigWithRoomDistribution(
+            List<FileProcessor.Staff> availableStaff,
+            int totalRooms,
+            int mainBuildingRooms,
+            int annexBuildingRooms,
+            AdaptiveRoomOptimizer.BathCleaningType bathType,
+            List<StaffPointConstraint> pointConstraints,
+            Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution) {
+
+        return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithBathSelection(
+                availableStaff,
+                totalRooms,
+                mainBuildingRooms,
+                annexBuildingRooms,
+                bathType,
+                pointConstraints,
+                roomDistribution);
     }
 
     /**

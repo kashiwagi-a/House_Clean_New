@@ -248,6 +248,8 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * コンストラクタ
+     * ★修正: bathCleaningAssignments → bathAssignments に変更
+     * ★修正: staff.id → staff.name に変更（bathAssignmentsのキーはスタッフ名）
      */
     public AssignmentEditorGUI(RoomAssignmentApplication.ProcessingResult result) {
         this.processingResult = result;
@@ -267,8 +269,12 @@ public class AssignmentEditorGUI extends JFrame {
 
         if (result.optimizationResult != null) {
             for (AdaptiveRoomOptimizer.StaffAssignment assignment : currentAssignments) {
+                // ★修正: bathCleaningAssignments → bathAssignments
+                // ★修正: staff.id → staff.name（キーがスタッフ名になっている）
                 AdaptiveRoomOptimizer.BathCleaningType bathType =
-                        result.optimizationResult.config.bathCleaningAssignments.get(assignment.staff.id);
+                        result.optimizationResult.config.bathAssignments.getOrDefault(
+                                assignment.staff.name,
+                                AdaptiveRoomOptimizer.BathCleaningType.NONE);
                 staffDataMap.put(assignment.staff.name, new StaffData(assignment, bathType));
             }
         }
@@ -362,6 +368,7 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * ★修正版: サマリーパネルの作成（エコ清掃部屋数を常に表示）
+     * ★修正: availableStaff → staff に変更
      */
     private JPanel createSummaryPanel() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
@@ -376,7 +383,8 @@ public class AssignmentEditorGUI extends JFrame {
 
             if (processingResult.optimizationResult != null &&
                     processingResult.optimizationResult.config != null) {
-                actualStaffCount = processingResult.optimizationResult.config.availableStaff.size();
+                // ★修正: availableStaff → staff
+                actualStaffCount = processingResult.optimizationResult.config.staff.size();
             } else {
                 actualStaffCount = staffDataMap.size();
             }

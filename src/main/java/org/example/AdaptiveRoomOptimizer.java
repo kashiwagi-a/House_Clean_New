@@ -18,14 +18,16 @@ public class AdaptiveRoomOptimizer {
      * 大浴場清掃タイプ
      */
     public enum BathCleaningType {
-        NONE("なし"),
-        NORMAL("大浴場清掃"),
-        WITH_DRAINING("湯抜きあり");
+        NONE("なし", 0),
+        NORMAL("大浴場清掃", 4),
+        WITH_DRAINING("湯抜きあり", 5);
 
         public final String displayName;
+        public final int reduction;
 
-        BathCleaningType(String displayName) {
+        BathCleaningType(String displayName, int reduction) {
             this.displayName = displayName;
+            this.reduction = reduction;
         }
     }
 

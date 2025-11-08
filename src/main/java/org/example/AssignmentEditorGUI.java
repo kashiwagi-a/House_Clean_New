@@ -18,6 +18,7 @@ import java.util.OptionalInt;
  * 拡張版清掃割り当て編集GUI
  * スタッフ入れ替え機能・残し部屋設定機能追加版
  * ★修正: エコ清掃部屋のポイント計算問題を修正
+ * ★修正: 表示順序変更と列変更（ポイント→内ツイン数、調整後スコア→内エコ部屋数、総部屋数追加）
  */
 public class AssignmentEditorGUI extends JFrame {
 
@@ -48,6 +49,7 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * スタッフデータ拡張版
+     * ★修正: ツイン数、エコ部屋数、換算値、制約タイプを追加
      */
     static class StaffData {
         String id;
@@ -62,14 +64,22 @@ public class AssignmentEditorGUI extends JFrame {
         boolean hasAnnexBuilding;
         AdaptiveRoomOptimizer.BathCleaningType bathCleaningType;
 
+        // ★追加: 新しいフィールド
+        int twinRoomCount;           // 内ツイン数
+        int ecoRoomCount;            // 内エコ部屋数
+        double convertedTotalRooms;  // 総部屋数（換算値）
+        String constraintType;       // 制約タイプ
+
         StaffData(AdaptiveRoomOptimizer.StaffAssignment assignment,
-                  AdaptiveRoomOptimizer.BathCleaningType bathType) {
+                  AdaptiveRoomOptimizer.BathCleaningType bathType,
+                  String constraintType) {
             this.id = assignment.staff.id;
             this.name = assignment.staff.name;
             this.floors = new ArrayList<>(assignment.floors);
             this.roomsByFloor = new HashMap<>(assignment.roomsByFloor);
             this.detailedRoomsByFloor = new HashMap<>();
             this.bathCleaningType = bathType;
+            this.constraintType = constraintType != null ? constraintType : "制限なし";
             this.hasMainBuilding = assignment.floors.stream().anyMatch(f -> f <= 10);
             this.hasAnnexBuilding = assignment.floors.stream().anyMatch(f -> f > 10);
 
@@ -102,6 +112,64 @@ public class AssignmentEditorGUI extends JFrame {
             this.totalPoints = totalPoints;
             this.totalRooms = totalRooms;
             this.adjustedScore = totalPoints;
+
+            // ★追加: 新しい値を計算
+            calculateExtendedMetrics();
+        }
+
+        /**
+         * ★追加: 拡張メトリクスを計算（ツイン数、エコ部屋数、換算値）
+         */
+        private void calculateExtendedMetrics() {
+            this.twinRoomCount = 0;
+            this.ecoRoomCount = 0;
+
+            // detailedRoomsByFloorから集計（ツイン数）
+            for (Map.Entry<Integer, List<FileProcessor.Room>> entry : detailedRoomsByFloor.entrySet()) {
+                for (FileProcessor.Room room : entry.getValue()) {
+                    // ツイン判定（T, NT, ANT, ADT）
+                    if (isTwinRoom(room.roomType)) {
+                        this.twinRoomCount++;
+                    }
+                }
+            }
+
+            // roomsByFloorからエコ部屋数を集計
+            for (AdaptiveRoomOptimizer.RoomAllocation allocation : roomsByFloor.values()) {
+                this.ecoRoomCount += allocation.ecoRooms;
+            }
+
+            // 換算値計算（NormalRoomDistributionDialog.StaffDistribution.calculateTwinConversion を使用）
+            this.convertedTotalRooms = calculateConvertedTotal();
+        }
+
+        /**
+         * ★追加: ツイン部屋判定
+         */
+        private boolean isTwinRoom(String roomType) {
+            return "T".equals(roomType) || "NT".equals(roomType) ||
+                    "ANT".equals(roomType) || "ADT".equals(roomType);
+        }
+
+        /**
+         * ★追加: 換算値合計を計算
+         * ツイン換算: 2部屋=3換算、3部屋=5換算、4部屋以降=5+(部屋数-3)
+         */
+        private double calculateConvertedTotal() {
+            int nonTwinRooms = this.totalRooms - this.twinRoomCount;
+            double twinConverted = calculateTwinConversion(this.twinRoomCount);
+            return nonTwinRooms + twinConverted;
+        }
+
+        /**
+         * ★追加: ツイン換算計算（NormalRoomDistributionDialogと同じロジック）
+         */
+        private static double calculateTwinConversion(int twinRooms) {
+            if (twinRooms == 0) return 0.0;
+            if (twinRooms == 1) return 1.0;
+            if (twinRooms == 2) return 3.0;
+            if (twinRooms == 3) return 5.0;
+            return 5.0 + (twinRooms - 3);
         }
 
         String getWorkerTypeDisplay() {
@@ -275,7 +343,11 @@ public class AssignmentEditorGUI extends JFrame {
                         result.optimizationResult.config.bathAssignments.getOrDefault(
                                 assignment.staff.name,
                                 AdaptiveRoomOptimizer.BathCleaningType.NONE);
-                staffDataMap.put(assignment.staff.name, new StaffData(assignment, bathType));
+
+                // ★追加: 制約タイプを取得
+                String constraintType = getConstraintType(assignment.staff.name);
+
+                staffDataMap.put(assignment.staff.name, new StaffData(assignment, bathType, constraintType));
             }
         }
 
@@ -285,6 +357,24 @@ public class AssignmentEditorGUI extends JFrame {
 
         initializeGUI();
         loadAssignmentData();
+    }
+
+    /**
+     * ★追加: スタッフの制約タイプを取得
+     */
+    private String getConstraintType(String staffName) {
+        if (processingResult.optimizationResult != null &&
+                processingResult.optimizationResult.config != null &&
+                processingResult.optimizationResult.config.pointConstraints != null) {
+
+            AdaptiveRoomOptimizer.PointConstraint constraint =
+                    processingResult.optimizationResult.config.pointConstraints.get(staffName);
+
+            if (constraint != null) {
+                return constraint.constraintType;
+            }
+        }
+        return "制限なし";
     }
 
     /**
@@ -304,7 +394,7 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * GUI初期化（既存のUIを維持）
+     * ★修正: GUI初期化（列名変更）
      */
     protected void initializeGUI() {
         setTitle("清掃割り当て調整 - " +
@@ -316,8 +406,9 @@ public class AssignmentEditorGUI extends JFrame {
 
         JPanel mainPanel = new JPanel(new BorderLayout());
 
+        // ★修正: 列名変更（ポイント→内ツイン数、調整後スコア→内エコ部屋数、総部屋数追加）
         String[] columnNames = {
-                "スタッフ名", "作業者タイプ", "部屋数", "ポイント", "調整後スコア", "担当階・部屋詳細"
+                "スタッフ名", "作業者タイプ", "部屋数", "内ツイン数", "内エコ部屋数", "総部屋数", "担当階・部屋詳細"
         };
 
         tableModel = new DefaultTableModel(columnNames, 0) {
@@ -334,16 +425,18 @@ public class AssignmentEditorGUI extends JFrame {
         DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
         centerRenderer.setHorizontalAlignment(JLabel.CENTER);
 
-        for (int i = 1; i <= 4; i++) {
+        // ★修正: 列インデックス調整
+        for (int i = 1; i <= 5; i++) {
             assignmentTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
         }
 
         assignmentTable.getColumnModel().getColumn(0).setPreferredWidth(100);
-        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(80);
+        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(100);
         assignmentTable.getColumnModel().getColumn(2).setPreferredWidth(60);
         assignmentTable.getColumnModel().getColumn(3).setPreferredWidth(80);
-        assignmentTable.getColumnModel().getColumn(4).setPreferredWidth(100);
-        assignmentTable.getColumnModel().getColumn(5).setPreferredWidth(500);
+        assignmentTable.getColumnModel().getColumn(4).setPreferredWidth(90);
+        assignmentTable.getColumnModel().getColumn(5).setPreferredWidth(80);
+        assignmentTable.getColumnModel().getColumn(6).setPreferredWidth(500);
 
         JScrollPane scrollPane = new JScrollPane(assignmentTable);
         scrollPane.setPreferredSize(new Dimension(1200, 400));
@@ -629,6 +722,9 @@ public class AssignmentEditorGUI extends JFrame {
                         .collect(Collectors.groupingBy(r -> r.floor));
 
                 staffData.detailedRoomsByFloor = byFloor;
+
+                // ★追加: 拡張メトリクスを再計算
+                staffData.calculateExtendedMetrics();
             }
         }
     }
@@ -838,6 +934,9 @@ public class AssignmentEditorGUI extends JFrame {
         staff.totalPoints = totalPoints;
         staff.totalRooms = totalRooms;
         staff.adjustedScore = totalPoints;
+
+        // ★追加: 拡張メトリクスを再計算
+        staff.calculateExtendedMetrics();
     }
 
     /**
@@ -1116,10 +1215,13 @@ public class AssignmentEditorGUI extends JFrame {
         }
     }
 
+    /**
+     * ★修正: テーブルデータ読み込み（新しい列に対応）
+     */
     protected void loadAssignmentData() {
         tableModel.setRowCount(0);
 
-        // スタッフをソート済みリストで処理
+        // ★修正: ソート済みリストを使用
         List<StaffData> sortedStaff = getSortedStaffList();
 
         for (StaffData staff : sortedStaff) {
@@ -1127,8 +1229,9 @@ public class AssignmentEditorGUI extends JFrame {
                     staff.name,
                     staff.getWorkerTypeDisplay(),
                     staff.totalRooms,
-                    String.format("%.2f", staff.totalPoints),
-                    String.format("%.2f", staff.adjustedScore),
+                    staff.twinRoomCount,              // ★追加: 内ツイン数
+                    staff.ecoRoomCount,               // ★追加: 内エコ部屋数
+                    String.format("%.1f", staff.convertedTotalRooms),  // ★追加: 総部屋数（換算値）
                     staff.getDetailedRoomDisplay()
             };
             tableModel.addRow(row);
@@ -1136,22 +1239,40 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★追加：ソート済みスタッフリストを取得
-     * 本館→別館の順で、各建物内では階数順に並べる
+     * ★修正: ソート済みスタッフリストを取得
+     * 表示順序: 大浴場清掃 → 本館制限 → 本館 → 両方 → 別館制限 → 別館 → 業者制限
      */
     private List<StaffData> getSortedStaffList() {
         List<StaffData> sortedStaff = new ArrayList<>(staffDataMap.values());
 
         sortedStaff.sort((s1, s2) -> {
-            // 1. 建物分類による優先度比較
-            int priority1 = getBuildingPriority(s1);
-            int priority2 = getBuildingPriority(s2);
-
-            if (priority1 != priority2) {
-                return Integer.compare(priority1, priority2);
+            // 1. 大浴場清掃が最優先
+            if (s1.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE &&
+                    s2.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                return -1;
+            }
+            if (s1.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE &&
+                    s2.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                return 1;
             }
 
-            // 2. 同じ建物分類内では担当最小階数で比較
+            // 2. 制約タイプによる優先度
+            int constraintPriority1 = getConstraintPriority(s1);
+            int constraintPriority2 = getConstraintPriority(s2);
+
+            if (constraintPriority1 != constraintPriority2) {
+                return Integer.compare(constraintPriority1, constraintPriority2);
+            }
+
+            // 3. 建物分類による優先度
+            int buildingPriority1 = getBuildingPriority(s1);
+            int buildingPriority2 = getBuildingPriority(s2);
+
+            if (buildingPriority1 != buildingPriority2) {
+                return Integer.compare(buildingPriority1, buildingPriority2);
+            }
+
+            // 4. 同じ建物分類内では担当最小階数で比較
             int minFloor1 = getRepresentativeFloor(s1);
             int minFloor2 = getRepresentativeFloor(s2);
 
@@ -1159,7 +1280,7 @@ public class AssignmentEditorGUI extends JFrame {
                 return Integer.compare(minFloor1, minFloor2);
             }
 
-            // 3. 階数も同じ場合はスタッフ名で比較
+            // 5. 階数も同じ場合はスタッフ名で比較
             return s1.name.compareTo(s2.name);
         });
 
@@ -1167,25 +1288,59 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★追加：建物分類の優先度を取得
+     * ★追加: 制約タイプによる優先度
+     * 0: 大浴場清掃（既にソート済み）
+     * 1: 制限あり（故障者制限など）+ 本館のみ
+     * 2: 制限なし + 本館のみ
+     * 3: 制限なし + 両方
+     * 4: 制限あり + 別館のみ
+     * 5: 制限なし + 別館のみ
+     * 6: 業者制限
+     */
+    private int getConstraintPriority(StaffData staff) {
+        boolean isRestricted = !"制限なし".equals(staff.constraintType);
+        boolean isVendor = "業者制限".equals(staff.constraintType);
+
+        // 業者制限は最後
+        if (isVendor) {
+            return 6;
+        }
+
+        // 建物による分類
+        if (staff.hasMainBuilding && !staff.hasAnnexBuilding) {
+            // 本館のみ
+            return isRestricted ? 1 : 2;
+        } else if (staff.hasMainBuilding && staff.hasAnnexBuilding) {
+            // 両方
+            return 3;
+        } else if (!staff.hasMainBuilding && staff.hasAnnexBuilding) {
+            // 別館のみ
+            return isRestricted ? 4 : 5;
+        }
+
+        return 99; // その他
+    }
+
+    /**
+     * ★修正: 建物分類の優先度を取得（制約考慮版）
      *
      * @param staff スタッフデータ
-     * @return 1:本館専任, 2:別館専任, 3:館跨ぎ
+     * @return 1:本館専任, 2:館跨ぎ, 3:別館専任
      */
     private int getBuildingPriority(StaffData staff) {
         if (staff.hasMainBuilding && !staff.hasAnnexBuilding) {
             return 1; // 本館専任
-        } else if (!staff.hasMainBuilding && staff.hasAnnexBuilding) {
-            return 2; // 別館専任
         } else if (staff.hasMainBuilding && staff.hasAnnexBuilding) {
-            return 3; // 館跨ぎ
+            return 2; // 館跨ぎ
+        } else if (!staff.hasMainBuilding && staff.hasAnnexBuilding) {
+            return 3; // 別館専任
         } else {
             return 4; // 未分類（通常は発生しない）
         }
     }
 
     /**
-     * ★追加：代表階数を取得（ソート用）
+     * ★変更不要: 代表階数を取得（ソート用）
      *
      * @param staff スタッフデータ
      * @return ソート用の代表階数
@@ -1201,10 +1356,10 @@ public class AssignmentEditorGUI extends JFrame {
             case 1: // 本館専任
                 return getMinFloorInRange(staff.floors, 1, 10);
 
-            case 2: // 別館専任
+            case 3: // 別館専任
                 return getMinFloorInRange(staff.floors, 11, Integer.MAX_VALUE);
 
-            case 3: // 館跨ぎ
+            case 2: // 館跨ぎ
                 // 館跨ぎの場合は本館の最小階を優先
                 int mainMin = getMinFloorInRange(staff.floors, 1, 10);
                 if (mainMin != Integer.MAX_VALUE) {
@@ -1218,7 +1373,7 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★追加：指定範囲内の最小階数を取得
+     * ★変更不要: 指定範囲内の最小階数を取得
      */
     private int getMinFloorInRange(List<Integer> floors, int minRange, int maxRange) {
         OptionalInt result = floors.stream()
@@ -1262,14 +1417,16 @@ public class AssignmentEditorGUI extends JFrame {
         }
     }
 
-    // ★修正：Excel出力でも同じソート順を適用
+    /**
+     * ★修正: Excel出力（新しい列に対応）
+     */
     private void createExcelFile(String filePath) throws IOException {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet("清掃割り当て");
 
-            // ヘッダー作成
+            // ★修正: ヘッダー作成（新しい列名）
             Row headerRow = sheet.createRow(0);
-            String[] headers = {"スタッフ名", "作業者タイプ", "部屋数", "ポイント", "調整後スコア", "担当階・部屋詳細"};
+            String[] headers = {"スタッフ名", "作業者タイプ", "部屋数", "内ツイン数", "内エコ部屋数", "総部屋数", "担当階・部屋詳細"};
             for (int i = 0; i < headers.length; i++) {
                 Cell cell = headerRow.createCell(i);
                 cell.setCellValue(headers[i]);
@@ -1277,16 +1434,17 @@ public class AssignmentEditorGUI extends JFrame {
 
             // ★修正：ソート済みスタッフでデータ行作成
             int rowNum = 1;
-            List<StaffData> sortedStaff = getSortedStaffList(); // ★追加：ソート済みリストを使用
+            List<StaffData> sortedStaff = getSortedStaffList();
 
             for (StaffData staff : sortedStaff) {
                 Row row = sheet.createRow(rowNum++);
                 row.createCell(0).setCellValue(staff.name);
                 row.createCell(1).setCellValue(staff.getWorkerTypeDisplay());
                 row.createCell(2).setCellValue(staff.totalRooms);
-                row.createCell(3).setCellValue(staff.totalPoints);
-                row.createCell(4).setCellValue(staff.adjustedScore);
-                row.createCell(5).setCellValue(staff.getDetailedRoomDisplay());
+                row.createCell(3).setCellValue(staff.twinRoomCount);           // ★追加
+                row.createCell(4).setCellValue(staff.ecoRoomCount);            // ★追加
+                row.createCell(5).setCellValue(staff.convertedTotalRooms);     // ★追加
+                row.createCell(6).setCellValue(staff.getDetailedRoomDisplay());
             }
 
             // 列幅自動調整

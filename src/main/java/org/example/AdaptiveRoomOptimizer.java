@@ -7,73 +7,24 @@ import java.time.format.DateTimeFormatter;
 import java.util.logging.Logger;
 
 /**
- * 適応型清掃管理最適化システム（建物分離ポイントベース版）
- * ★修正版: 通常清掃部屋を設定値通り割り振り、その後エコ清掃を割り振る
- * フロア制限: 業者制限以外は2階分、大浴清掃スタッフは通常1階+エコで2階分まで
+ * 適応型清掃管理最適化システム（部屋数ベース版）
+ * ★簡略化版: 部屋数ベースの割り振りに特化、ポイントベースロジックを削除
  */
 public class AdaptiveRoomOptimizer {
 
     private static final Logger LOGGER = Logger.getLogger(AdaptiveRoomOptimizer.class.getName());
 
-    // 清掃条件の定数
-    public static final int MAX_MAIN_BUILDING_ROOMS = 99;
-    public static final int MAX_ANNEX_BUILDING_ROOMS = 99;
-    public static final int BATH_CLEANING_REDUCTION = 4;
-    public static final int BATH_DRAINING_REDUCTION = 5;
-    public static final double FLOOR_CROSSING_PENALTY = 0;
-    public static final double BUILDING_CROSSING_PENALTY = 1.0;
-
-    // 部屋タイプ別の実質ポイント
-    private static final Map<String, Double> ROOM_POINTS = new HashMap<>() {{
-        put("S", 1.0);
-        put("D", 1.0);
-        put("T", 1.67);
-        put("FD", 2.0);
-        put("ECO", 0.2);
-    }};
-
     /**
      * 大浴場清掃タイプ
      */
     public enum BathCleaningType {
-        NONE("なし", 0),
-        NORMAL("大浴場清掃", BATH_CLEANING_REDUCTION),
-        WITH_DRAINING("湯抜きあり", BATH_DRAINING_REDUCTION);
-
-        public final String displayName;
-        public final int reduction;
-
-        BathCleaningType(String displayName, int reduction) {
-            this.displayName = displayName;
-            this.reduction = reduction;
-        }
-    }
-
-    /**
-     * スタッフの建物割当タイプ
-     */
-    public enum BuildingAssignment {
-        MAIN_ONLY("本館のみ"),
-        ANNEX_ONLY("別館のみ"),
-        BOTH("両方");
+        NONE("なし"),
+        NORMAL("大浴場清掃"),
+        WITH_DRAINING("湯抜きあり");
 
         public final String displayName;
 
-        BuildingAssignment(String displayName) {
-            this.displayName = displayName;
-        }
-    }
-
-    /**
-     * 作業者タイプ
-     */
-    public enum WorkerType {
-        REGULAR("正社員"),
-        CONTRACTOR("業者");
-
-        public final String displayName;
-
-        WorkerType(String displayName) {
+        BathCleaningType(String displayName) {
             this.displayName = displayName;
         }
     }
@@ -108,15 +59,6 @@ public class AdaptiveRoomOptimizer {
         public int getTotalRooms() {
             return getTotalNormalRooms() + ecoRooms;
         }
-
-        public double getTotalPoints() {
-            double points = 0;
-            for (Map.Entry<String, Integer> entry : roomCounts.entrySet()) {
-                points += entry.getValue() * ROOM_POINTS.getOrDefault(entry.getKey(), 1.0);
-            }
-            points += ecoRooms * ROOM_POINTS.get("ECO");
-            return points;
-        }
     }
 
     /**
@@ -124,38 +66,24 @@ public class AdaptiveRoomOptimizer {
      */
     public static class ExtendedStaffInfo {
         public final FileProcessor.Staff staff;
-        public final BuildingAssignment buildingAssignment;
         public final BathCleaningType bathCleaningType;
-        public final int adjustedCapacity;
 
         public ExtendedStaffInfo(FileProcessor.Staff staff,
-                                 BuildingAssignment assignment,
                                  BathCleaningType bathType) {
             this.staff = staff;
-            this.buildingAssignment = assignment;
             this.bathCleaningType = bathType;
-            this.adjustedCapacity = calculateAdjustedCapacity(bathType);
-        }
-
-        private int calculateAdjustedCapacity(BathCleaningType bathType) {
-            int defaultCapacity = 15;
-            return Math.max(1, defaultCapacity - bathType.reduction);
         }
     }
 
     /**
-     * ポイント制約クラス
+     * ポイント制約クラス（業者判定とフロア制限に使用）
      */
     public static class PointConstraint {
         public final String staffName;
-        public final double minPoints;
-        public final double maxPoints;
         public final String constraintType;
 
-        public PointConstraint(String staffName, double minPoints, double maxPoints, String constraintType) {
+        public PointConstraint(String staffName, String constraintType) {
             this.staffName = staffName;
-            this.minPoints = minPoints;
-            this.maxPoints = maxPoints;
             this.constraintType = constraintType;
         }
     }
@@ -178,19 +106,6 @@ public class AdaptiveRoomOptimizer {
         public int getTotalRooms() {
             return roomCounts.values().stream().mapToInt(Integer::intValue).sum() + ecoRooms;
         }
-
-        public double getTotalPoints() {
-            double points = 0;
-            for (Map.Entry<String, Integer> entry : roomCounts.entrySet()) {
-                points += entry.getValue() * ROOM_POINTS.getOrDefault(entry.getKey(), 1.0);
-            }
-            points += ecoRooms * ROOM_POINTS.get("ECO");
-            return points;
-        }
-
-        public boolean isEmpty() {
-            return getTotalRooms() == 0;
-        }
     }
 
     /**
@@ -198,13 +113,10 @@ public class AdaptiveRoomOptimizer {
      */
     public static class StaffAssignment {
         public final FileProcessor.Staff staff;
-        public final WorkerType workerType;
         public final List<Integer> floors;
         public final Map<Integer, RoomAllocation> mainBuildingAssignments;
         public final Map<Integer, RoomAllocation> annexBuildingAssignments;
         public final Map<Integer, RoomAllocation> roomsByFloor;
-        public final double totalPoints;
-        public final double adjustedScore;
         public final BathCleaningType bathCleaningType;
 
         public StaffAssignment(FileProcessor.Staff staff,
@@ -212,7 +124,6 @@ public class AdaptiveRoomOptimizer {
                                Map<Integer, RoomAllocation> annexAssignments,
                                BathCleaningType bathType) {
             this.staff = staff;
-            this.workerType = WorkerType.REGULAR;
             this.mainBuildingAssignments = new HashMap<>(mainAssignments);
             this.annexBuildingAssignments = new HashMap<>(annexAssignments);
             this.bathCleaningType = bathType;
@@ -226,65 +137,6 @@ public class AdaptiveRoomOptimizer {
             this.roomsByFloor = new HashMap<>();
             this.roomsByFloor.putAll(mainAssignments);
             this.roomsByFloor.putAll(annexAssignments);
-
-            this.totalPoints = calculateTotalPoints();
-            this.adjustedScore = calculateAdjustedScore();
-        }
-
-        public StaffAssignment(FileProcessor.Staff staff,
-                               WorkerType workerType,
-                               List<Integer> floors,
-                               Map<Integer, RoomAllocation> roomsByFloor) {
-            this.staff = staff;
-            this.workerType = workerType;
-            this.floors = new ArrayList<>(floors);
-            this.roomsByFloor = new HashMap<>(roomsByFloor);
-            this.bathCleaningType = BathCleaningType.NONE;
-
-            this.mainBuildingAssignments = new HashMap<>();
-            this.annexBuildingAssignments = new HashMap<>();
-
-            for (Map.Entry<Integer, RoomAllocation> entry : roomsByFloor.entrySet()) {
-                int floor = entry.getKey();
-                if (floor <= 20) {
-                    this.mainBuildingAssignments.put(floor, entry.getValue());
-                } else {
-                    this.annexBuildingAssignments.put(floor, entry.getValue());
-                }
-            }
-
-            this.totalPoints = calculateTotalPoints();
-            this.adjustedScore = calculateAdjustedScore();
-        }
-
-        private double calculateTotalPoints() {
-            double mainPoints = mainBuildingAssignments.values().stream()
-                    .mapToDouble(allocation -> allocation.getTotalPoints()).sum();
-            double annexPoints = annexBuildingAssignments.values().stream()
-                    .mapToDouble(allocation -> allocation.getTotalPoints()).sum();
-            return mainPoints + annexPoints;
-        }
-
-        private double calculateAdjustedScore() {
-            int floorCount = getAssignedFloors().size();
-            int buildingCount = getBuildingCount();
-            double penalty = (floorCount - 1) * FLOOR_CROSSING_PENALTY +
-                    (buildingCount - 1) * BUILDING_CROSSING_PENALTY;
-            return totalPoints + penalty;
-        }
-
-        public Set<Integer> getAssignedFloors() {
-            Set<Integer> floors = new HashSet<>();
-            floors.addAll(mainBuildingAssignments.keySet());
-            floors.addAll(annexBuildingAssignments.keySet());
-            return floors;
-        }
-
-        private int getBuildingCount() {
-            int count = 0;
-            if (!mainBuildingAssignments.isEmpty()) count++;
-            if (!annexBuildingAssignments.isEmpty()) count++;
-            return count;
         }
 
         public int getTotalRooms() {
@@ -331,32 +183,22 @@ public class AdaptiveRoomOptimizer {
             Map<String, PointConstraint> pointConstraints = new HashMap<>();
 
             for (FileProcessor.Staff staff : availableStaff) {
-                BuildingAssignment buildingAssignment = BuildingAssignment.BOTH;
                 BathCleaningType staffBathType = BathCleaningType.NONE;
 
                 for (RoomAssignmentApplication.StaffPointConstraint constraint : staffConstraints) {
                     if (!constraint.staffName.equals(staff.name)) continue;
-
-                    if ("本館のみ".equals(constraint.buildingAssignment.displayName)) {
-                        buildingAssignment = BuildingAssignment.MAIN_ONLY;
-                    } else if ("別館のみ".equals(constraint.buildingAssignment.displayName)) {
-                        buildingAssignment = BuildingAssignment.ANNEX_ONLY;
-                    } else {
-                        buildingAssignment = BuildingAssignment.BOTH;
-                    }
 
                     if (constraint.isBathCleaningStaff) {
                         staffBathType = bathType;
                     }
 
                     if (constraint.lowerMinLimit > 0 || constraint.lowerMaxLimit > 0 || constraint.upperLimit > 0) {
-                        double maxValue = Math.max(constraint.lowerMaxLimit, constraint.upperLimit);
                         pointConstraints.put(staff.name, new PointConstraint(
-                                staff.name, constraint.lowerMinLimit, maxValue, constraint.constraintType.displayName));
+                                staff.name, constraint.constraintType.displayName));
                     }
                 }
 
-                extendedInfo.add(new ExtendedStaffInfo(staff, buildingAssignment, staffBathType));
+                extendedInfo.add(new ExtendedStaffInfo(staff, staffBathType));
                 bathAssignments.put(staff.name, staffBathType);
             }
 
@@ -378,7 +220,7 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
-     * 適応型最適化エンジン
+     * 適応型最適化エンジン（部屋数ベース専用）
      */
     public static class AdaptiveOptimizer {
         private final List<FloorInfo> floors;
@@ -390,27 +232,24 @@ public class AdaptiveRoomOptimizer {
         }
 
         public OptimizationResult optimize(LocalDate targetDate) {
-            LOGGER.info("=== 適応型最適化を開始 ===");
+            LOGGER.info("=== 適応型最適化を開始（部屋数ベース版） ===");
+
+            // 部屋割り振り設定が必須
+            if (config.roomDistribution == null || config.roomDistribution.isEmpty()) {
+                throw new IllegalStateException(
+                        "部屋割り振り設定が必須です。通常清掃部屋割り振りダイアログで設定してください。");
+            }
 
             BuildingData buildingData = separateBuildings(floors);
 
-            List<StaffAssignment> assignments;
-
-            if (config.roomDistribution != null && !config.roomDistribution.isEmpty()) {
-                LOGGER.info("通常清掃部屋割り振り設定を使用します");
-                assignments = optimizeWithRoomDistribution(buildingData);
-            } else {
-                LOGGER.info("従来の最適化ロジックを使用します");
-                PointConstraintOptimizer optimizer = new PointConstraintOptimizer(buildingData, config);
-                assignments = optimizer.optimizeWithConstraints();
-            }
+            LOGGER.info("通常清掃部屋割り振り設定を使用します");
+            List<StaffAssignment> assignments = optimizeWithRoomDistribution(buildingData);
 
             return new OptimizationResult(assignments, config, targetDate);
         }
 
         /**
-         * ★修正: roomDistribution を使用した最適化
-         * 通常清掃を設定値通り割り振り、その後エコ清掃を割り振る
+         * roomDistribution を使用した最適化（設定値厳守）
          */
         private List<StaffAssignment> optimizeWithRoomDistribution(BuildingData buildingData) {
             // フロア別の利用可能な部屋データを構築
@@ -419,22 +258,33 @@ public class AdaptiveRoomOptimizer {
             // スタッフ別の割り当て状況を追跡
             Map<String, StaffAllocationTracker> staffTrackers = new HashMap<>();
             for (ExtendedStaffInfo staffInfo : config.extendedStaffInfo) {
-                staffTrackers.put(staffInfo.staff.name, new StaffAllocationTracker(staffInfo));
+                staffTrackers.put(staffInfo.staff.name, new StaffAllocationTracker(staffInfo, config));
             }
 
-            // フェーズ1: 通常清掃部屋の割り振り
-            LOGGER.info("=== フェーズ1: 通常清掃部屋の割り振り ===");
-            assignNormalRooms(buildingData, roomPools, staffTrackers);
+            // フェーズ1: 通常清掃部屋の割り振り（設定値厳守）
+            LOGGER.info("=== フェーズ1: 通常清掃部屋の割り振り（設定値厳守） ===");
+            boolean phase1Success = assignNormalRoomsStrict(buildingData, roomPools, staffTrackers);
 
-            // フェーズ2: エコ清掃部屋の割り振り
-            LOGGER.info("=== フェーズ2: エコ清掃部屋の割り振り ===");
-            assignEcoRooms(buildingData, roomPools, staffTrackers);
+            if (!phase1Success) {
+                LOGGER.severe("エラー: 通常清掃部屋を設定値通りに割り振れませんでした");
+            }
+
+            // フェーズ2: エコ清掃部屋の割り振り（全部屋割り振り）
+            LOGGER.info("=== フェーズ2: エコ清掃部屋の割り振り（全部屋） ===");
+            boolean phase2Success = assignAllEcoRooms(buildingData, roomPools, staffTrackers);
+
+            if (!phase2Success) {
+                LOGGER.severe("エラー: エコ清掃部屋を全て割り振れませんでした");
+            }
 
             // 結果の構築
             List<StaffAssignment> assignments = new ArrayList<>();
             for (StaffAllocationTracker tracker : staffTrackers.values()) {
                 assignments.add(tracker.buildAssignment());
             }
+
+            // 最終検証
+            validateAssignments(assignments, buildingData);
 
             return assignments;
         }
@@ -459,11 +309,13 @@ public class AdaptiveRoomOptimizer {
         }
 
         /**
-         * 通常清掃部屋の割り振り
+         * ★厳密版: 通常清掃部屋の割り振り（設定値を1室も違えない）
          */
-        private void assignNormalRooms(BuildingData buildingData,
-                                       Map<String, FloorRoomPool> roomPools,
-                                       Map<String, StaffAllocationTracker> staffTrackers) {
+        private boolean assignNormalRoomsStrict(BuildingData buildingData,
+                                                Map<String, FloorRoomPool> roomPools,
+                                                Map<String, StaffAllocationTracker> staffTrackers) {
+
+            boolean allSuccess = true;
 
             for (Map.Entry<String, StaffAllocationTracker> entry : staffTrackers.entrySet()) {
                 String staffName = entry.getKey();
@@ -475,49 +327,63 @@ public class AdaptiveRoomOptimizer {
                     continue;
                 }
 
-                LOGGER.info(String.format("%s: 本館%d室, 別館%d室を割り振り開始",
+                LOGGER.info(String.format("%s: 本館%d室, 別館%d室を厳密に割り振ります",
                         staffName, dist.mainAssignedRooms, dist.annexAssignedRooms));
 
                 // 本館の割り当て
                 if (dist.mainAssignedRooms > 0) {
-                    assignNormalRoomsToBuilding(buildingData.mainFloors, roomPools, tracker,
+                    int assigned = assignNormalRoomsToBuildingStrict(
+                            buildingData.mainFloors, roomPools, tracker,
                             dist.mainAssignedRooms, true);
+
+                    if (assigned != dist.mainAssignedRooms) {
+                        LOGGER.severe(String.format("エラー: %s 本館 設定%d室に対し%d室しか割り振れませんでした",
+                                staffName, dist.mainAssignedRooms, assigned));
+                        allSuccess = false;
+                    }
                 }
 
                 // 別館の割り当て
                 if (dist.annexAssignedRooms > 0) {
-                    assignNormalRoomsToBuilding(buildingData.annexFloors, roomPools, tracker,
+                    int assigned = assignNormalRoomsToBuildingStrict(
+                            buildingData.annexFloors, roomPools, tracker,
                             dist.annexAssignedRooms, false);
+
+                    if (assigned != dist.annexAssignedRooms) {
+                        LOGGER.severe(String.format("エラー: %s 別館 設定%d室に対し%d室しか割り振れませんでした",
+                                staffName, dist.annexAssignedRooms, assigned));
+                        allSuccess = false;
+                    }
                 }
 
                 LOGGER.info(String.format("%s: 通常清掃 合計%d室割り振り完了（フロア数:%d）",
-                        staffName, tracker.getTotalNormalRooms(), tracker.getFloorCount()));
+                        staffName, tracker.getTotalNormalRooms(), tracker.getNormalFloorCount()));
             }
+
+            return allSuccess;
         }
 
         /**
-         * 建物別の通常清掃部屋割り振り
+         * 建物別の通常清掃部屋割り振り（厳密版）
          */
-        private void assignNormalRoomsToBuilding(List<FloorInfo> floors,
-                                                 Map<String, FloorRoomPool> roomPools,
-                                                 StaffAllocationTracker tracker,
-                                                 int targetRooms,
-                                                 boolean isMainBuilding) {
+        private int assignNormalRoomsToBuildingStrict(List<FloorInfo> floors,
+                                                      Map<String, FloorRoomPool> roomPools,
+                                                      StaffAllocationTracker tracker,
+                                                      int targetRooms,
+                                                      boolean isMainBuilding) {
 
             String buildingName = isMainBuilding ? "本館" : "別館";
-            int remaining = targetRooms;
+            int assigned = 0;
             int maxFloors = tracker.getMaxNormalFloors();
             int currentNormalFloors = tracker.getNormalFloorCount();
 
-            LOGGER.info(String.format("  %s: 目標%d室, 最大フロア数%d, 現在の通常フロア数%d",
-                    buildingName, targetRooms, maxFloors, currentNormalFloors));
-
             for (FloorInfo floor : floors) {
-                if (remaining <= 0) break;
+                if (assigned >= targetRooms) break;
 
                 // フロア制限チェック
                 if (!tracker.isContractor() && currentNormalFloors >= maxFloors) {
-                    LOGGER.info(String.format("  %dF: 通常清掃フロア制限に達しました", floor.floorNumber));
+                    LOGGER.warning(String.format("  %dF: 通常清掃フロア制限(%d階)に達しました",
+                            floor.floorNumber, maxFloors));
                     break;
                 }
 
@@ -528,42 +394,54 @@ public class AdaptiveRoomOptimizer {
                     continue;
                 }
 
-                int toAssign = Math.min(remaining, pool.getNormalRoomsAvailable());
-                Map<String, Integer> assignedRooms = pool.allocateNormalRooms(toAssign);
+                int remaining = targetRooms - assigned;
+                int available = pool.getNormalRoomsAvailable();
+                int toAssign = Math.min(remaining, available);
 
-                if (!assignedRooms.isEmpty()) {
+                Map<String, Integer> assignedRooms = pool.allocateNormalRooms(toAssign);
+                int actualAssigned = assignedRooms.values().stream().mapToInt(Integer::intValue).sum();
+
+                if (actualAssigned > 0) {
                     tracker.addNormalRooms(floor.floorNumber, assignedRooms, isMainBuilding);
-                    remaining -= assignedRooms.values().stream().mapToInt(Integer::intValue).sum();
+                    assigned += actualAssigned;
                     currentNormalFloors = tracker.getNormalFloorCount();
 
-                    LOGGER.info(String.format("  %dF: %d室割り振り（残り%d室, フロア数%d）",
-                            floor.floorNumber, toAssign, remaining, currentNormalFloors));
+                    LOGGER.info(String.format("  %dF: %d室割り振り（累計%d/%d室）",
+                            floor.floorNumber, actualAssigned, assigned, targetRooms));
                 }
             }
 
-            if (remaining > 0) {
-                LOGGER.warning(String.format("  %s: %d室を割り振れませんでした",
-                        buildingName, remaining));
+            if (assigned < targetRooms) {
+                LOGGER.warning(String.format("  %s: 目標%d室に対し%d室しか割り振れませんでした（不足%d室）",
+                        buildingName, targetRooms, assigned, targetRooms - assigned));
             }
+
+            return assigned;
         }
 
         /**
-         * エコ清掃部屋の割り振り
+         * ★修正版: 全エコ清掃部屋を確実に割り振る
          */
-        private void assignEcoRooms(BuildingData buildingData,
-                                    Map<String, FloorRoomPool> roomPools,
-                                    Map<String, StaffAllocationTracker> staffTrackers) {
+        private boolean assignAllEcoRooms(BuildingData buildingData,
+                                          Map<String, FloorRoomPool> roomPools,
+                                          Map<String, StaffAllocationTracker> staffTrackers) {
 
-            List<String> staffNames = new ArrayList<>(staffTrackers.keySet());
-            int staffIndex = 0;
-
-            // 全フロアを走査してエコ清掃部屋を割り振る
+            // 全フロアのリストを作成
             List<FloorInfo> allFloors = new ArrayList<>();
             allFloors.addAll(buildingData.mainFloors);
             allFloors.addAll(buildingData.annexFloors);
-
             Collections.sort(allFloors, Comparator.comparingInt(f -> f.floorNumber));
 
+            // スタッフのリストを作成
+            List<String> staffNames = new ArrayList<>(staffTrackers.keySet());
+
+            int totalEcoRooms = countTotalEcoRooms(buildingData);
+            int assignedEcoRooms = 0;
+            int staffIndex = 0;
+
+            LOGGER.info(String.format("エコ清掃総数: %d室", totalEcoRooms));
+
+            // 全エコ部屋を割り振るまでループ
             for (FloorInfo floor : allFloors) {
                 String buildingName = floor.isMainBuilding ? "本館" : "別館";
                 String poolKey = buildingName + "_" + floor.floorNumber;
@@ -573,13 +451,16 @@ public class AdaptiveRoomOptimizer {
                     continue;
                 }
 
+                int floorEcoRooms = pool.getEcoRoomsAvailable();
                 LOGGER.info(String.format("%s %dF: エコ%d室を割り振り中",
-                        buildingName, floor.floorNumber, pool.getEcoRoomsAvailable()));
+                        buildingName, floor.floorNumber, floorEcoRooms));
 
+                // このフロアの全エコ部屋を割り振る
                 while (pool.getEcoRoomsAvailable() > 0) {
                     boolean assigned = false;
                     int attempts = 0;
 
+                    // 全スタッフを試行
                     while (attempts < staffNames.size()) {
                         String staffName = staffNames.get(staffIndex % staffNames.size());
                         StaffAllocationTracker tracker = staffTrackers.get(staffName);
@@ -596,18 +477,87 @@ public class AdaptiveRoomOptimizer {
                         if (allocatedEco > 0) {
                             tracker.addEcoRooms(floor.floorNumber, allocatedEco, floor.isMainBuilding);
                             assigned = true;
-                            LOGGER.info(String.format("  %dF: %sにエコ1室割り振り（残り%d室）",
-                                    floor.floorNumber, staffName, pool.getEcoRoomsAvailable()));
+                            assignedEcoRooms++;
                             break;
                         }
                     }
 
                     if (!assigned) {
-                        LOGGER.warning(String.format("  %dF: エコ%d室をフロア制限により割り振れませんでした",
+                        LOGGER.severe(String.format("エラー: %dFのエコ部屋を割り振れるスタッフがいません（残り%d室）",
                                 floor.floorNumber, pool.getEcoRoomsAvailable()));
-                        break;
+                        return false;
                     }
                 }
+
+                LOGGER.info(String.format("  %dF: エコ%d室の割り振り完了", floor.floorNumber, floorEcoRooms));
+            }
+
+            LOGGER.info(String.format("エコ清掃割り振り完了: %d/%d室", assignedEcoRooms, totalEcoRooms));
+
+            // 各スタッフの状況をログ出力
+            for (Map.Entry<String, StaffAllocationTracker> entry : staffTrackers.entrySet()) {
+                StaffAllocationTracker tracker = entry.getValue();
+                LOGGER.info(String.format("  %s: 通常%d室, エコ%d室, フロア数%d",
+                        entry.getKey(), tracker.getTotalNormalRooms(),
+                        tracker.getTotalEcoRooms(), tracker.getFloorCount()));
+            }
+
+            return assignedEcoRooms == totalEcoRooms;
+        }
+
+        /**
+         * 総エコ部屋数を計算
+         */
+        private int countTotalEcoRooms(BuildingData buildingData) {
+            int total = 0;
+            for (FloorInfo floor : buildingData.mainFloors) {
+                total += floor.ecoRooms;
+            }
+            for (FloorInfo floor : buildingData.annexFloors) {
+                total += floor.ecoRooms;
+            }
+            return total;
+        }
+
+        /**
+         * 割り当て結果の検証
+         */
+        private void validateAssignments(List<StaffAssignment> assignments, BuildingData buildingData) {
+            LOGGER.info("=== 割り当て結果の検証 ===");
+
+            // 割り当てられた部屋を集計
+            int totalAssignedNormal = 0;
+            int totalAssignedEco = 0;
+
+            for (StaffAssignment assignment : assignments) {
+                for (RoomAllocation allocation : assignment.roomsByFloor.values()) {
+                    totalAssignedNormal += allocation.roomCounts.values().stream()
+                            .mapToInt(Integer::intValue).sum();
+                    totalAssignedEco += allocation.ecoRooms;
+                }
+            }
+
+            // 実際の部屋数
+            int actualNormalRooms = buildingData.mainRoomCount + buildingData.annexRoomCount;
+            int actualEcoRooms = countTotalEcoRooms(buildingData);
+
+            LOGGER.info(String.format("通常清掃: 割り当て%d室 / 実際%d室",
+                    totalAssignedNormal, actualNormalRooms));
+            LOGGER.info(String.format("エコ清掃: 割り当て%d室 / 実際%d室",
+                    totalAssignedEco, actualEcoRooms));
+
+            if (totalAssignedNormal != actualNormalRooms) {
+                LOGGER.severe(String.format("エラー: 通常清掃部屋数が一致しません（差分%d室）",
+                        actualNormalRooms - totalAssignedNormal));
+            }
+
+            if (totalAssignedEco != actualEcoRooms) {
+                LOGGER.severe(String.format("エラー: エコ清掃部屋数が一致しません（差分%d室）",
+                        actualEcoRooms - totalAssignedEco));
+            }
+
+            if (totalAssignedNormal == actualNormalRooms && totalAssignedEco == actualEcoRooms) {
+                LOGGER.info("✓ 全部屋の割り振りが完了しました");
             }
         }
 
@@ -622,29 +572,20 @@ public class AdaptiveRoomOptimizer {
                     .sorted(Comparator.comparingInt(f -> f.floorNumber))
                     .collect(Collectors.toList());
 
-            double mainTotalPoints = mainFloors.stream()
-                    .mapToDouble(FloorInfo::getTotalPoints)
-                    .sum();
-
-            double annexTotalPoints = annexFloors.stream()
-                    .mapToDouble(FloorInfo::getTotalPoints)
-                    .sum();
-
             int mainRoomCount = mainFloors.stream()
-                    .mapToInt(f -> f.getTotalRooms())
+                    .mapToInt(f -> f.getTotalNormalRooms())
                     .sum();
 
             int annexRoomCount = annexFloors.stream()
-                    .mapToInt(f -> f.getTotalRooms())
+                    .mapToInt(f -> f.getTotalNormalRooms())
                     .sum();
 
-            return new BuildingData(mainFloors, annexFloors, mainTotalPoints, annexTotalPoints,
-                    mainRoomCount, annexRoomCount);
+            return new BuildingData(mainFloors, annexFloors, mainRoomCount, annexRoomCount);
         }
     }
 
     /**
-     * フロア部屋プールクラス
+     * フロア部屋プールクラス（厳密版）
      */
     private static class FloorRoomPool {
         private final FloorInfo floor;
@@ -665,14 +606,27 @@ public class AdaptiveRoomOptimizer {
             return ecoRoomsAvailable;
         }
 
+        /**
+         * ★厳密版: 指定数の通常部屋を割り当て（存在する部屋のみ）
+         */
         Map<String, Integer> allocateNormalRooms(int count) {
             Map<String, Integer> allocated = new HashMap<>();
             int remaining = count;
+            int availableTotal = getNormalRoomsAvailable();
 
+            // 要求数が利用可能数を超えていないかチェック
+            if (count > availableTotal) {
+                LOGGER.warning(String.format("警告: %dF 要求%d室だが利用可能は%d室のみ",
+                        floor.floorNumber, count, availableTotal));
+                remaining = availableTotal;
+            }
+
+            // 部屋タイプを多い順にソート
             List<String> roomTypes = new ArrayList<>(normalRoomsAvailable.keySet());
             roomTypes.sort((a, b) -> Integer.compare(
                     normalRoomsAvailable.get(b), normalRoomsAvailable.get(a)));
 
+            // 各タイプから順に割り当て
             for (String roomType : roomTypes) {
                 if (remaining <= 0) break;
 
@@ -689,10 +643,18 @@ public class AdaptiveRoomOptimizer {
             return allocated;
         }
 
+        /**
+         * ★厳密版: 指定数のエコ部屋を割り当て（存在する部屋のみ）
+         */
         int allocateEcoRooms(int count) {
-            int toAllocate = Math.min(count, ecoRoomsAvailable);
-            ecoRoomsAvailable -= toAllocate;
-            return toAllocate;
+            if (count > ecoRoomsAvailable) {
+                LOGGER.warning(String.format("警告: %dF エコ要求%d室だが利用可能は%d室のみ",
+                        floor.floorNumber, count, ecoRoomsAvailable));
+                count = ecoRoomsAvailable;
+            }
+
+            ecoRoomsAvailable -= count;
+            return count;
         }
     }
 
@@ -701,13 +663,15 @@ public class AdaptiveRoomOptimizer {
      */
     private static class StaffAllocationTracker {
         private final ExtendedStaffInfo staffInfo;
+        private final AdaptiveLoadConfig config;
         private final Map<Integer, Map<String, Integer>> mainNormalRooms = new HashMap<>();
         private final Map<Integer, Map<String, Integer>> annexNormalRooms = new HashMap<>();
         private final Map<Integer, Integer> mainEcoRooms = new HashMap<>();
         private final Map<Integer, Integer> annexEcoRooms = new HashMap<>();
 
-        StaffAllocationTracker(ExtendedStaffInfo staffInfo) {
+        StaffAllocationTracker(ExtendedStaffInfo staffInfo, AdaptiveLoadConfig config) {
             this.staffInfo = staffInfo;
+            this.config = config;
         }
 
         void addNormalRooms(int floor, Map<String, Integer> rooms, boolean isMainBuilding) {
@@ -737,6 +701,11 @@ public class AdaptiveRoomOptimizer {
             return total;
         }
 
+        int getTotalEcoRooms() {
+            return mainEcoRooms.values().stream().mapToInt(Integer::intValue).sum() +
+                    annexEcoRooms.values().stream().mapToInt(Integer::intValue).sum();
+        }
+
         int getFloorCount() {
             Set<Integer> floors = new HashSet<>();
             floors.addAll(mainNormalRooms.keySet());
@@ -754,8 +723,7 @@ public class AdaptiveRoomOptimizer {
         }
 
         boolean isContractor() {
-            PointConstraint constraint = staffInfo.bathCleaningType != BathCleaningType.NONE ? null :
-                    null; // 実際のconstraintはconfigから取得する必要がある
+            PointConstraint constraint = config.pointConstraints.get(staffInfo.staff.name);
             return constraint != null && "業者制限".equals(constraint.constraintType);
         }
 
@@ -763,6 +731,7 @@ public class AdaptiveRoomOptimizer {
             if (isContractor()) {
                 return Integer.MAX_VALUE;
             }
+            // 大浴清掃スタッフは通常清掃1階のみ
             return staffInfo.bathCleaningType != BathCleaningType.NONE ? 1 : 2;
         }
 
@@ -773,14 +742,17 @@ public class AdaptiveRoomOptimizer {
             allFloors.addAll(mainEcoRooms.keySet());
             allFloors.addAll(annexEcoRooms.keySet());
 
+            // 既に割り当てられているフロアなら常にOK
             if (allFloors.contains(floor)) {
                 return true;
             }
 
+            // 業者は制限なし
             if (isContractor()) {
                 return true;
             }
 
+            // 通常スタッフ：合計2階まで
             return allFloors.size() < 2;
         }
 
@@ -788,30 +760,26 @@ public class AdaptiveRoomOptimizer {
             Map<Integer, RoomAllocation> mainAssignments = new HashMap<>();
             Map<Integer, RoomAllocation> annexAssignments = new HashMap<>();
 
-            for (Map.Entry<Integer, Map<String, Integer>> entry : mainNormalRooms.entrySet()) {
-                int floor = entry.getKey();
-                Map<String, Integer> rooms = entry.getValue();
+            // 本館の割り当て
+            Set<Integer> mainFloors = new HashSet<>();
+            mainFloors.addAll(mainNormalRooms.keySet());
+            mainFloors.addAll(mainEcoRooms.keySet());
+
+            for (Integer floor : mainFloors) {
+                Map<String, Integer> rooms = mainNormalRooms.getOrDefault(floor, new HashMap<>());
                 int eco = mainEcoRooms.getOrDefault(floor, 0);
                 mainAssignments.put(floor, new RoomAllocation(rooms, eco));
             }
 
-            for (Integer floor : mainEcoRooms.keySet()) {
-                if (!mainAssignments.containsKey(floor)) {
-                    mainAssignments.put(floor, new RoomAllocation(new HashMap<>(), mainEcoRooms.get(floor)));
-                }
-            }
+            // 別館の割り当て
+            Set<Integer> annexFloors = new HashSet<>();
+            annexFloors.addAll(annexNormalRooms.keySet());
+            annexFloors.addAll(annexEcoRooms.keySet());
 
-            for (Map.Entry<Integer, Map<String, Integer>> entry : annexNormalRooms.entrySet()) {
-                int floor = entry.getKey();
-                Map<String, Integer> rooms = entry.getValue();
+            for (Integer floor : annexFloors) {
+                Map<String, Integer> rooms = annexNormalRooms.getOrDefault(floor, new HashMap<>());
                 int eco = annexEcoRooms.getOrDefault(floor, 0);
                 annexAssignments.put(floor, new RoomAllocation(rooms, eco));
-            }
-
-            for (Integer floor : annexEcoRooms.keySet()) {
-                if (!annexAssignments.containsKey(floor)) {
-                    annexAssignments.put(floor, new RoomAllocation(new HashMap<>(), annexEcoRooms.get(floor)));
-                }
             }
 
             return new StaffAssignment(staffInfo.staff, mainAssignments, annexAssignments,
@@ -825,100 +793,15 @@ public class AdaptiveRoomOptimizer {
     private static class BuildingData {
         final List<FloorInfo> mainFloors;
         final List<FloorInfo> annexFloors;
-        final double mainTotalPoints;
-        final double annexTotalPoints;
         final int mainRoomCount;
         final int annexRoomCount;
 
         BuildingData(List<FloorInfo> mainFloors, List<FloorInfo> annexFloors,
-                     double mainTotalPoints, double annexTotalPoints,
                      int mainRoomCount, int annexRoomCount) {
             this.mainFloors = mainFloors;
             this.annexFloors = annexFloors;
-            this.mainTotalPoints = mainTotalPoints;
-            this.annexTotalPoints = annexTotalPoints;
             this.mainRoomCount = mainRoomCount;
             this.annexRoomCount = annexRoomCount;
-        }
-    }
-
-    /**
-     * ポイント制限対応最適化エンジン（従来ロジック用）
-     */
-    private static class PointConstraintOptimizer {
-        private final BuildingData buildingData;
-        private final AdaptiveLoadConfig config;
-
-        PointConstraintOptimizer(BuildingData buildingData, AdaptiveLoadConfig config) {
-            this.buildingData = buildingData;
-            this.config = config;
-        }
-
-        List<StaffAssignment> optimizeWithConstraints() {
-            List<StaffAssignment> result = new ArrayList<>();
-
-            for (ExtendedStaffInfo staffInfo : config.extendedStaffInfo) {
-                StaffAssignment assignment = optimizeStaffAssignment(staffInfo);
-                result.add(assignment);
-            }
-
-            return result;
-        }
-
-        private StaffAssignment optimizeStaffAssignment(ExtendedStaffInfo staffInfo) {
-            Map<Integer, RoomAllocation> mainAssignments = new HashMap<>();
-            Map<Integer, RoomAllocation> annexAssignments = new HashMap<>();
-
-            PointConstraint constraint = config.pointConstraints.get(staffInfo.staff.name);
-
-            double targetPoints = staffInfo.adjustedCapacity;
-            if (constraint != null) {
-                if ("故障制限".equals(constraint.constraintType)) {
-                    targetPoints = constraint.minPoints;
-                } else if ("業者制限".equals(constraint.constraintType)) {
-                    targetPoints = Math.max(constraint.minPoints, staffInfo.adjustedCapacity);
-                }
-            }
-
-            switch (staffInfo.buildingAssignment) {
-                case MAIN_ONLY:
-                    assignToBuilding(mainAssignments, buildingData.mainFloors, targetPoints);
-                    break;
-                case ANNEX_ONLY:
-                    assignToBuilding(annexAssignments, buildingData.annexFloors, targetPoints);
-                    break;
-                case BOTH:
-                    double mainPortion = targetPoints * 0.6;
-                    double annexPortion = targetPoints * 0.4;
-                    assignToBuilding(mainAssignments, buildingData.mainFloors, mainPortion);
-                    assignToBuilding(annexAssignments, buildingData.annexFloors, annexPortion);
-                    break;
-            }
-
-            return new StaffAssignment(staffInfo.staff, mainAssignments, annexAssignments, staffInfo.bathCleaningType);
-        }
-
-        private void assignToBuilding(Map<Integer, RoomAllocation> assignments, List<FloorInfo> floors, double targetPoints) {
-            if (floors.isEmpty() || targetPoints <= 0) return;
-
-            double pointsPerFloor = targetPoints / floors.size();
-
-            for (FloorInfo floor : floors) {
-                String dominantRoomType = floor.roomCounts.entrySet().stream()
-                        .max(Map.Entry.comparingByValue())
-                        .map(Map.Entry::getKey)
-                        .orElse("S");
-
-                double roomPoints = ROOM_POINTS.getOrDefault(dominantRoomType, 1.0);
-                int roomCount = (int) Math.round(pointsPerFloor / roomPoints);
-                roomCount = Math.max(1, Math.min(roomCount, floor.roomCounts.getOrDefault(dominantRoomType, 0)));
-
-                if (roomCount > 0) {
-                    Map<String, Integer> floorRoomCounts = new HashMap<>();
-                    floorRoomCounts.put(dominantRoomType, roomCount);
-                    assignments.put(floor.floorNumber, new RoomAllocation(floorRoomCounts, 0));
-                }
-            }
         }
     }
 
@@ -943,24 +826,20 @@ public class AdaptiveRoomOptimizer {
             System.out.printf("対象日: %s\n", targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
             System.out.printf("スタッフ数: %d人\n", assignments.size());
 
-            double totalPoints = 0;
             int totalRooms = 0;
 
             for (StaffAssignment assignment : assignments) {
-                totalPoints += assignment.totalPoints;
                 totalRooms += assignment.getTotalRooms();
 
                 System.out.printf("\n%s (%s):\n",
                         assignment.staff.name,
                         assignment.bathCleaningType.displayName);
                 System.out.printf("  部屋数: %d室\n", assignment.getTotalRooms());
-                System.out.printf("  ポイント: %.2f\n", assignment.totalPoints);
                 System.out.printf("  担当フロア: %s\n", assignment.floors);
             }
 
             System.out.printf("\n総計:\n");
             System.out.printf("  部屋数: %d室\n", totalRooms);
-            System.out.printf("  ポイント: %.2f\n", totalPoints);
         }
     }
 }

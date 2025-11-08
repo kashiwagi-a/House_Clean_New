@@ -53,10 +53,6 @@ public class AdaptiveRoomOptimizer {
         public int getTotalNormalRooms() {
             return roomCounts.values().stream().mapToInt(Integer::intValue).sum();
         }
-
-        public int getTotalRooms() {
-            return getTotalNormalRooms() + ecoRooms;
-        }
     }
 
     /**

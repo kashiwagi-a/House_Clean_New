@@ -50,10 +50,6 @@ public class AdaptiveRoomOptimizer {
             this.isMainBuilding = isMainBuilding;
         }
 
-        public FloorInfo(int floorNumber, Map<String, Integer> roomCounts, int ecoRooms) {
-            this(floorNumber, roomCounts, ecoRooms, true);
-        }
-
         public int getTotalNormalRooms() {
             return roomCounts.values().stream().mapToInt(Integer::intValue).sum();
         }

@@ -563,7 +563,7 @@ public class RoomAssignmentApplication extends JFrame {
             // 6. ★修正: 適応型設定の作成（roomDistribution を含む）
             appendLog("最適化設定を作成中...");
             int totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithRoomDistribution(
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithPointConstraints(
                     availableStaff, totalRooms, cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
                     bathType, pointConstraints, roomDistribution);
 
@@ -616,14 +616,14 @@ public class RoomAssignmentApplication extends JFrame {
     /**
      * ★新規追加: roomDistribution を含む AdaptiveLoadConfig を作成
      */
-    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createAdaptiveConfigWithRoomDistribution(
+    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createAdaptiveConfigWithPointConstraints(
             List<FileProcessor.Staff> availableStaff,
             int totalRooms,
             int mainBuildingRooms,
             int annexBuildingRooms,
             AdaptiveRoomOptimizer.BathCleaningType bathType,
             List<StaffPointConstraint> pointConstraints,
-            Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution) {
+            Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution) {  // ★パラメータ追加
 
         return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithBathSelection(
                 availableStaff,

@@ -46,6 +46,12 @@
       <version>4.13.2</version>
       <scope>test</scope>
     </dependency>
+
+    <dependency>
+      <groupId>com.google.ortools</groupId>
+      <artifactId>ortools-java</artifactId>
+      <version>9.8.3296</version>
+    </dependency>
   </dependencies>
 
   <build>

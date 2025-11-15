@@ -225,22 +225,94 @@ public class AdaptiveRoomOptimizer {
             this.config = config;
         }
 
-        public OptimizationResult optimize(LocalDate targetDate) {
-            LOGGER.info("=== 適応型最適化を開始(部屋タイプ別版) ===");
+        // ============================================================
+// AdaptiveOptimizer クラス内の optimize メソッド（CP-SAT統合版・完全版）
+// ============================================================
 
-            // 部屋割り振り設定が必須
+        /**
+         * 最適化実行メソッド（CP-SAT統合版）
+         *
+         * ★変更点:
+         * 1. CP-SATソルバーを優先的に使用
+         * 2. CP-SATが失敗した場合は従来の方法にフォールバック
+         * 3. エラーハンドリングを強化
+         *
+         * ★使用方法:
+         * AdaptiveOptimizerクラスの既存のoptimizeメソッドを
+         * このコードで置き換えてください。
+         */
+        public OptimizationResult optimize(LocalDate targetDate) {
+            LOGGER.info("=== 適応型最適化を開始 ===");
+
+            // 部屋割り振り設定の必須チェック
             if (config.roomDistribution == null || config.roomDistribution.isEmpty()) {
                 throw new IllegalStateException(
                         "部屋割り振り設定が必須です。通常清掃部屋割り振りダイアログで設定してください。");
             }
 
+            // 建物データの分離（本館・別館）
             BuildingData buildingData = separateBuildings(floors);
 
-            LOGGER.info("通常清掃部屋割り振り設定(部屋タイプ別)を使用します");
-            List<StaffAssignment> assignments = optimizeWithRoomDistribution(buildingData);
+            // ★ CP-SATソルバーを使用した最適化を試行
+            List<StaffAssignment> assignments;
 
+            try {
+                LOGGER.info("CP-SATソルバーを使用した最適化を開始します");
+                assignments = RoomAssignmentCPSATOptimizer.optimize(buildingData, config);
+                LOGGER.info("CP-SATソルバーによる最適化が成功しました");
+
+            } catch (NoClassDefFoundError e) {
+                // OR-Toolsライブラリが見つからない場合
+                LOGGER.warning("OR-Toolsライブラリが見つかりません。従来の方法を使用します。");
+                LOGGER.warning("CP-SATを使用するには、pom.xmlにortools-javaの依存関係を追加してください。");
+                LOGGER.info("従来の貪欲法による最適化を実行します");
+                assignments = optimizeWithRoomDistribution(buildingData);
+
+            } catch (UnsatisfiedLinkError e) {
+                // ネイティブライブラリのロードに失敗した場合
+                LOGGER.warning("OR-Toolsのネイティブライブラリのロードに失敗しました。従来の方法を使用します。");
+                LOGGER.warning("詳細: " + e.getMessage());
+                LOGGER.info("従来の貪欲法による最適化を実行します");
+                assignments = optimizeWithRoomDistribution(buildingData);
+
+            } catch (IllegalStateException e) {
+                // CP-SATで解が見つからなかった場合
+                LOGGER.severe("CP-SATで解が見つかりませんでした: " + e.getMessage());
+                LOGGER.info("制約条件が矛盾している可能性があります。従来の方法を試行します。");
+                LOGGER.info("従来の貪欲法による最適化を実行します");
+                assignments = optimizeWithRoomDistribution(buildingData);
+
+            } catch (Exception e) {
+                // その他の予期しないエラー
+                LOGGER.severe("CP-SAT最適化中にエラーが発生しました: " + e.getMessage());
+                e.printStackTrace();
+                LOGGER.info("従来の貪欲法による最適化を実行します");
+                assignments = optimizeWithRoomDistribution(buildingData);
+            }
+
+            // 最適化結果を返す
             return new OptimizationResult(assignments, config, targetDate);
         }
+
+
+// ============================================================
+// 補足: 修正が必要な箇所（BuildingDataのアクセス修飾子）
+// ============================================================
+
+/**
+ * ★重要: BuildingDataクラスをpublicに変更してください
+ *
+ * 変更前:
+ *     private static class BuildingData {
+ *
+ * 変更後:
+ *     public static class BuildingData {
+ *
+ * 理由: RoomAssignmentCPSATOptimizerから
+ *       BuildingDataにアクセスするため
+ */
+
+
 
         /**
          * ★改善版: roomDistribution を使用した最適化(部屋タイプ別に厳密に割り振り)
@@ -880,7 +952,7 @@ public class AdaptiveRoomOptimizer {
     /**
      * 建物データクラス
      */
-    private static class BuildingData {
+    public static class BuildingData  {
         final List<FloorInfo> mainFloors;
         final List<FloorInfo> annexFloors;
         final int mainRoomCount;

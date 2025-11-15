@@ -6,18 +6,17 @@ import java.util.*;
 import java.util.logging.Logger;
 
 /**
- * Google OR-Tools CP-SATソルバーを使用した部屋割り当て最適化（最終版）
+ * Google OR-Tools CP-SATソルバーを使用した部屋割り当て最適化（全フロア使用版）
  *
  * ★特徴:
  * 1. 総部屋数は厳密に守る（例：EE=13室）
  * 2. ツイン内訳は最適化（できれば目標値、不可能ならシングルで代替）
  * 3. フロア制限は厳守（絶対条件）
- * 4. すべてのツインを有効活用（余らせない）
- * 5. フロア連続性は考慮しない（不要）
+ * 4. すべてのフロアのすべての部屋を使い切る（余らせない）
  *
  * ★動作原理:
  * CP-SATが各スタッフの担当フロアを自動選択し、
- * ツインが取得できるフロア配分を見つける
+ * 全部屋を使い切りながらフロア制限を守る割り当てを見つける
  */
 public class RoomAssignmentCPSATOptimizer {
 
@@ -27,7 +26,7 @@ public class RoomAssignmentCPSATOptimizer {
             AdaptiveRoomOptimizer.BuildingData buildingData,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
 
-        LOGGER.info("=== CP-SATソルバーによる最適化を開始 ===");
+        LOGGER.info("=== CP-SATソルバーによる最適化を開始（全フロア使用版） ===");
 
         // OR-Toolsロード
         try {
@@ -48,7 +47,7 @@ public class RoomAssignmentCPSATOptimizer {
         // 変数の作成
         Map<String, IntVar> xVars = new HashMap<>();
         Map<String, IntVar> eVars = new HashMap<>();
-        Map<String, BoolVar> yVars = new HashMap<>();  // ✓ BoolVarに修正
+        Map<String, BoolVar> yVars = new HashMap<>();
 
         LOGGER.info("変数を作成中...");
 
@@ -84,7 +83,7 @@ public class RoomAssignmentCPSATOptimizer {
                 }
 
                 String yVarName = String.format("y_%s_%d", staffName, floorNum);
-                BoolVar yVar = model.newBoolVar(yVarName);  // ✓ BoolVarを使用
+                BoolVar yVar = model.newBoolVar(yVarName);
                 yVars.put(yVarName, yVar);
             }
         }
@@ -92,12 +91,12 @@ public class RoomAssignmentCPSATOptimizer {
         LOGGER.info(String.format("変数作成完了: x=%d, e=%d, y=%d",
                 xVars.size(), eVars.size(), yVars.size()));
 
-        // 制約1: 各フロアの部屋数制約
-        LOGGER.info("制約1: フロア部屋数制約を追加中...");
+        // 制約1: 各フロアの部屋数制約（完全使用 - すべての部屋を割り当てる）
+        LOGGER.info("制約1: フロア部屋数制約を追加中（全部屋使い切り）...");
         for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
             for (Map.Entry<String, Integer> entry : floor.roomCounts.entrySet()) {
                 String roomType = entry.getKey();
-                int maxRooms = entry.getValue();
+                int totalRooms = entry.getValue();
 
                 List<IntVar> vars = new ArrayList<>();
                 for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
@@ -108,7 +107,8 @@ public class RoomAssignmentCPSATOptimizer {
                     }
                 }
                 if (!vars.isEmpty()) {
-                    model.addLessOrEqual(LinearExpr.sum(vars.toArray(new IntVar[0])), maxRooms);
+                    // 全部屋を完全に使い切る（= 制約）
+                    model.addEquality(LinearExpr.sum(vars.toArray(new IntVar[0])), totalRooms);
                 }
             }
 
@@ -122,6 +122,7 @@ public class RoomAssignmentCPSATOptimizer {
                     }
                 }
                 if (!ecoVars.isEmpty()) {
+                    // エコ室も完全に使い切る
                     model.addEquality(LinearExpr.sum(ecoVars.toArray(new IntVar[0])), floor.ecoRooms);
                 }
             }
@@ -242,11 +243,11 @@ public class RoomAssignmentCPSATOptimizer {
         }
 
         // 制約3: フロア制限（厳密制約 - 絶対条件）
-        LOGGER.info("制約3: フロア制限制約を追加中...");
+        LOGGER.info("制約3: フロア制限制約を追加中（厳守）...");
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
             String staffName = staffInfo.staff.name;
 
-            List<BoolVar> floorVars = new ArrayList<>();  // ✓ BoolVarに修正
+            List<BoolVar> floorVars = new ArrayList<>();
             for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
                 String yVarName = String.format("y_%s_%d", staffName, floor.floorNumber);
                 if (yVars.containsKey(yVarName)) {
@@ -257,16 +258,24 @@ public class RoomAssignmentCPSATOptimizer {
             if (!floorVars.isEmpty()) {
                 LinearExpr sumFloors = LinearExpr.sum(floorVars.toArray(new BoolVar[0]));
 
+                // デフォルトは2階まで
+                int maxFloorCount = 2;
+
+                // ポイント制約がある場合は上書き
                 AdaptiveRoomOptimizer.PointConstraint constraint =
                         config.pointConstraints.get(staffName);
                 if (constraint != null && constraint.constraintType.contains("階")) {
-                    // フロア制限は厳密に守る
-                    int maxFloorCount = 2;
                     String type = constraint.constraintType;
-                    if (type.contains("1階")) maxFloorCount = 1;
-                    else if (type.contains("3階")) maxFloorCount = 3; // ✓ ローカル変数として取得
-                    model.addLessOrEqual(sumFloors, maxFloorCount);
+                    if (type.contains("1階")) {
+                        maxFloorCount = 1;
+                    } else if (type.contains("3階")) {
+                        maxFloorCount = 3;
+                    }
                 }
+
+                // フロア制限を厳密に適用
+                model.addLessOrEqual(sumFloors, maxFloorCount);
+                LOGGER.info(String.format("  %s: 最大%d階まで", staffName, maxFloorCount));
             }
         }
 
@@ -298,9 +307,9 @@ public class RoomAssignmentCPSATOptimizer {
                     IntVar total = model.newIntVar(0, 1000, "total_" + staffName + "_" + floorNum);
                     model.addEquality(total, LinearExpr.sum(roomVars.toArray(new IntVar[0])));
 
-                    BoolVar yVar = yVars.get(yVarName);  // ✓ BoolVarとして取得
+                    BoolVar yVar = yVars.get(yVarName);
                     model.addGreaterThan(total, 0).onlyEnforceIf(yVar);
-                    model.addEquality(total, 0).onlyEnforceIf(yVar.not());  // ✓ .not()が使える
+                    model.addEquality(total, 0).onlyEnforceIf(yVar.not());
                 }
             }
         }
@@ -314,7 +323,7 @@ public class RoomAssignmentCPSATOptimizer {
         // 求解
         LOGGER.info("CP-SATソルバーで求解中...");
         CpSolver solver = new CpSolver();
-        solver.getParameters().setMaxTimeInSeconds(60.0);
+        solver.getParameters().setMaxTimeInSeconds(120.0);  // 時間を120秒に延長
 
         long startTime = System.currentTimeMillis();
         CpSolverStatus status = solver.solve(model);
@@ -328,6 +337,8 @@ public class RoomAssignmentCPSATOptimizer {
             return buildSolution(solver, xVars, eVars, staffList, buildingData, config);
         } else {
             LOGGER.severe("✗ 解が見つかりませんでした");
+            LOGGER.severe("原因: 全フロアを使い切りながらフロア制限(2階まで)を守る割り当てが存在しません");
+            LOGGER.severe("対策: (1)フロア制限を緩和する (2)スタッフ数を増やす (3)部屋数を調整する");
             throw new RuntimeException("CP-SATで実行可能な解が見つかりませんでした。制約条件を確認してください。");
         }
     }

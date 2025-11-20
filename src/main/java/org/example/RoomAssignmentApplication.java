@@ -1031,27 +1031,33 @@ public class RoomAssignmentApplication extends JFrame {
         Map<Integer, Integer> ecoData = new HashMap<>();
         Map<Integer, Boolean> buildingData = new HashMap<>();
 
+        // ★修正: 本館（エコ部屋を roomCounts から除外）
         for (FileProcessor.Room room : cleaningData.mainRooms) {
             int floor = room.floor;
             buildingData.put(floor, true);
 
-            floorData.computeIfAbsent(floor, k -> new HashMap<>())
-                    .merge(room.roomType, 1, Integer::sum);
-
             if (room.isEcoClean) {
+                // エコ部屋は ecoData のみにカウント
                 ecoData.merge(floor, 1, Integer::sum);
+            } else {
+                // 通常清掃の部屋のみ roomCounts に追加
+                floorData.computeIfAbsent(floor, k -> new HashMap<>())
+                        .merge(room.roomType, 1, Integer::sum);
             }
         }
 
+        // ★修正: 別館（エコ部屋を roomCounts から除外）
         for (FileProcessor.Room room : cleaningData.annexRooms) {
             int floor = room.floor;
             buildingData.put(floor, false);
 
-            floorData.computeIfAbsent(floor, k -> new HashMap<>())
-                    .merge(room.roomType, 1, Integer::sum);
-
             if (room.isEcoClean) {
+                // エコ部屋は ecoData のみにカウント
                 ecoData.merge(floor, 1, Integer::sum);
+            } else {
+                // 通常清掃の部屋のみ roomCounts に追加
+                floorData.computeIfAbsent(floor, k -> new HashMap<>())
+                        .merge(room.roomType, 1, Integer::sum);
             }
         }
 
@@ -1063,6 +1069,16 @@ public class RoomAssignmentApplication extends JFrame {
             boolean isMainBuilding = buildingData.getOrDefault(floor, true);
 
             floors.add(new AdaptiveRoomOptimizer.FloorInfo(floor, roomCounts, ecoRooms, isMainBuilding));
+        }
+
+        // ★追加: エコ部屋のみのフロアも追加
+        for (Map.Entry<Integer, Integer> entry : ecoData.entrySet()) {
+            int floor = entry.getKey();
+            if (!floorData.containsKey(floor)) {
+                boolean isMainBuilding = buildingData.getOrDefault(floor, true);
+                floors.add(new AdaptiveRoomOptimizer.FloorInfo(
+                        floor, new HashMap<>(), entry.getValue(), isMainBuilding));
+            }
         }
 
         floors.sort(Comparator.comparingInt(f -> f.floorNumber));

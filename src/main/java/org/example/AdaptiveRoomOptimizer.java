@@ -241,6 +241,14 @@ public class AdaptiveRoomOptimizer {
          * AdaptiveOptimizerクラスの既存のoptimizeメソッドを
          * このコードで置き換えてください。
          */
+        /**
+         * 最適化実行メソッド（CP-SAT専用版）
+         *
+         * ★変更点:
+         * 1. CP-SATソルバーのみを使用
+         * 2. 貪欲法フォールバックを削除
+         * 3. 解が見つからない場合はエラーをスロー
+         */
         public OptimizationResult optimize(LocalDate targetDate) {
             LOGGER.info("=== 適応型最適化を開始 ===");
 
@@ -253,7 +261,7 @@ public class AdaptiveRoomOptimizer {
             // 建物データの分離（本館・別館）
             BuildingData buildingData = separateBuildings(floors);
 
-            // ★ CP-SATソルバーを使用した最適化を試行
+            // CP-SATソルバーを使用した最適化
             List<StaffAssignment> assignments;
 
             try {
@@ -263,31 +271,29 @@ public class AdaptiveRoomOptimizer {
 
             } catch (NoClassDefFoundError e) {
                 // OR-Toolsライブラリが見つからない場合
-                LOGGER.warning("OR-Toolsライブラリが見つかりません。従来の方法を使用します。");
-                LOGGER.warning("CP-SATを使用するには、pom.xmlにortools-javaの依存関係を追加してください。");
-                LOGGER.info("従来の貪欲法による最適化を実行します");
-                assignments = optimizeWithRoomDistribution(buildingData);
+                String errorMsg = "OR-Toolsライブラリが見つかりません。\n" +
+                        "pom.xmlにortools-javaの依存関係を追加してください。";
+                LOGGER.severe(errorMsg);
+                throw new RuntimeException(errorMsg, e);
 
             } catch (UnsatisfiedLinkError e) {
                 // ネイティブライブラリのロードに失敗した場合
-                LOGGER.warning("OR-Toolsのネイティブライブラリのロードに失敗しました。従来の方法を使用します。");
-                LOGGER.warning("詳細: " + e.getMessage());
-                LOGGER.info("従来の貪欲法による最適化を実行します");
-                assignments = optimizeWithRoomDistribution(buildingData);
+                String errorMsg = "OR-Toolsのネイティブライブラリのロードに失敗しました。\n" +
+                        "詳細: " + e.getMessage();
+                LOGGER.severe(errorMsg);
+                throw new RuntimeException(errorMsg, e);
 
-            } catch (IllegalStateException e) {
-                // CP-SATで解が見つからなかった場合
-                LOGGER.severe("CP-SATで解が見つかりませんでした: " + e.getMessage());
-                LOGGER.info("制約条件が矛盾している可能性があります。従来の方法を試行します。");
-                LOGGER.info("従来の貪欲法による最適化を実行します");
-                assignments = optimizeWithRoomDistribution(buildingData);
+            } catch (RuntimeException e) {
+                // CP-SATで解が見つからなかった場合（そのまま再スロー）
+                LOGGER.severe("最適化に失敗しました: " + e.getMessage());
+                throw e;
 
             } catch (Exception e) {
                 // その他の予期しないエラー
-                LOGGER.severe("CP-SAT最適化中にエラーが発生しました: " + e.getMessage());
+                String errorMsg = "最適化中に予期しないエラーが発生しました: " + e.getMessage();
+                LOGGER.severe(errorMsg);
                 e.printStackTrace();
-                LOGGER.info("従来の貪欲法による最適化を実行します");
-                assignments = optimizeWithRoomDistribution(buildingData);
+                throw new RuntimeException(errorMsg, e);
             }
 
             // 最適化結果を返す

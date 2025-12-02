@@ -513,6 +513,8 @@ public class NormalRoomDistributionDialog extends JDialog {
         return 9;
     }
 
+    // ★★修正箇所: createButtonPanel() メソッドを以下に置き換え
+
     private JPanel createButtonPanel() {
         JPanel panel = new JPanel(new FlowLayout());
 
@@ -522,8 +524,12 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JButton okButton = new JButton("OK");
         okButton.addActionListener(e -> {
-            dialogResult = true;
-            dispose();
+            // ★修正: 検証を実行し、成功時のみダイアログを閉じる
+            if (validateBeforeOk()) {
+                dialogResult = true;
+                dispose();
+            }
+            // 検証失敗時はダイアログを閉じない
         });
         panel.add(okButton);
 
@@ -533,6 +539,352 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         return panel;
     }
+    /**
+     * ★新規: 完全検証メソッド（基本検証 + CP-SAT事前検証）
+     * @param isForOk OKボタンからの呼び出しかどうか
+     * @return 検証成功時true、失敗時false
+     */
+    private boolean performFullValidation(boolean isForOk) {
+        // ステップ1: 基本検証（部屋数一致チェック）
+        List<String> errors = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+
+        // 割り当て済み部屋数の集計
+        int assignedMainSingle = 0;
+        int assignedMainTwin = 0;
+        int assignedAnnexSingle = 0;
+        int assignedAnnexTwin = 0;
+
+        for (StaffDistribution dist : currentPattern.values()) {
+            assignedMainSingle += dist.mainSingleAssignedRooms;
+            assignedMainTwin += dist.mainTwinAssignedRooms;
+            assignedAnnexSingle += dist.annexSingleAssignedRooms;
+            assignedAnnexTwin += dist.annexTwinAssignedRooms;
+        }
+
+        // 部屋数の不一致チェック
+        if (assignedMainSingle != totalMainSingleRooms) {
+            errors.add(String.format("本館シングル等: 割当%d室 ≠ 実際%d室 (差分%+d)",
+                    assignedMainSingle, totalMainSingleRooms,
+                    assignedMainSingle - totalMainSingleRooms));
+        }
+        if (assignedMainTwin != totalMainTwinRooms) {
+            errors.add(String.format("本館ツイン: 割当%d室 ≠ 実際%d室 (差分%+d)",
+                    assignedMainTwin, totalMainTwinRooms,
+                    assignedMainTwin - totalMainTwinRooms));
+        }
+        if (assignedAnnexSingle != totalAnnexSingleRooms) {
+            errors.add(String.format("別館シングル等: 割当%d室 ≠ 実際%d室 (差分%+d)",
+                    assignedAnnexSingle, totalAnnexSingleRooms,
+                    assignedAnnexSingle - totalAnnexSingleRooms));
+        }
+        if (assignedAnnexTwin != totalAnnexTwinRooms) {
+            errors.add(String.format("別館ツイン: 割当%d室 ≠ 実際%d室 (差分%+d)",
+                    assignedAnnexTwin, totalAnnexTwinRooms,
+                    assignedAnnexTwin - totalAnnexTwinRooms));
+        }
+
+        // 大浴場スタッフの建物チェック
+        for (StaffDistribution dist : currentPattern.values()) {
+            if (dist.isBathCleaning) {
+                int mainRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+                int annexRooms = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
+                if (mainRooms > 0 && annexRooms > 0) {
+                    errors.add(String.format("%s: 大浴場清掃担当は本館・別館の両方に割り当てできません",
+                            dist.staffName));
+                }
+            }
+        }
+
+        // ステップ2: フロア制限の事前チェック
+        // 各スタッフが担当する建物の数をカウント
+        for (StaffDistribution dist : currentPattern.values()) {
+            int buildingCount = 0;
+            if (dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms > 0) buildingCount++;
+            if (dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms > 0) buildingCount++;
+
+            // 通常スタッフは最大2フロアまで
+            // 大浴場スタッフは1フロアのみ
+            int maxFloors = dist.isBathCleaning ? 1 : 2;
+
+            // 建物をまたぐ場合、フロア制限に引っかかる可能性が高い
+            if (buildingCount > 1 && !dist.isBathCleaning) {
+                // 本館と別館の両方に部屋がある場合は警告
+                // （ただし業者制限は除く）
+                if (!"業者制限".equals(dist.constraintType) && !"リライアンス用".equals(dist.constraintType)) {
+                    int totalRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms +
+                            dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
+                    if (totalRooms > 0) {
+                        warnings.add(String.format("%s: 本館・別館の両方に部屋があります（2フロア制限に注意）",
+                                dist.staffName));
+                    }
+                }
+            }
+        }
+
+        // エラーがある場合
+        if (!errors.isEmpty()) {
+            StringBuilder message = new StringBuilder();
+            message.append("以下のエラーがあります。修正してください：\n\n");
+            for (String error : errors) {
+                message.append("• ").append(error).append("\n");
+            }
+
+            JOptionPane.showMessageDialog(this,
+                    message.toString(),
+                    "検証エラー",
+                    JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+
+        // ステップ3: CP-SAT事前検証（OR-Toolsが利用可能な場合のみ）
+        String cpsatValidationResult = validateWithCPSAT();
+        if (cpsatValidationResult != null) {
+            // CP-SAT検証でエラーが発生
+            StringBuilder message = new StringBuilder();
+            message.append("CP-SAT最適化で解が見つからない可能性があります：\n\n");
+            message.append(cpsatValidationResult).append("\n\n");
+            message.append("設定を見直してください。\n");
+            message.append("・フロア制限（通常スタッフ:2階まで、大浴場:1階のみ）\n");
+            message.append("・建物指定（本館のみ/別館のみ）\n");
+            message.append("・部屋数のバランス");
+
+            JOptionPane.showMessageDialog(this,
+                    message.toString(),
+                    "最適化エラー",
+                    JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+
+        // 警告がある場合
+        if (!warnings.isEmpty() && isForOk) {
+            StringBuilder message = new StringBuilder();
+            message.append("以下の警告があります：\n\n");
+            for (String warning : warnings) {
+                message.append("• ").append(warning).append("\n");
+            }
+            message.append("\n続行しますか？");
+
+            int result = JOptionPane.showConfirmDialog(this,
+                    message.toString(),
+                    "警告",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE);
+
+            if (result != JOptionPane.YES_OPTION) {
+                return false;
+            }
+        }
+
+        // 検証成功
+        if (!isForOk) {
+            JOptionPane.showMessageDialog(this,
+                    "検証成功！\n設定に問題はありません。",
+                    "検証結果",
+                    JOptionPane.INFORMATION_MESSAGE);
+        }
+
+        return true;
+    }
+    /**
+     * ★新規: CP-SATによる事前検証
+     * @return エラーメッセージ（問題なければnull）
+     */
+    private String validateWithCPSAT() {
+        try {
+            // OR-Toolsが利用可能かチェック
+            Class.forName("com.google.ortools.sat.CpModel");
+
+            // 簡易検証: フロア制限と部屋数の整合性チェック
+            return performSimplifiedValidation();
+
+        } catch (ClassNotFoundException e) {
+            // OR-Toolsが利用できない場合はスキップ
+            System.out.println("OR-Toolsが見つかりません。CP-SAT事前検証をスキップします。");
+            return null;
+        } catch (Exception e) {
+            // その他のエラーはログに出力してスキップ
+            System.err.println("CP-SAT事前検証でエラー: " + e.getMessage());
+            return null;
+        }
+    }
+    /**
+     * ★新規: 簡易検証（CP-SATを使わない軽量チェック）
+     * @return エラーメッセージ（問題なければnull）
+     */
+    private String performSimplifiedValidation() {
+        // 本館担当スタッフと別館担当スタッフを分類
+        List<StaffDistribution> mainOnlyStaff = new ArrayList<>();
+        List<StaffDistribution> annexOnlyStaff = new ArrayList<>();
+        List<StaffDistribution> bothBuildingStaff = new ArrayList<>();
+
+        for (StaffDistribution dist : currentPattern.values()) {
+            int mainRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+            int annexRooms = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
+
+            if (mainRooms > 0 && annexRooms > 0) {
+                bothBuildingStaff.add(dist);
+            } else if (mainRooms > 0) {
+                mainOnlyStaff.add(dist);
+            } else if (annexRooms > 0) {
+                annexOnlyStaff.add(dist);
+            }
+        }
+
+        // 検証1: 本館・別館両方に部屋があるスタッフのフロア制限チェック
+        for (StaffDistribution dist : bothBuildingStaff) {
+            // 大浴場スタッフは1フロアのみなので、両方に部屋があるのはNG
+            if (dist.isBathCleaning) {
+                return String.format("%s: 大浴場清掃担当は1フロアのみ担当可能です", dist.staffName);
+            }
+
+            // 業者以外で両方に部屋がある場合、2フロア制限に注意
+            if (!"業者制限".equals(dist.constraintType) && !"リライアンス用".equals(dist.constraintType)) {
+                // この時点では警告のみ（エラーにはしない）
+                // 実際のフロア数は最適化時に決まるため
+            }
+        }
+
+        // 検証2: 本館のフロア数と担当スタッフ数の妥当性チェック
+        // 本館は通常10フロア（1-10階）程度を想定
+        int estimatedMainFloors = 10;
+        int mainStaffCount = mainOnlyStaff.size() + bothBuildingStaff.size();
+
+        // 各スタッフが最大2フロア担当可能として、必要なスタッフ数を概算
+        int minMainStaffNeeded = (int) Math.ceil((double) estimatedMainFloors / 2);
+
+        // 本館の部屋総数
+        int totalMainRoomsAssigned = 0;
+        for (StaffDistribution dist : currentPattern.values()) {
+            totalMainRoomsAssigned += dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+        }
+
+        // 本館に部屋があるのにスタッフが少なすぎる場合
+        if (totalMainRoomsAssigned > 0 && mainStaffCount == 0) {
+            return "本館に部屋が割り当てられていますが、本館担当スタッフがいません";
+        }
+
+        // 同様に別館もチェック
+        int totalAnnexRoomsAssigned = 0;
+        for (StaffDistribution dist : currentPattern.values()) {
+            totalAnnexRoomsAssigned += dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
+        }
+
+        int annexStaffCount = annexOnlyStaff.size() + bothBuildingStaff.size();
+        if (totalAnnexRoomsAssigned > 0 && annexStaffCount == 0) {
+            return "別館に部屋が割り当てられていますが、別館担当スタッフがいません";
+        }
+
+        // 問題なし
+        return null;
+    }
+
+    // ★既存のvalidateBeforeOk()メソッドは削除するか、performFullValidation()に統合済みなので不要
+    private boolean validateBeforeOk() {
+        List<String> errors = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+
+        // 割り当て済み部屋数の集計
+        int assignedMainSingle = 0;
+        int assignedMainTwin = 0;
+        int assignedAnnexSingle = 0;
+        int assignedAnnexTwin = 0;
+
+        for (StaffDistribution dist : currentPattern.values()) {
+            assignedMainSingle += dist.mainSingleAssignedRooms;
+            assignedMainTwin += dist.mainTwinAssignedRooms;
+            assignedAnnexSingle += dist.annexSingleAssignedRooms;
+            assignedAnnexTwin += dist.annexTwinAssignedRooms;
+        }
+
+        // 部屋数の不一致チェック
+        if (assignedMainSingle != totalMainSingleRooms) {
+            errors.add(String.format("本館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
+                    assignedMainSingle, totalMainSingleRooms,
+                    assignedMainSingle - totalMainSingleRooms));
+        }
+        if (assignedMainTwin != totalMainTwinRooms) {
+            errors.add(String.format("本館ツイン: 割当%d室 ≠ 実際%d室 (差分%d)",
+                    assignedMainTwin, totalMainTwinRooms,
+                    assignedMainTwin - totalMainTwinRooms));
+        }
+        if (assignedAnnexSingle != totalAnnexSingleRooms) {
+            errors.add(String.format("別館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
+                    assignedAnnexSingle, totalAnnexSingleRooms,
+                    assignedAnnexSingle - totalAnnexSingleRooms));
+        }
+        if (assignedAnnexTwin != totalAnnexTwinRooms) {
+            errors.add(String.format("別館ツイン: 割当%d室 ≠ 実際%d室 (差分%d)",
+                    assignedAnnexTwin, totalAnnexTwinRooms,
+                    assignedAnnexTwin - totalAnnexTwinRooms));
+        }
+
+        // フロア制限の事前チェック（警告として）
+        int bathStaffCount = 0;
+        int normalStaffCount = 0;
+        int vendorStaffCount = 0;
+
+        for (StaffDistribution dist : currentPattern.values()) {
+            if (dist.isBathCleaning) {
+                bathStaffCount++;
+            } else if ("業者制限".equals(dist.constraintType) || "リライアンス用".equals(dist.constraintType)) {
+                vendorStaffCount++;
+            } else {
+                normalStaffCount++;
+            }
+        }
+
+        // 大浴場スタッフは1フロアのみなので、本館と別館の両方に割り当てがある場合は警告
+        for (StaffDistribution dist : currentPattern.values()) {
+            if (dist.isBathCleaning) {
+                int mainRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+                int annexRooms = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
+                if (mainRooms > 0 && annexRooms > 0) {
+                    errors.add(String.format("%s: 大浴場清掃担当は本館・別館の両方に割り当てできません",
+                            dist.staffName));
+                }
+            }
+        }
+
+        // エラーがある場合はダイアログ表示
+        if (!errors.isEmpty()) {
+            StringBuilder message = new StringBuilder();
+            message.append("以下のエラーがあります。修正してください：\n\n");
+            for (String error : errors) {
+                message.append("• ").append(error).append("\n");
+            }
+
+            JOptionPane.showMessageDialog(this,
+                    message.toString(),
+                    "検証エラー",
+                    JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+
+        // 警告がある場合は確認ダイアログ
+        if (!warnings.isEmpty()) {
+            StringBuilder message = new StringBuilder();
+            message.append("以下の警告があります：\n\n");
+            for (String warning : warnings) {
+                message.append("• ").append(warning).append("\n");
+            }
+            message.append("\n続行しますか？");
+
+            int result = JOptionPane.showConfirmDialog(this,
+                    message.toString(),
+                    "警告",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE);
+
+            return result == JOptionPane.YES_OPTION;
+        }
+
+        return true;
+    }
+
+    /**
+     * ★修正: サマリーラベルの更新（エラー表示を強化）
+     */
 
     private void calculateDistributionPatterns() {
         oneDiffPattern = calculatePatternWithCorrectLogic(-1);

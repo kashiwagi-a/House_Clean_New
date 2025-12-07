@@ -54,6 +54,10 @@ public class RoomNumberAssigner {
     /**
      * 特定のスタッフに部屋を割り当て
      */
+    /**
+     * 特定のスタッフに部屋を割り当て
+     * ★修正: 通常部屋割り当て時にエコ部屋を除外
+     */
     private List<FileProcessor.Room> assignRoomsToStaff(
             AdaptiveRoomOptimizer.StaffAssignment assignment,
             List<FileProcessor.Room> availableRooms) {
@@ -75,12 +79,13 @@ public class RoomNumberAssigner {
                 continue;
             }
 
-            // 各部屋タイプについて割り当て
+            // ★修正: 各部屋タイプについて割り当て（エコ部屋を除外）
             for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
                 String roomType = entry.getKey();
                 int count = entry.getValue();
 
                 List<FileProcessor.Room> typeRooms = floorRooms.stream()
+                        .filter(room -> !room.isEco)  // ★追加: エコ部屋を除外
                         .filter(room -> mapRoomType(room.roomType).equals(roomType))
                         .limit(count)
                         .collect(Collectors.toList());
@@ -97,6 +102,7 @@ public class RoomNumberAssigner {
                         .collect(Collectors.toList());
 
                 assignedRooms.addAll(ecoRooms);
+                floorRooms.removeAll(ecoRooms);  // ★追加: エコ部屋も削除
             }
         }
 

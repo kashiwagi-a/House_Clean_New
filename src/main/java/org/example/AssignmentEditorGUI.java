@@ -607,12 +607,18 @@ public class AssignmentEditorGUI extends JFrame {
     private JPanel createNewButtonPanel() {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
 
+        // ★新規: 未割り当てボタン（スタッフ入れ替えの左隣）
+        JButton unassignedRoomsButton = new JButton("未割り当て");
+        unassignedRoomsButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        unassignedRoomsButton.setBackground(new java.awt.Color(255, 150, 150));
+        unassignedRoomsButton.addActionListener(e -> showUnassignedRoomsDialog());
+        buttonPanel.add(unassignedRoomsButton);
+
         // スタッフ入れ替えボタン
         JButton swapStaffButton = new JButton("スタッフ入れ替え");
         swapStaffButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
         swapStaffButton.addActionListener(e -> showStaffSwapDialog());
         buttonPanel.add(swapStaffButton);
-
         // 部屋詳細編集ボタン
         JButton editRoomDetailsButton = new JButton("部屋詳細編集");
         editRoomDetailsButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
@@ -1472,5 +1478,249 @@ public class AssignmentEditorGUI extends JFrame {
         if (result == JOptionPane.YES_OPTION) {
             dispose();
         }
+    }
+    /**
+     * ★新規: 未割り当て部屋を取得
+     */
+    private List<FileProcessor.Room> getUnassignedRooms() {
+        List<FileProcessor.Room> unassignedRooms = new ArrayList<>();
+
+        if (processingResult.cleaningDataObj == null) {
+            return unassignedRooms;
+        }
+
+        // 全清掃対象部屋を取得
+        List<FileProcessor.Room> allRooms = new ArrayList<>(processingResult.cleaningDataObj.roomsToClean);
+
+        // 割り当て済み部屋番号を収集
+        Set<String> assignedRoomNumbers = new HashSet<>();
+        for (StaffData staff : staffDataMap.values()) {
+            if (staff.detailedRoomsByFloor != null) {
+                for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                    for (FileProcessor.Room room : rooms) {
+                        assignedRoomNumbers.add(room.roomNumber);
+                    }
+                }
+            }
+        }
+
+        // 残し部屋も除外
+        assignedRoomNumbers.addAll(excludedRooms);
+
+        // 未割り当て部屋を特定
+        for (FileProcessor.Room room : allRooms) {
+            if (!assignedRoomNumbers.contains(room.roomNumber)) {
+                unassignedRooms.add(room);
+            }
+        }
+
+        // 部屋番号でソート
+        unassignedRooms.sort(Comparator.comparing(r -> r.roomNumber));
+
+        return unassignedRooms;
+    }
+
+    /**
+     * ★新規: 未割り当て部屋ダイアログを表示
+     */
+    private void showUnassignedRoomsDialog() {
+        List<FileProcessor.Room> unassignedRooms = getUnassignedRooms();
+
+        if (unassignedRooms.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "未割り当ての部屋はありません。\nすべての部屋が割り当て済みです。",
+                    "未割り当て部屋", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        JDialog dialog = new JDialog(this, "未割り当て部屋", true);
+        dialog.setLayout(new BorderLayout());
+
+        // 上部パネル
+        JPanel headerPanel = new JPanel(new BorderLayout());
+        headerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        JLabel headerLabel = new JLabel(String.format(
+                "未割り当て部屋: %d室 （チェックを入れてスタッフに割り当てできます）",
+                unassignedRooms.size()));
+        headerLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 14));
+        headerPanel.add(headerLabel, BorderLayout.CENTER);
+        dialog.add(headerPanel, BorderLayout.NORTH);
+
+        // 中央パネル
+        JPanel listPanel = new JPanel(new BorderLayout());
+        listPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+
+        String[] columnNames = {"選択", "部屋番号", "部屋タイプ", "建物", "階", "状態", "エコ清掃"};
+        DefaultTableModel unassignedTableModel = new DefaultTableModel(columnNames, 0) {
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                if (columnIndex == 0) return Boolean.class;
+                return String.class;
+            }
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 0;
+            }
+        };
+
+        for (FileProcessor.Room room : unassignedRooms) {
+            Object[] rowData = {
+                    false,
+                    room.roomNumber,
+                    room.roomType,
+                    room.building,
+                    room.floor + "階",
+                    room.getStatusDisplay(),
+                    room.isEcoClean ? "○" : ""
+            };
+            unassignedTableModel.addRow(rowData);
+        }
+
+        JTable unassignedTable = new JTable(unassignedTableModel);
+        unassignedTable.setRowHeight(25);
+        unassignedTable.getColumnModel().getColumn(0).setPreferredWidth(50);
+        unassignedTable.getColumnModel().getColumn(1).setPreferredWidth(80);
+        unassignedTable.getColumnModel().getColumn(2).setPreferredWidth(80);
+        unassignedTable.getColumnModel().getColumn(3).setPreferredWidth(60);
+        unassignedTable.getColumnModel().getColumn(4).setPreferredWidth(60);
+        unassignedTable.getColumnModel().getColumn(5).setPreferredWidth(100);
+        unassignedTable.getColumnModel().getColumn(6).setPreferredWidth(70);
+
+        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
+        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
+        for (int i = 1; i < columnNames.length; i++) {
+            unassignedTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
+        }
+
+        JScrollPane scrollPane = new JScrollPane(unassignedTable);
+        scrollPane.setPreferredSize(new Dimension(600, 300));
+        listPanel.add(scrollPane, BorderLayout.CENTER);
+
+        // 全選択/全解除
+        JPanel selectPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JButton selectAllButton = new JButton("全選択");
+        selectAllButton.addActionListener(e -> {
+            for (int i = 0; i < unassignedTableModel.getRowCount(); i++) {
+                unassignedTableModel.setValueAt(true, i, 0);
+            }
+        });
+        JButton deselectAllButton = new JButton("全解除");
+        deselectAllButton.addActionListener(e -> {
+            for (int i = 0; i < unassignedTableModel.getRowCount(); i++) {
+                unassignedTableModel.setValueAt(false, i, 0);
+            }
+        });
+        selectPanel.add(selectAllButton);
+        selectPanel.add(deselectAllButton);
+        listPanel.add(selectPanel, BorderLayout.SOUTH);
+
+        dialog.add(listPanel, BorderLayout.CENTER);
+
+        // 下部パネル
+        JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        bottomPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        JLabel staffLabel = new JLabel("割り当て先スタッフ:");
+        staffLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 12));
+        bottomPanel.add(staffLabel);
+
+        String[] staffNames = staffDataMap.keySet().toArray(new String[0]);
+        Arrays.sort(staffNames);
+        JComboBox<String> staffCombo = new JComboBox<>(staffNames);
+        staffCombo.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 12));
+        bottomPanel.add(staffCombo);
+
+        JButton assignButton = new JButton("選択部屋を割り当て");
+        assignButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        assignButton.setBackground(new java.awt.Color(100, 200, 100));
+        assignButton.addActionListener(e -> {
+            String selectedStaff = (String) staffCombo.getSelectedItem();
+            if (selectedStaff == null) {
+                JOptionPane.showMessageDialog(dialog,
+                        "スタッフを選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            List<FileProcessor.Room> selectedRooms = new ArrayList<>();
+            for (int i = 0; i < unassignedTableModel.getRowCount(); i++) {
+                Boolean selected = (Boolean) unassignedTableModel.getValueAt(i, 0);
+                if (selected != null && selected) {
+                    String roomNumber = (String) unassignedTableModel.getValueAt(i, 1);
+                    for (FileProcessor.Room room : unassignedRooms) {
+                        if (room.roomNumber.equals(roomNumber)) {
+                            selectedRooms.add(room);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (selectedRooms.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "割り当てる部屋を選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            int confirm = JOptionPane.showConfirmDialog(dialog,
+                    String.format("%d室を「%s」に割り当てますか？", selectedRooms.size(), selectedStaff),
+                    "確認", JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                assignRoomsToStaff(selectedStaff, selectedRooms);
+                refreshTable();
+                dialog.dispose();
+                statusLabel.setText(String.format("%d室を「%s」に割り当てました",
+                        selectedRooms.size(), selectedStaff));
+            }
+        });
+        bottomPanel.add(assignButton);
+
+        JButton closeButton = new JButton("閉じる");
+        closeButton.addActionListener(e -> dialog.dispose());
+        bottomPanel.add(closeButton);
+
+        dialog.add(bottomPanel, BorderLayout.SOUTH);
+
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+
+    /**
+     * ★新規: 部屋をスタッフに割り当て
+     */
+    private void assignRoomsToStaff(String staffName, List<FileProcessor.Room> rooms) {
+        StaffData staffData = staffDataMap.get(staffName);
+        if (staffData == null) {
+            JOptionPane.showMessageDialog(this,
+                    "スタッフデータが見つかりません: " + staffName,
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        for (FileProcessor.Room room : rooms) {
+            int floor = room.floor;
+
+            if (staffData.detailedRoomsByFloor == null) {
+                staffData.detailedRoomsByFloor = new HashMap<>();
+            }
+
+            List<FileProcessor.Room> floorRooms = staffData.detailedRoomsByFloor
+                    .computeIfAbsent(floor, k -> new ArrayList<>());
+
+            boolean alreadyExists = floorRooms.stream()
+                    .anyMatch(r -> r.roomNumber.equals(room.roomNumber));
+            if (!alreadyExists) {
+                floorRooms.add(room);
+            }
+
+            if (!staffData.floors.contains(floor)) {
+                staffData.floors.add(floor);
+                Collections.sort(staffData.floors);
+            }
+        }
+
+        staffData.calculateExtendedMetrics();
+        recalculateStaffPoints(staffData);
     }
 }

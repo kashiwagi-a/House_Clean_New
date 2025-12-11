@@ -124,22 +124,28 @@ public class AssignmentEditorGUI extends JFrame {
             this.twinRoomCount = 0;
             this.ecoRoomCount = 0;
 
-            // detailedRoomsByFloorから集計（ツイン数）
+            // ★修正: detailedRoomsByFloorから両方（ツイン数とエコ部屋数）を集計
             for (Map.Entry<Integer, List<FileProcessor.Room>> entry : detailedRoomsByFloor.entrySet()) {
                 for (FileProcessor.Room room : entry.getValue()) {
                     // ツイン判定（T, NT, ANT, ADT）
                     if (isTwinRoom(room.roomType)) {
                         this.twinRoomCount++;
                     }
+                    // ★追加: エコ部屋判定（isEco フラグで判定）
+                    if (room.isEco) {
+                        this.ecoRoomCount++;
+                    }
                 }
             }
 
-            // roomsByFloorからエコ部屋数を集計
-            for (AdaptiveRoomOptimizer.RoomAllocation allocation : roomsByFloor.values()) {
-                this.ecoRoomCount += allocation.ecoRooms;
+            // ★フォールバック: detailedRoomsByFloorが空の場合はroomsByFloorから取得
+            if (detailedRoomsByFloor.isEmpty() && !roomsByFloor.isEmpty()) {
+                for (AdaptiveRoomOptimizer.RoomAllocation allocation : roomsByFloor.values()) {
+                    this.ecoRoomCount += allocation.ecoRooms;
+                }
             }
 
-            // 換算値計算（NormalRoomDistributionDialog.StaffDistribution.calculateTwinConversion を使用）
+            // 換算値計算
             this.convertedTotalRooms = calculateConvertedTotal();
         }
 
@@ -156,20 +162,31 @@ public class AssignmentEditorGUI extends JFrame {
          * ツイン換算: 2部屋=3換算、3部屋=5換算、4部屋以降=5+(部屋数-3)
          */
         private double calculateConvertedTotal() {
-            int nonTwinRooms = this.totalRooms - this.twinRoomCount;
+            // 通常部屋数（全部屋 - ツイン - エコ）
+            int normalRooms = this.totalRooms - this.twinRoomCount - this.ecoRoomCount;
+
+            // ツイン換算
             double twinConverted = calculateTwinConversion(this.twinRoomCount);
-            return nonTwinRooms + twinConverted;
+
+            // エコ換算（0.2部屋）
+            double ecoConverted = this.ecoRoomCount * 0.2;
+
+            return normalRooms + twinConverted + ecoConverted;
         }
+
 
         /**
          * ★追加: ツイン換算計算（NormalRoomDistributionDialogと同じロジック）
          */
         private static double calculateTwinConversion(int twinRooms) {
-            if (twinRooms == 0) return 0.0;
-            if (twinRooms == 1) return 1.0;
-            if (twinRooms == 2) return 3.0;
-            if (twinRooms == 3) return 5.0;
-            return 5.0 + (twinRooms - 3);
+            // 換算テーブル（インデックス=部屋数、値=換算値）
+            int[] conversionTable = {0, 1, 3, 5, 6, 8, 10, 11, 12};
+
+            if (twinRooms >= 0 && twinRooms < conversionTable.length) {
+                return conversionTable[twinRooms];
+            }
+            // 9部屋以上の場合: 8部屋の12換算をベースに1部屋ごとに+1
+            return 12.0 + (twinRooms - 8);
         }
 
         String getWorkerTypeDisplay() {
@@ -218,6 +235,23 @@ public class AssignmentEditorGUI extends JFrame {
             return sb.toString();
         }
 
+        private String getRoomColor(FileProcessor.Room room) {
+            // エコ清掃部屋は青
+            if (room.isEco) {
+                return "#0000FF";  // 青
+            }
+
+            // ツインは黄色（ゴールド系で見やすい色）
+            // 本館ツイン: T, NT / 別館ツイン: ANT, ADT
+            String type = room.roomType;
+            if ("T".equals(type) || "NT".equals(type) || "ANT".equals(type) || "ADT".equals(type)) {
+                return "#CC9900";  // 黄色（ゴールド系）
+            }
+
+            // シングル等は黒（デフォルト）
+            return "#000000";
+        }
+
         String getRoomDisplay() {
             StringBuilder sb = new StringBuilder();
             List<Integer> sortedFloors = new ArrayList<>(floors);
@@ -243,6 +277,49 @@ public class AssignmentEditorGUI extends JFrame {
                 sb.append(")");
             }
 
+            return sb.toString();
+        }
+
+        String getColoredDetailedRoomDisplay() {
+            StringBuilder sb = new StringBuilder("<html>");
+            List<Integer> sortedFloors = new ArrayList<>(floors);
+            Collections.sort(sortedFloors);
+
+            for (int i = 0; i < sortedFloors.size(); i++) {
+                if (i > 0) sb.append(" ");
+
+                int floor = sortedFloors.get(i);
+                sb.append(getFloorDisplayName(floor)).append("(");
+
+                // 詳細部屋情報がある場合
+                if (detailedRoomsByFloor.containsKey(floor)) {
+                    List<FileProcessor.Room> rooms = detailedRoomsByFloor.get(floor);
+                    List<String> coloredRoomNumbers = rooms.stream()
+                            .sorted(Comparator.comparing(r -> r.roomNumber))
+                            .map(room -> {
+                                String color = getRoomColor(room);
+                                return "<font color='" + color + "'>" + room.roomNumber + "</font>";
+                            })
+                            .collect(Collectors.toList());
+                    sb.append(String.join(",", coloredRoomNumbers));
+                } else {
+                    // 基本情報のみ（色分けなし）
+                    AdaptiveRoomOptimizer.RoomAllocation allocation = roomsByFloor.get(floor);
+                    if (allocation != null) {
+                        List<String> roomInfo = new ArrayList<>();
+                        for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
+                            roomInfo.add(entry.getKey() + ":" + entry.getValue());
+                        }
+                        if (allocation.ecoRooms > 0) {
+                            roomInfo.add("エコ:" + allocation.ecoRooms);
+                        }
+                        sb.append(String.join(" ", roomInfo));
+                    }
+                }
+                sb.append(")");
+            }
+
+            sb.append("</html>");
             return sb.toString();
         }
 
@@ -896,21 +973,24 @@ public class AssignmentEditorGUI extends JFrame {
             List<FileProcessor.Room> rooms = entry.getValue();
 
             Map<String, Integer> roomCounts = new HashMap<>();
+            int ecoRoomCount = 0;
 
             for (FileProcessor.Room room : rooms) {
-                // ★修正: エコ清掃かどうかに関係なく、本来の部屋タイプでカウント
+                // 部屋タイプでカウント
                 roomCounts.merge(room.roomType, 1, Integer::sum);
+                // ★追加: エコ部屋をカウント
+                if (room.isEco) {
+                    ecoRoomCount++;
+                }
             }
 
-            // ★修正: エコ部屋数は0に設定（ポイント計算では本来の部屋タイプを使用）
-            staff.roomsByFloor.put(floor, new AdaptiveRoomOptimizer.RoomAllocation(roomCounts, 0));
+            // ★修正: エコ部屋数を正しく設定
+            staff.roomsByFloor.put(floor, new AdaptiveRoomOptimizer.RoomAllocation(roomCounts, ecoRoomCount));
         }
 
-        // フロア情報も更新
         staff.floors = new ArrayList<>(staff.roomsByFloor.keySet());
         Collections.sort(staff.floors);
     }
-
     /**
      * ★修正版: ポイント再計算メソッド
      */
@@ -918,33 +998,50 @@ public class AssignmentEditorGUI extends JFrame {
         // まずroomsByFloorを再構築
         rebuildRoomsByFloor(staff);
 
-        double totalPoints = 0;
         int totalRooms = 0;
 
-        for (AdaptiveRoomOptimizer.RoomAllocation allocation : staff.roomsByFloor.values()) {
-            for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
-                String type = entry.getKey();
-                int count = entry.getValue();
-                totalPoints += ROOM_POINTS.getOrDefault(type, 1.0) * count;
-                totalRooms += count;
+        // detailedRoomsByFloorから部屋数をカウント
+        if (!staff.detailedRoomsByFloor.isEmpty()) {
+            for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                totalRooms += rooms.size();
             }
-            // ★修正: エコ部屋は部屋数にのみ加算（ポイントは本来の部屋タイプで計算済み）
-            totalRooms += allocation.ecoRooms;
+        } else {
+            // フォールバック: roomsByFloorから計算
+            for (AdaptiveRoomOptimizer.RoomAllocation allocation : staff.roomsByFloor.values()) {
+                for (int count : allocation.roomCounts.values()) {
+                    totalRooms += count;
+                }
+            }
         }
 
-        // 大浴場清掃のポイント調整
+        // 大浴場清掃の調整（部屋数換算で調整）
+        double adjustment = 0;
         if (staff.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
-            totalPoints += staff.bathCleaningType.reduction;
+            adjustment = staff.bathCleaningType.reduction;
         }
 
-        staff.totalPoints = totalPoints;
         staff.totalRooms = totalRooms;
-        staff.adjustedScore = totalPoints;
+        staff.totalPoints = totalRooms + adjustment;  // 互換性のため
+        staff.adjustedScore = totalRooms + adjustment;
 
-        // ★追加: 拡張メトリクスを再計算
+        // 拡張メトリクスを再計算（ツイン数、エコ数、換算値）
         staff.calculateExtendedMetrics();
     }
 
+    private String mapRoomTypeForPoints(String roomType) {
+        switch (roomType.toUpperCase()) {
+            case "S": case "NS": case "ANS": case "ABF": case "AKS":
+                return "S";
+            case "D": case "ND": case "AND":
+                return "D";
+            case "T": case "NT": case "ANT": case "ADT":
+                return "T";
+            case "FD": case "NFD":
+                return "FD";
+            default:
+                return roomType;
+        }
+    }
     /**
      * 部屋詳細編集ダイアログ（部屋入れ替え機能付き）
      */
@@ -1227,7 +1324,6 @@ public class AssignmentEditorGUI extends JFrame {
     protected void loadAssignmentData() {
         tableModel.setRowCount(0);
 
-        // ★修正: ソート済みリストを使用
         List<StaffData> sortedStaff = getSortedStaffList();
 
         for (StaffData staff : sortedStaff) {
@@ -1235,10 +1331,10 @@ public class AssignmentEditorGUI extends JFrame {
                     staff.name,
                     staff.getWorkerTypeDisplay(),
                     staff.totalRooms,
-                    staff.twinRoomCount,              // ★追加: 内ツイン数
-                    staff.ecoRoomCount,               // ★追加: 内エコ部屋数
-                    String.format("%.1f", staff.convertedTotalRooms),  // ★追加: 総部屋数（換算値）
-                    staff.getDetailedRoomDisplay()
+                    staff.twinRoomCount,
+                    staff.ecoRoomCount,
+                    String.format("%.1f", staff.convertedTotalRooms),
+                    staff.getColoredDetailedRoomDisplay()  // ★ここが変更点
             };
             tableModel.addRow(row);
         }

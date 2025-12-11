@@ -79,13 +79,13 @@ public class RoomNumberAssigner {
                 continue;
             }
 
-            // ★修正: 各部屋タイプについて割り当て（エコ部屋を除外）
+            // 各部屋タイプについて割り当て（エコ部屋を除外）
             for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
                 String roomType = entry.getKey();
                 int count = entry.getValue();
 
                 List<FileProcessor.Room> typeRooms = floorRooms.stream()
-                        .filter(room -> !room.isEco)  // ★追加: エコ部屋を除外
+                        .filter(room -> !room.isEco)  // エコ部屋を除外
                         .filter(room -> mapRoomType(room.roomType).equals(roomType))
                         .limit(count)
                         .collect(Collectors.toList());
@@ -94,15 +94,16 @@ public class RoomNumberAssigner {
                 floorRooms.removeAll(typeRooms);
             }
 
-            // エコ部屋の割り当て
-            if (allocation.ecoRooms > 0) {
-                List<FileProcessor.Room> ecoRooms = floorRooms.stream()
-                        .filter(room -> room.isEco)
-                        .limit(allocation.ecoRooms)
-                        .collect(Collectors.toList());
+            // ★修正: エコ部屋の割り当て（allocation.ecoRooms に依存しない）
+            // このフロアの残りのエコ部屋をすべて割り当て
+            List<FileProcessor.Room> ecoRooms = floorRooms.stream()
+                    .filter(room -> room.isEco)
+                    .collect(Collectors.toList());
 
+            if (!ecoRooms.isEmpty()) {
                 assignedRooms.addAll(ecoRooms);
-                floorRooms.removeAll(ecoRooms);  // ★追加: エコ部屋も削除
+                floorRooms.removeAll(ecoRooms);
+                LOGGER.info(String.format("  %d階: エコ%d室を割り当て", floor, ecoRooms.size()));
             }
         }
 

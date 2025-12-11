@@ -150,7 +150,13 @@ public class NormalRoomDistributionDialog extends JDialog {
             if (twinRooms == 1) return 1.0;
             if (twinRooms == 2) return 3.0;
             if (twinRooms == 3) return 5.0;
-            return 5.0 + (twinRooms - 3);
+            if (twinRooms == 4) return 6.0;
+            if (twinRooms == 5) return 8.0;
+            if (twinRooms == 6) return 10.0;
+            if (twinRooms == 7) return 11.0;
+            if (twinRooms == 8) return 12.0;
+            // 9部屋以降は+1ずつ増加
+            return 12.0 + (twinRooms - 8);
         }
     }
 

@@ -124,24 +124,17 @@ public class AssignmentEditorGUI extends JFrame {
             this.twinRoomCount = 0;
             this.ecoRoomCount = 0;
 
-            // ★修正: detailedRoomsByFloorから両方（ツイン数とエコ部屋数）を集計
+            // ★修正: detailedRoomsByFloorから集計（ツイン数とエコ部屋数の両方）
             for (Map.Entry<Integer, List<FileProcessor.Room>> entry : detailedRoomsByFloor.entrySet()) {
                 for (FileProcessor.Room room : entry.getValue()) {
                     // ツイン判定（T, NT, ANT, ADT）
                     if (isTwinRoom(room.roomType)) {
                         this.twinRoomCount++;
                     }
-                    // ★追加: エコ部屋判定（isEco フラグで判定）
+                    // ★修正: エコ部屋判定もdetailedRoomsByFloorから
                     if (room.isEco) {
                         this.ecoRoomCount++;
                     }
-                }
-            }
-
-            // ★フォールバック: detailedRoomsByFloorが空の場合はroomsByFloorから取得
-            if (detailedRoomsByFloor.isEmpty() && !roomsByFloor.isEmpty()) {
-                for (AdaptiveRoomOptimizer.RoomAllocation allocation : roomsByFloor.values()) {
-                    this.ecoRoomCount += allocation.ecoRooms;
                 }
             }
 
@@ -162,15 +155,28 @@ public class AssignmentEditorGUI extends JFrame {
          * ツイン換算: 2部屋=3換算、3部屋=5換算、4部屋以降=5+(部屋数-3)
          */
         private double calculateConvertedTotal() {
-            // 通常部屋数（全部屋 - ツイン - エコ）
-            int normalRooms = this.totalRooms - this.twinRoomCount - this.ecoRoomCount;
+            // ★修正: detailedRoomsByFloorから実際の部屋数を取得
+            int actualTotalRooms = 0;
+            for (List<FileProcessor.Room> rooms : detailedRoomsByFloor.values()) {
+                actualTotalRooms += rooms.size();
+            }
 
-            // ツイン換算
+            // detailedRoomsByFloorが空の場合はtotalRoomsを使用（フォールバック）
+            if (actualTotalRooms == 0) {
+                actualTotalRooms = this.totalRooms;
+            }
+
+            // ★★★ 換算計算（エコ部屋は0.2換算）★★★
+            // 通常部屋数 = 全部屋数 - ツイン部屋数 - エコ部屋数
+            int normalRooms = actualTotalRooms - this.twinRoomCount - this.ecoRoomCount;
+
+            // ツイン換算値
             double twinConverted = calculateTwinConversion(this.twinRoomCount);
 
-            // エコ換算（0.2部屋）
+            // ★エコ部屋は0.2換算（1部屋 = 0.2）
             double ecoConverted = this.ecoRoomCount * 0.2;
 
+            // 合計 = 通常部屋×1.0 + ツイン換算値 + エコ部屋×0.2
             return normalRooms + twinConverted + ecoConverted;
         }
 
@@ -179,13 +185,16 @@ public class AssignmentEditorGUI extends JFrame {
          * ★追加: ツイン換算計算（NormalRoomDistributionDialogと同じロジック）
          */
         private static double calculateTwinConversion(int twinRooms) {
-            // 換算テーブル（インデックス=部屋数、値=換算値）
-            int[] conversionTable = {0, 1, 3, 5, 6, 8, 10, 11, 12};
-
-            if (twinRooms >= 0 && twinRooms < conversionTable.length) {
-                return conversionTable[twinRooms];
-            }
-            // 9部屋以上の場合: 8部屋の12換算をベースに1部屋ごとに+1
+            if (twinRooms == 0) return 0.0;
+            if (twinRooms == 1) return 1.0;
+            if (twinRooms == 2) return 3.0;
+            if (twinRooms == 3) return 5.0;
+            if (twinRooms == 4) return 6.0;
+            if (twinRooms == 5) return 8.0;
+            if (twinRooms == 6) return 10.0;
+            if (twinRooms == 7) return 11.0;
+            if (twinRooms == 8) return 12.0;
+            // 9部屋以降は+1ずつ増加
             return 12.0 + (twinRooms - 8);
         }
 

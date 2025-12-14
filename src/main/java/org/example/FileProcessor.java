@@ -156,7 +156,7 @@ public class FileProcessor {
         return processRoomFile(file, LocalDate.now());
     }
 
-    // ★修正版：部屋状態情報完全対応 + デバッグログ強化版 + 対象日付対応 + エコ清掃検証機能追加
+    // ★部屋状態情報完全対応 + デバッグログ強化版 + 対象日付対応 + エコ清掃検証機能追加
     private static CleaningData processCsvRoomFile(File file, LocalDate targetDate) {
         List<Room> mainRooms = new ArrayList<>();
         List<Room> annexRooms = new ArrayList<>();
@@ -486,7 +486,7 @@ public class FileProcessor {
                 roomTypeCode.equals("AKS")) {
             return "S";
         }
-        // ダブルルーム判定（新規追加）
+        // ダブルルーム判定
         else if (roomTypeCode.equals("D") ||
                 roomTypeCode.equals("ND") ||
                 roomTypeCode.equals("AND")) {
@@ -510,7 +510,7 @@ public class FileProcessor {
         }
     }
 
-    // ★修正: エコ清掃情報をデータベースから読み込む（対象日付指定版）
+    // ★エコ清掃情報をデータベースから読み込む（対象日付指定版）
     private static Map<String, List<String>> loadEcoRoomInfo(LocalDate targetDate) {
         Map<String, List<String>> ecoRoomsByDate = new HashMap<>();
 

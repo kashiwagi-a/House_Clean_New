@@ -232,7 +232,6 @@ public class AdaptiveRoomOptimizer {
         /**
          * 最適化実行メソッド（CP-SAT統合版）
          *
-         * ★変更点:
          * 1. CP-SATソルバーを優先的に使用
          * 2. CP-SATが失敗した場合は従来の方法にフォールバック
          * 3. エラーハンドリングを強化
@@ -242,9 +241,6 @@ public class AdaptiveRoomOptimizer {
          * このコードで置き換えてください。
          */
         /**
-         * 最適化実行メソッド（CP-SAT専用版）
-         *
-         * ★変更点:
          * 1. CP-SATソルバーのみを使用
          * 2. 貪欲法フォールバックを削除
          * 3. 解が見つからない場合はエラーをスロー
@@ -304,24 +300,8 @@ public class AdaptiveRoomOptimizer {
 // ============================================================
 // 補足: 修正が必要な箇所（BuildingDataのアクセス修飾子）
 // ============================================================
-
-/**
- * ★重要: BuildingDataクラスをpublicに変更してください
- *
- * 変更前:
- *     private static class BuildingData {
- *
- * 変更後:
- *     public static class BuildingData {
- *
- * 理由: RoomAssignmentCPSATOptimizerから
- *       BuildingDataにアクセスするため
- */
-
-
-
         /**
-         * ★改善版: roomDistribution を使用した最適化(部屋タイプ別に厳密に割り振り)
+         *roomDistribution を使用した最適化(部屋タイプ別に厳密に割り振り)
          */
         private List<StaffAssignment> optimizeWithRoomDistribution(BuildingData buildingData) {
             // フロア別の利用可能な部屋データを構築
@@ -381,7 +361,7 @@ public class AdaptiveRoomOptimizer {
         }
 
         /**
-         * ★改善版: 部屋タイプ別の通常清掃部屋割り振り
+         * 部屋タイプ別の通常清掃部屋割り振り
          */
         private boolean assignNormalRoomsByTypeStrict(BuildingData buildingData,
                                                       Map<String, FloorRoomPool> roomPools,

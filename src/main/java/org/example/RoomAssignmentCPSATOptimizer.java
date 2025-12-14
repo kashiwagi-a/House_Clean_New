@@ -35,8 +35,6 @@ public class RoomAssignmentCPSATOptimizer {
         public final Map<Integer, Integer> mainFloorTwins = new HashMap<>();
         public final Map<Integer, Integer> annexFloorTwins = new HashMap<>();
         public final Set<Integer> usedFloors = new HashSet<>();
-        public int totalMainTwins = 0;
-        public int totalAnnexTwins = 0;
     }
 
     /**
@@ -236,7 +234,7 @@ public class RoomAssignmentCPSATOptimizer {
      */
     /**
      * ステップ1: ツインの割り振り
-     * ★修正: buildingAssignmentではなく実際の割り当て数で建物制約を判定
+     * buildingAssignmentではなく実際の割り当て数で建物制約を判定
      */
     private static Map<String, FloorTwinAssignment> assignTwins(
             AdaptiveRoomOptimizer.BuildingData buildingData,
@@ -495,7 +493,7 @@ public class RoomAssignmentCPSATOptimizer {
      */
     /**
      * ステップ2: シングル等割り振り（ソフト制約版・部分解対応）
-     * ★修正: buildingAssignmentではなく実際の割り当て数で建物制約を判定
+     *  buildingAssignmentではなく実際の割り当て数で建物制約を判定
      */
     private static PartialSolutionResult assignSinglesWithSoftConstraints(
             AdaptiveRoomOptimizer.BuildingData buildingData,

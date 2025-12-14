@@ -3,7 +3,6 @@ package org.example;
 import javax.swing.*;
 import javax.swing.table.*;
 import java.awt.*;
-import java.awt.event.*;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -644,8 +643,7 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★追加: 部屋番号から階数を抽出するヘルパーメソッド
-     *
+     * 部屋番号から階数を抽出
      * @param roomNumber 部屋番号（例："201", "1201"）
      * @return 階数（例：2, 12）
      */
@@ -688,7 +686,7 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★修正: 修正版ボタンパネル作成（残し部屋設定ボタン追加）
+     * 修正版ボタンパネル作成（残し部屋設定ボタン追加）
      */
     private JPanel createNewButtonPanel() {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
@@ -761,7 +759,7 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★新規: 残し部屋設定の適用
+     * 残し部屋設定の適用
      */
     private void applyExcludedRooms(Set<String> newExcludedRooms) {
         this.excludedRooms = new HashSet<>(newExcludedRooms);
@@ -971,7 +969,7 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★修正版: detailedRoomsByFloorからroomsByFloorを再構築
+     * detailedRoomsByFloorからroomsByFloorを再構築
      * エコ清掃部屋も本来の部屋タイプでポイント計算する
      */
     private void rebuildRoomsByFloor(StaffData staff) {
@@ -1001,7 +999,7 @@ public class AssignmentEditorGUI extends JFrame {
         Collections.sort(staff.floors);
     }
     /**
-     * ★修正版: ポイント再計算メソッド
+     * ポイント再計算メソッド
      */
     private void recalculateStaffPoints(StaffData staff) {
         // まずroomsByFloorを再構築
@@ -1398,16 +1396,6 @@ public class AssignmentEditorGUI extends JFrame {
         return sortedStaff;
     }
 
-    /**
-     * ★追加: 制約タイプによる優先度
-     * 0: 大浴場清掃（既にソート済み）
-     * 1: 制限あり（故障者制限など）+ 本館のみ
-     * 2: 制限なし + 本館のみ
-     * 3: 制限なし + 両方
-     * 4: 制限あり + 別館のみ
-     * 5: 制限なし + 別館のみ
-     * 6: 業者制限
-     */
     private int getConstraintPriority(StaffData staff) {
         boolean isRestricted = !"制限なし".equals(staff.constraintType);
         boolean isVendor = "業者制限".equals(staff.constraintType);
@@ -1433,8 +1421,6 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★修正: 建物分類の優先度を取得（制約考慮版）
-     *
      * @param staff スタッフデータ
      * @return 1:本館専任, 2:館跨ぎ, 3:別館専任
      */
@@ -1508,70 +1494,193 @@ public class AssignmentEditorGUI extends JFrame {
 
     // ★変更不要：既存のまま
     private void exportToExcel() {
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setDialogTitle("Excelファイルとして保存");
-        fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Excel Files", "xlsx"));
+        // フォルダ選択ダイアログ
+        JFileChooser folderChooser = new JFileChooser();
+        folderChooser.setDialogTitle("出力先フォルダを選択");
+        folderChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        folderChooser.setAcceptAllFileFilterUsed(false);
 
-        if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+        if (folderChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             try {
-                String filePath = fileChooser.getSelectedFile().getAbsolutePath();
-                if (!filePath.endsWith(".xlsx")) {
-                    filePath += ".xlsx";
+                String folderPath = folderChooser.getSelectedFile().getAbsolutePath();
+
+                // ファイル名を生成（日付付き）
+                String dateStr = "";
+                if (processingResult.optimizationResult != null &&
+                        processingResult.optimizationResult.targetDate != null) {
+                    dateStr = processingResult.optimizationResult.targetDate
+                            .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+                } else {
+                    dateStr = java.time.LocalDate.now()
+                            .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
                 }
-                createExcelFile(filePath);
-                statusLabel.setText("Excelファイルが保存されました: " + filePath);
+
+                String fileName = "本日清掃_" + dateStr + ".xlsx";
+                String filePath = folderPath + java.io.File.separator + fileName;
+
+                // ファイルが既に存在する場合は確認
+                java.io.File outputFile = new java.io.File(filePath);
+                if (outputFile.exists()) {
+                    int result = JOptionPane.showConfirmDialog(this,
+                            "ファイルが既に存在します。上書きしますか？\n" + fileName,
+                            "確認", JOptionPane.YES_NO_OPTION);
+                    if (result != JOptionPane.YES_OPTION) {
+                        return;
+                    }
+                }
+
+                createCleaningExcelFile(filePath);
+                statusLabel.setText("Excelファイルを作成しました: " + filePath);
+
+                JOptionPane.showMessageDialog(this,
+                        "ファイルを作成しました:\n" + filePath,
+                        "出力完了", JOptionPane.INFORMATION_MESSAGE);
+
             } catch (IOException e) {
                 JOptionPane.showMessageDialog(this,
-                        "ファイル保存中にエラーが発生しました: " + e.getMessage(),
+                        "ファイル出力中にエラーが発生しました: " + e.getMessage(),
                         "エラー", JOptionPane.ERROR_MESSAGE);
             }
         }
     }
 
-    /**
-     * ★修正: Excel出力（新しい列に対応）
-     */
-    private void createExcelFile(String filePath) throws IOException {
+    private void createCleaningExcelFile(String filePath) throws IOException {
+        final String SHEET_NAME = "本日清掃";
+
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
-            Sheet sheet = workbook.createSheet("清掃割り当て");
+            Sheet sheet = workbook.createSheet(SHEET_NAME);
 
-            // ★修正: ヘッダー作成（新しい列名）
-            Row headerRow = sheet.createRow(0);
-            String[] headers = {"スタッフ名", "作業者タイプ", "部屋数", "内ツイン数", "内エコ部屋数", "総部屋数", "担当階・部屋詳細"};
-            for (int i = 0; i < headers.length; i++) {
-                Cell cell = headerRow.createCell(i);
-                cell.setCellValue(headers[i]);
-            }
-
-            // ★修正：ソート済みスタッフでデータ行作成
-            int rowNum = 1;
+            // ソート済みスタッフリストを取得
             List<StaffData> sortedStaff = getSortedStaffList();
 
+            int currentRow = 0;  // 現在の行（0始まり）
+
             for (StaffData staff : sortedStaff) {
-                Row row = sheet.createRow(rowNum++);
-                row.createCell(0).setCellValue(staff.name);
-                row.createCell(1).setCellValue(staff.getWorkerTypeDisplay());
-                row.createCell(2).setCellValue(staff.totalRooms);
-                row.createCell(3).setCellValue(staff.twinRoomCount);           // ★追加
-                row.createCell(4).setCellValue(staff.ecoRoomCount);            // ★追加
-                row.createCell(5).setCellValue(staff.convertedTotalRooms);     // ★追加
-                row.createCell(6).setCellValue(staff.getDetailedRoomDisplay());
+                // 担当者が変わる場合、次のセット境界に移動
+                if (!isAtSetBoundary(currentRow)) {
+                    currentRow = getNextSetBoundary(currentRow);
+                }
+
+                // 部屋を通常清掃とEcoに分類
+                List<FileProcessor.Room> normalRooms = new ArrayList<>();
+                List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+
+                if (staff.detailedRoomsByFloor != null) {
+                    for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                        for (FileProcessor.Room room : rooms) {
+                            if (room.isEcoClean) {
+                                ecoRooms.add(room);
+                            } else {
+                                normalRooms.add(room);
+                            }
+                        }
+                    }
+                }
+
+                // 部屋番号順にソート
+                normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
+                ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
+
+                // 通常清掃部屋を出力
+                for (FileProcessor.Room room : normalRooms) {
+                    Row row = sheet.createRow(currentRow);
+                    writeRoomData(row, staff.name, room);
+                    currentRow++;
+                }
+
+                // Eco部屋がある場合、1行空けて出力
+                if (!ecoRooms.isEmpty()) {
+                    if (!normalRooms.isEmpty()) {
+                        currentRow++;  // 空行
+                    }
+                    for (FileProcessor.Room room : ecoRooms) {
+                        Row row = sheet.createRow(currentRow);
+                        writeRoomData(row, staff.name, room);
+                        currentRow++;
+                    }
+                }
             }
 
-            // 列幅自動調整
-            for (int i = 0; i < headers.length; i++) {
-                sheet.autoSizeColumn(i);
-            }
+            // 列幅を調整
+            sheet.setColumnWidth(0, 12 * 256);  // 担当: 12文字幅
+            sheet.setColumnWidth(1, 8 * 256);   // 部屋: 8文字幅
+            sheet.setColumnWidth(2, 6 * 256);   // 連泊: 6文字幅
+            sheet.setColumnWidth(3, 6 * 256);   // エコ: 6文字幅
 
-            try (FileOutputStream fileOut = new FileOutputStream(filePath)) {
-                workbook.write(fileOut);
+            // ファイルに保存
+            try (FileOutputStream fos = new FileOutputStream(filePath)) {
+                workbook.write(fos);
             }
         }
     }
 
-    // ★変更不要：既存のまま
-    private String getRoomStatusDisplay(String status) {
-        return "3".equals(status) ? "連泊" : "チェックアウト";
+
+    /**
+     * シートの既存データをクリア
+     */
+    private void clearSheetData(Sheet sheet) {
+        int lastRow = sheet.getLastRowNum();
+        for (int i = lastRow; i >= 0; i--) {
+            Row row = sheet.getRow(i);
+            if (row != null) {
+                sheet.removeRow(row);
+            }
+        }
+    }
+
+    /**
+     * 行を取得（なければ作成）
+     */
+    private Row getOrCreateRow(Sheet sheet, int rowIndex) {
+        Row row = sheet.getRow(rowIndex);
+        if (row == null) {
+            row = sheet.createRow(rowIndex);
+        }
+        return row;
+    }
+
+
+    private void writeRoomData(Row row, String staffName, FileProcessor.Room room) {
+        // A列: 担当
+        Cell cellStaff = row.createCell(0);
+        cellStaff.setCellValue(staffName);
+
+        // B列: 部屋番号
+        Cell cellRoom = row.createCell(1);
+        cellRoom.setCellValue(room.roomNumber);
+
+        // C列: 連泊（状態が"3"なら連泊）
+        Cell cellStay = row.createCell(2);
+        if ("3".equals(room.roomStatus)) {
+            cellStay.setCellValue("連泊");
+        }
+
+        // D列: エコ
+        Cell cellEco = row.createCell(3);
+        if (room.isEcoClean) {
+            cellEco.setCellValue("エコ");
+        }
+    }
+
+    private boolean isAtSetBoundary(int row) {
+        // セット1-4の境界（0, 14, 28, 42）
+        if (row < 56) {
+            return row % 14 == 0;
+        }
+        // セット5以降の境界（56, 72, 88, ...）
+        return (row - 56) % 16 == 0;
+    }
+
+    private int getNextSetBoundary(int currentRow) {
+        // セット1-4の範囲内（行0-55）
+        if (currentRow < 56) {
+            int nextBoundary = ((currentRow / 14) + 1) * 14;
+            // 56を超えない
+            return Math.min(nextBoundary, 56);
+        }
+        // セット5以降
+        int rowInLargeSets = currentRow - 56;
+        return 56 + ((rowInLargeSets / 16) + 1) * 16;
     }
 
     // ★変更不要：既存のまま
@@ -1676,7 +1785,7 @@ public class AssignmentEditorGUI extends JFrame {
                     room.building,
                     room.floor + "階",
                     room.getStatusDisplay(),
-                    room.isEcoClean ? "○" : ""
+                    room.isEcoClean ? "エコ" : ""
             };
             unassignedTableModel.addRow(rowData);
         }

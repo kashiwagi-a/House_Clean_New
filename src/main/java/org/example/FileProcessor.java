@@ -89,6 +89,7 @@ public class FileProcessor {
          */
         public String getStatusDisplay() {
             switch (roomStatus) {
+                case "1": return "未チェッキン";
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
                 case "4": return "清掃要";  // ★追加: 状態4
@@ -255,7 +256,7 @@ public class FileProcessor {
                 if (!wasOriginallyBroken || selectedBrokenRooms.contains(roomNumber)) {
                     // 選択された故障部屋の場合は清掃状態に関係なく処理
                     if (!selectedBrokenRooms.contains(roomNumber) &&
-                            !roomStatus.equals("2") && !roomStatus.equals("3") && !roomStatus.equals("4")) {
+                           !roomStatus.equals("1") && !roomStatus.equals("2") && !roomStatus.equals("3") && !roomStatus.equals("4")) {
                         cleaningStatusSkipped++;
                         LOGGER.info("★除外: 清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
                         continue;
@@ -429,6 +430,7 @@ public class FileProcessor {
             statusCounts.forEach((status, count) -> {
                 String statusDisplay;
                 switch (status) {
+                    case "1": statusDisplay = "未チェックイン"; break;
                     case "2": statusDisplay = "チェックアウト"; break;
                     case "3": statusDisplay = "連泊"; break;
                     case "4": statusDisplay = "時間延長"; break;
@@ -444,7 +446,7 @@ public class FileProcessor {
             LOGGER.info("  - 別館: " + annexRooms.size() + "室");
             LOGGER.info("  - 故障部屋（清掃対象外）: " + brokenRooms.size() + "室");
             LOGGER.info("  - エコ清掃: " + ecoRooms.size() + "室");
-            LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）、4（清掃要）");
+            LOGGER.info("  - 清掃対象条件: 状態１（未チェックイン）、状態2（チェックアウト）、3（連泊）、4（清掃要）");
 
             return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings);
 
@@ -676,8 +678,8 @@ public class FileProcessor {
 
             LOGGER.info("対象日の列: " + targetColumn);
 
-            // スタッフは6行目から50行目まで
-            for (int i = 5; i <= 49; i++) {
+            // スタッフは6行目から53行目まで
+            for (int i = 5; i <= 52; i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
 

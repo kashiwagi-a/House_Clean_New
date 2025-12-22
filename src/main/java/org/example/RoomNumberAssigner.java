@@ -7,6 +7,8 @@ import java.util.logging.Logger;
 /**
  * 部屋番号自動割り当て機能
  * スタッフ割り当て結果に具体的な部屋番号を割り当てる
+ *
+ * ★修正: 大浴清掃スタッフは部屋番号を大きい順に割り当て
  */
 public class RoomNumberAssigner {
     private static final Logger LOGGER = Logger.getLogger(RoomNumberAssigner.class.getName());
@@ -34,7 +36,9 @@ public class RoomNumberAssigner {
 
         // 各スタッフの割り当てに対して具体的な部屋を割り当て
         for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
-            List<FileProcessor.Room> assignedRooms = assignRoomsToStaff(assignment, availableRooms);
+            // ★修正: 大浴清掃タイプを渡す
+            List<FileProcessor.Room> assignedRooms = assignRoomsToStaff(
+                    assignment, availableRooms, assignment.bathCleaningType);
             result.put(assignment.staff.name, assignedRooms);
 
             // 割り当てた部屋を利用可能プールから削除
@@ -53,16 +57,23 @@ public class RoomNumberAssigner {
 
     /**
      * 特定のスタッフに部屋を割り当て
-     */
-    /**
-     * 特定のスタッフに部屋を割り当て
-     * ★修正: 通常部屋割り当て時にエコ部屋を除外
+     * ★修正: 大浴清掃スタッフは部屋番号を大きい順に割り当て
      */
     private List<FileProcessor.Room> assignRoomsToStaff(
             AdaptiveRoomOptimizer.StaffAssignment assignment,
-            List<FileProcessor.Room> availableRooms) {
+            List<FileProcessor.Room> availableRooms,
+            AdaptiveRoomOptimizer.BathCleaningType bathCleaningType) {
 
         List<FileProcessor.Room> assignedRooms = new ArrayList<>();
+
+        // ★追加: 大浴清掃スタッフかどうかを判定
+        boolean isBathCleaningStaff = (bathCleaningType != null &&
+                bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE);
+
+        if (isBathCleaningStaff) {
+            LOGGER.info(String.format("%s は大浴清掃スタッフのため、部屋番号を大きい順に割り当てます",
+                    assignment.staff.name));
+        }
 
         // 階ごとに処理
         for (int floor : assignment.floors) {
@@ -79,38 +90,97 @@ public class RoomNumberAssigner {
                 continue;
             }
 
+            // ★修正: 大浴清掃スタッフは部屋番号を大きい順にソート
+            if (isBathCleaningStaff) {
+                // 部屋番号の数値部分で降順ソート（大きい順）
+                floorRooms.sort((r1, r2) -> {
+                    int num1 = extractRoomNumber(r1.roomNumber);
+                    int num2 = extractRoomNumber(r2.roomNumber);
+                    return Integer.compare(num2, num1); // 降順
+                });
+            } else {
+                // 通常スタッフは部屋番号の昇順
+                floorRooms.sort((r1, r2) -> {
+                    int num1 = extractRoomNumber(r1.roomNumber);
+                    int num2 = extractRoomNumber(r2.roomNumber);
+                    return Integer.compare(num1, num2); // 昇順
+                });
+            }
+
             // 各部屋タイプについて割り当て（エコ部屋を除外）
             for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
                 String roomType = entry.getKey();
                 int count = entry.getValue();
 
-                List<FileProcessor.Room> typeRooms = floorRooms.stream()
-                        .filter(room -> !room.isEco)  // エコ部屋を除外
-                        .filter(room -> mapRoomType(room.roomType).equals(roomType))
-                        .limit(count)
-                        .collect(Collectors.toList());
+                // ★修正: ソート済みのfloorRoomsから順番に取得
+                List<FileProcessor.Room> typeRooms = new ArrayList<>();
+                int assigned = 0;
+                for (FileProcessor.Room room : floorRooms) {
+                    if (assigned >= count) break;
+                    if (!room.isEco && mapRoomType(room.roomType).equals(roomType)) {
+                        typeRooms.add(room);
+                        assigned++;
+                    }
+                }
 
                 assignedRooms.addAll(typeRooms);
                 floorRooms.removeAll(typeRooms);
             }
 
-            // ★修正: エコ部屋の割り当て（allocation.ecoRooms に依存しない）
-            // このフロアの残りのエコ部屋をすべて割り当て
-            List<FileProcessor.Room> ecoRooms = floorRooms.stream()
-                    .filter(room -> room.isEco)
-                    .collect(Collectors.toList());
+            // エコ部屋の割り当て
+            List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+            for (FileProcessor.Room room : floorRooms) {
+                if (room.isEco) {
+                    ecoRooms.add(room);
+                }
+            }
 
             if (!ecoRooms.isEmpty()) {
+                // ★修正: エコ部屋も大浴清掃スタッフなら大きい順
+                if (isBathCleaningStaff) {
+                    ecoRooms.sort((r1, r2) -> {
+                        int num1 = extractRoomNumber(r1.roomNumber);
+                        int num2 = extractRoomNumber(r2.roomNumber);
+                        return Integer.compare(num2, num1); // 降順
+                    });
+                }
                 assignedRooms.addAll(ecoRooms);
                 floorRooms.removeAll(ecoRooms);
                 LOGGER.info(String.format("  %d階: エコ%d室を割り当て", floor, ecoRooms.size()));
             }
         }
 
-        // 部屋番号順にソート
-        assignedRooms.sort(Comparator.comparing(room -> room.roomNumber));
+        // ★修正: 最終ソート（大浴清掃スタッフは大きい順を維持）
+        if (isBathCleaningStaff) {
+            // 大浴清掃スタッフ: 階ごとに部屋番号の大きい順
+            assignedRooms.sort((r1, r2) -> {
+                // まず階で比較（昇順）
+                int floorCompare = Integer.compare(r1.floor, r2.floor);
+                if (floorCompare != 0) return floorCompare;
+                // 同じ階なら部屋番号で比較（降順＝大きい順）
+                int num1 = extractRoomNumber(r1.roomNumber);
+                int num2 = extractRoomNumber(r2.roomNumber);
+                return Integer.compare(num2, num1);
+            });
+        } else {
+            // 通常スタッフ: 部屋番号順（昇順）
+            assignedRooms.sort(Comparator.comparing(room -> room.roomNumber));
+        }
 
         return assignedRooms;
+    }
+
+    /**
+     * ★新規: 部屋番号から数値部分を抽出
+     */
+    private int extractRoomNumber(String roomNumber) {
+        try {
+            String numStr = roomNumber.replaceAll("[^0-9]", "");
+            if (numStr.isEmpty()) return 0;
+            return Integer.parseInt(numStr);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     /**

@@ -388,24 +388,20 @@ public class AssignmentEditorGUI extends JFrame {
                 RoomListItem item = (RoomListItem) value;
                 setText(item.toString());
 
-                switch (item.room.roomType) {
-                    case "S":
-                        setForeground(java.awt.Color.BLUE);
-                        break;
-                    case "D":
-                        setForeground(java.awt.Color.GREEN);
-                        break;
-                    case "T":
-                        setForeground(java.awt.Color.ORANGE);
-                        break;
-                    case "FD":
-                        setForeground(java.awt.Color.RED);
-                        break;
-                    case "エコ":
-                        setForeground(java.awt.Color.GRAY);
-                        break;
-                    default:
-                        setForeground(java.awt.Color.BLACK);
+                // ★「担当階・部屋詳細」列と同じ色設定に統一
+                // エコ清掃部屋は青
+                if (item.room.isEco) {
+                    setForeground(java.awt.Color.decode("#0000FF"));  // 青
+                }
+                // ツインは黄色（ゴールド系）
+                // 本館ツイン: T, NT / 別館ツイン: ANT, ADT
+                else if ("T".equals(item.room.roomType) || "NT".equals(item.room.roomType) ||
+                        "ANT".equals(item.room.roomType) || "ADT".equals(item.room.roomType)) {
+                    setForeground(java.awt.Color.decode("#CC9900"));  // 黄色（ゴールド系）
+                }
+                // シングル等は黒（デフォルト）
+                else {
+                    setForeground(java.awt.Color.BLACK);
                 }
             }
 

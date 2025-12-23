@@ -37,6 +37,9 @@ public class AssignmentEditorGUI extends JFrame {
     // ★追加: 残し部屋管理
     private Set<String> excludedRooms = new HashSet<>();
 
+    // ★追加: グループ境界の行インデックス（罫線表示用）
+    private Set<Integer> groupBoundaryRows = new HashSet<>();
+
     // ★修正: 部屋タイプ別のポイント（ECOは削除）
     private static final Map<String, Double> ROOM_POINTS = new HashMap<>() {{
         put("S", 1.0);
@@ -198,10 +201,21 @@ public class AssignmentEditorGUI extends JFrame {
         }
 
         String getWorkerTypeDisplay() {
+            StringBuilder sb = new StringBuilder();
+
+            // 大浴場清掃タイプを表示
             if (bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
-                return bathCleaningType.displayName;
+                sb.append(bathCleaningType.displayName);
+            } else {
+                sb.append("通常");
             }
-            return "通常";
+
+            // 制約タイプを追加表示（制限なし以外の場合）
+            if (constraintType != null && !"制限なし".equals(constraintType)) {
+                sb.append("/").append(constraintType);
+            }
+
+            return sb.toString();
         }
 
         String getDetailedRoomDisplay() {
@@ -400,6 +414,69 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
+     * ★追加: グループ境界に罫線を描画するカスタムレンダラー
+     */
+    class GroupSeparatorCellRenderer extends DefaultTableCellRenderer {
+        private final Set<Integer> boundaryRows;
+        private final boolean centerAlign;
+
+        public GroupSeparatorCellRenderer(Set<Integer> boundaryRows, boolean centerAlign) {
+            this.boundaryRows = boundaryRows;
+            this.centerAlign = centerAlign;
+            if (centerAlign) {
+                setHorizontalAlignment(JLabel.CENTER);
+            }
+        }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value,
+                                                       boolean isSelected, boolean hasFocus, int row, int column) {
+            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+
+            // グループ境界の行の場合、上部に太い罫線を描画
+            if (boundaryRows.contains(row)) {
+                setBorder(BorderFactory.createCompoundBorder(
+                        BorderFactory.createMatteBorder(2, 0, 0, 0, new java.awt.Color(100, 100, 100)),
+                        BorderFactory.createEmptyBorder(0, 2, 0, 2)
+                ));
+            } else {
+                setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
+            }
+
+            return c;
+        }
+    }
+
+    /**
+     * ★追加: 担当階・部屋詳細列用のHTML対応カスタムレンダラー
+     */
+    class GroupSeparatorHtmlCellRenderer extends DefaultTableCellRenderer {
+        private final Set<Integer> boundaryRows;
+
+        public GroupSeparatorHtmlCellRenderer(Set<Integer> boundaryRows) {
+            this.boundaryRows = boundaryRows;
+        }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value,
+                                                       boolean isSelected, boolean hasFocus, int row, int column) {
+            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+
+            // グループ境界の行の場合、上部に太い罫線を描画
+            if (boundaryRows.contains(row)) {
+                setBorder(BorderFactory.createCompoundBorder(
+                        BorderFactory.createMatteBorder(2, 0, 0, 0, new java.awt.Color(100, 100, 100)),
+                        BorderFactory.createEmptyBorder(0, 2, 0, 2)
+                ));
+            } else {
+                setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
+            }
+
+            return c;
+        }
+    }
+
+    /**
      * コンストラクタ
      * ★修正: bathCleaningAssignments → bathAssignments に変更
      * ★修正: staff.id → staff.name に変更（bathAssignmentsのキーはスタッフ名）
@@ -507,16 +584,23 @@ public class AssignmentEditorGUI extends JFrame {
         assignmentTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         assignmentTable.setRowHeight(25);
 
-        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
-        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
+        // ★修正: グループ境界罫線対応のカスタムレンダラーを使用
+        // 中央揃えの列用レンダラー
+        GroupSeparatorCellRenderer centerRenderer = new GroupSeparatorCellRenderer(groupBoundaryRows, true);
+        // 左揃えの列用レンダラー
+        GroupSeparatorCellRenderer leftRenderer = new GroupSeparatorCellRenderer(groupBoundaryRows, false);
+        // HTML対応の詳細列用レンダラー
+        GroupSeparatorHtmlCellRenderer htmlRenderer = new GroupSeparatorHtmlCellRenderer(groupBoundaryRows);
 
-        // ★修正: 列インデックス調整
+        // ★修正: 列インデックス調整（各列にカスタムレンダラーを適用）
+        assignmentTable.getColumnModel().getColumn(0).setCellRenderer(leftRenderer);   // スタッフ名
         for (int i = 1; i <= 5; i++) {
             assignmentTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
         }
+        assignmentTable.getColumnModel().getColumn(6).setCellRenderer(htmlRenderer);   // 担当階・部屋詳細
 
         assignmentTable.getColumnModel().getColumn(0).setPreferredWidth(100);
-        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(100);
+        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(130);  // 作業者タイプ列を拡張
         assignmentTable.getColumnModel().getColumn(2).setPreferredWidth(60);
         assignmentTable.getColumnModel().getColumn(3).setPreferredWidth(80);
         assignmentTable.getColumnModel().getColumn(4).setPreferredWidth(90);
@@ -1326,14 +1410,25 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★修正: テーブルデータ読み込み（新しい列に対応）
+     * ★修正: テーブルデータ読み込み（新しい列に対応、グループ境界計算追加）
      */
     protected void loadAssignmentData() {
         tableModel.setRowCount(0);
+        groupBoundaryRows.clear();
 
         List<StaffData> sortedStaff = getSortedStaffList();
 
+        int previousGroupKey = -1;
+        int rowIndex = 0;
+
         for (StaffData staff : sortedStaff) {
+            // グループ境界の検出（大浴場清掃と制約優先度の組み合わせで判定）
+            int currentGroupKey = calculateGroupKey(staff);
+            if (previousGroupKey != -1 && currentGroupKey != previousGroupKey) {
+                groupBoundaryRows.add(rowIndex);
+            }
+            previousGroupKey = currentGroupKey;
+
             Object[] row = {
                     staff.name,
                     staff.getWorkerTypeDisplay(),
@@ -1344,7 +1439,23 @@ public class AssignmentEditorGUI extends JFrame {
                     staff.getColoredDetailedRoomDisplay()  // ★ここが変更点
             };
             tableModel.addRow(row);
+            rowIndex++;
         }
+
+        // テーブルの再描画を要求
+        assignmentTable.repaint();
+    }
+
+    /**
+     * ★追加: グループキーを計算（大浴場清掃タイプと制約優先度の組み合わせ）
+     */
+    private int calculateGroupKey(StaffData staff) {
+        // 大浴場清掃は別グループ（0-9）
+        if (staff.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+            return 0; // 大浴場清掃グループ
+        }
+        // 通常スタッフは制約優先度でグループ分け（10以上）
+        return 10 + getConstraintPriority(staff);
     }
 
     /**

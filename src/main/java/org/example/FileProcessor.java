@@ -89,6 +89,7 @@ public class FileProcessor {
          */
         public String getStatusDisplay() {
             switch (roomStatus) {
+                case "1": return "未チェックイン";  // ★追加: 状態1
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
                 case "4": return "清掃要";  // ★追加: 状態4
@@ -251,11 +252,11 @@ public class FileProcessor {
                     }
                 }
 
-                // ★修正: 清掃状態による正しい除外処理（2, 3, 4のみ清掃対象）
+                // ★修正: 清掃状態による正しい除外処理（1, 2, 3, 4のみ清掃対象）
                 if (!wasOriginallyBroken || selectedBrokenRooms.contains(roomNumber)) {
                     // 選択された故障部屋の場合は清掃状態に関係なく処理
                     if (!selectedBrokenRooms.contains(roomNumber) &&
-                            !roomStatus.equals("2") && !roomStatus.equals("3") && !roomStatus.equals("4")) {
+                            !roomStatus.equals("1") && !roomStatus.equals("2") && !roomStatus.equals("3") && !roomStatus.equals("4")) {
                         cleaningStatusSkipped++;
                         LOGGER.info("★除外: 清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
                         continue;

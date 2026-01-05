@@ -637,21 +637,25 @@ public class FileProcessor {
     }
 
     // 部屋番号から別館かどうかを判定するメソッド
+    // ★修正: 先頭2桁の階数で判定（3桁/4桁両対応）
     private static boolean isAnnexRoom(String roomNumber) {
         // 数字以外を削除
         String numericPart = roomNumber.replaceAll("[^0-9]", "");
 
-        // 3桁の数字は本館
+        // 3桁の数字は本館（2階〜9階: 201〜917）
         if (numericPart.length() == 3) {
             return false;
         }
-        // 4桁の数字で10で始まる場合も本館
-        else if (numericPart.length() == 4 && numericPart.startsWith("10")) {
-            return false;
-        }
-        // それ以外の4桁の数字は別館
+        // 4桁の数字の場合、先頭2桁で判定
         else if (numericPart.length() == 4) {
-            return true;
+            try {
+                int floorPrefix = Integer.parseInt(numericPart.substring(0, 2));
+                // 22階以上は別館（2201〜2724）、それ以外（02〜10階: 0201〜1017）は本館
+                return floorPrefix >= 22;
+            } catch (NumberFormatException e) {
+                LOGGER.warning("階数の解析に失敗しました: " + roomNumber);
+                return false;
+            }
         }
 
         // 上記のいずれにも当てはまらない場合はデフォルトで本館とする

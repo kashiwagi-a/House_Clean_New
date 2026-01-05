@@ -803,50 +803,35 @@ public class NormalRoomDistributionDialog extends JDialog {
             assignedAnnexTwin += dist.annexTwinAssignedRooms;
         }
 
-        // 部屋数の不一致チェック
+        // 部屋数の不一致チェック（警告として処理、後の残し部屋設定で対応可能）
         if (assignedMainSingle != totalMainSingleRooms) {
-            errors.add(String.format("本館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
+            warnings.add(String.format("本館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
                     assignedMainSingle, totalMainSingleRooms,
                     assignedMainSingle - totalMainSingleRooms));
         }
         if (assignedMainTwin != totalMainTwinRooms) {
-            errors.add(String.format("本館ツイン: 割当%d室 ≠ 実際%d室 (差分%d)",
+            warnings.add(String.format("本館ツイン: 割当%d室 ≠ 実際%d室 (差分%d)",
                     assignedMainTwin, totalMainTwinRooms,
                     assignedMainTwin - totalMainTwinRooms));
         }
         if (assignedAnnexSingle != totalAnnexSingleRooms) {
-            errors.add(String.format("別館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
+            warnings.add(String.format("別館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
                     assignedAnnexSingle, totalAnnexSingleRooms,
                     assignedAnnexSingle - totalAnnexSingleRooms));
         }
         if (assignedAnnexTwin != totalAnnexTwinRooms) {
-            errors.add(String.format("別館ツイン: 割当%d室 ≠ 実際%d室 (差分%d)",
+            warnings.add(String.format("別館ツイン: 割当%d室 ≠ 実際%d室 (差分%d)",
                     assignedAnnexTwin, totalAnnexTwinRooms,
                     assignedAnnexTwin - totalAnnexTwinRooms));
         }
 
-        // フロア制限の事前チェック（警告として）
-        int bathStaffCount = 0;
-        int normalStaffCount = 0;
-        int vendorStaffCount = 0;
-
-        for (StaffDistribution dist : currentPattern.values()) {
-            if (dist.isBathCleaning) {
-                bathStaffCount++;
-            } else if ("業者制限".equals(dist.constraintType) || "リライアンス用".equals(dist.constraintType)) {
-                vendorStaffCount++;
-            } else {
-                normalStaffCount++;
-            }
-        }
-
-        // 大浴場スタッフは1フロアのみなので、本館と別館の両方に割り当てがある場合は警告
+        // 大浴場スタッフが本館と別館の両方に割り当てがある場合は警告
         for (StaffDistribution dist : currentPattern.values()) {
             if (dist.isBathCleaning) {
                 int mainRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
                 int annexRooms = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
                 if (mainRooms > 0 && annexRooms > 0) {
-                    errors.add(String.format("%s: 大浴場清掃担当は本館・別館の両方に割り当てできません",
+                    warnings.add(String.format("%s: 大浴場清掃担当が本館・別館の両方に割り当てられています",
                             dist.staffName));
                 }
             }

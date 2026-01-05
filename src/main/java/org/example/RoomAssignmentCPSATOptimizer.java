@@ -24,9 +24,9 @@ public class RoomAssignmentCPSATOptimizer {
     private static final int MAX_SINGLE_SOLUTIONS = 5;
     private static final int MAX_TOTAL_CANDIDATES = 50;
 
-    // ★追加: フロアあたりの最大スタッフ数（初期値と緩和値）
+    // ★追加: フロアあたりの最大スタッフ数（初期値と上限）
     private static final int INITIAL_MAX_STAFF_PER_FLOOR = 2;
-    private static final int FALLBACK_MAX_STAFF_PER_FLOOR = 3;
+    private static final int MAX_STAFF_PER_FLOOR_LIMIT = 10;  // これ以上は緩和しない
 
     static {
         com.google.ortools.Loader.loadNativeLibraries();
@@ -697,26 +697,28 @@ public class RoomAssignmentCPSATOptimizer {
 
         // ★追加: まず2人制限で試行
         LOGGER.info("=== フロアあたり最大2人制限でCPSAT最適化を開始 ===");
-        List<AdaptiveRoomOptimizer.StaffAssignment> result =
-                optimizeWithStaffPerFloorLimit(buildingData, config, existingAssignments, INITIAL_MAX_STAFF_PER_FLOOR);
+        // ★修正: フロアあたりのスタッフ数制限を段階的に緩和（2人→3人→4人...）
+        for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
+             maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT;
+             maxStaffPerFloor++) {
 
-        if (result != null) {
-            LOGGER.info("フロアあたり最大2人制限で解が見つかりました。");
-            return result;
+            List<AdaptiveRoomOptimizer.StaffAssignment> result =
+                    optimizeWithStaffPerFloorLimit(buildingData, config, existingAssignments, maxStaffPerFloor);
+
+            if (result != null) {
+                LOGGER.info(String.format("フロアあたり最大%d人制限で解が見つかりました。", maxStaffPerFloor));
+                return result;
+            }
+
+            if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
+                LOGGER.warning(String.format("=== フロアあたり%d人制限では解が見つかりませんでした。%d人制限で再試行します ===",
+                        maxStaffPerFloor, maxStaffPerFloor + 1));
+            }
         }
 
-        // ★追加: 2人制限で解が見つからない場合、3人制限で再試行
-        LOGGER.warning("=== フロアあたり2人制限では解が見つかりませんでした。3人制限で再試行します ===");
-        result = optimizeWithStaffPerFloorLimit(buildingData, config, existingAssignments, FALLBACK_MAX_STAFF_PER_FLOOR);
-
-        if (result != null) {
-            LOGGER.info("フロアあたり最大3人制限で解が見つかりました。");
-            return result;
-        }
-
-        // 3人制限でも解が見つからない場合
-        LOGGER.severe("フロアあたり3人制限でも解が見つかりませんでした。");
-        throw new RuntimeException("全てのツインパターンを試行しましたが、解が見つかりませんでした。\n" +
+        // 全ての制限を試しても解が見つからない場合
+        LOGGER.severe(String.format("フロアあたり%d人制限でも解が見つかりませんでした。", MAX_STAFF_PER_FLOOR_LIMIT));
+        throw new RuntimeException("全てのフロア制限パターンを試行しましたが、解が見つかりませんでした。\n" +
                 "通常清掃部屋割り振り設定を見直してください。");
     }
 
@@ -805,13 +807,12 @@ public class RoomAssignmentCPSATOptimizer {
             return best.assignments;
         }
 
-        // 完全解がない場合は部分解を使用（ただし2人制限の場合はnullを返して再試行）
-        if (maxStaffPerFloor == INITIAL_MAX_STAFF_PER_FLOOR) {
-            // 2人制限で解が見つからない場合はnullを返す
+        // 完全解がない場合：最大制限に達していなければnullを返して次の制限で再試行
+        if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
             return null;
         }
 
-        // 3人制限で部分解しかない場合はそれを使用
+        // 最大制限でも完全解がない場合は部分解を使用
         if (bestPartialResult != null) {
             LOGGER.severe("=== 完全な解が見つかりませんでした ===");
             LOGGER.severe("最良の部分解（パターン " + bestPartialPatternIndex + "）を使用します");
@@ -1179,41 +1180,39 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // 目標を満たせたかチェック
-        boolean success = true;
+        // スタッフの目標を満たせたかチェック
+        boolean staffTargetMet = true;
         for (String staffName : remainingMainTarget.keySet()) {
             if (remainingMainTarget.get(staffName) > 0) {
                 LOGGER.fine(String.format("ツイン割り振り: %s の本館ツインが%d室不足",
                         staffName, remainingMainTarget.get(staffName)));
-                success = false;
+                staffTargetMet = false;
             }
         }
         for (String staffName : remainingAnnexTarget.keySet()) {
             if (remainingAnnexTarget.get(staffName) > 0) {
                 LOGGER.fine(String.format("ツイン割り振り: %s の別館ツインが%d室不足",
                         staffName, remainingAnnexTarget.get(staffName)));
-                success = false;
+                staffTargetMet = false;
             }
         }
 
-        // 全てのツインが割り振れたかチェック
+        // フロアに残りツインがあるかチェック（警告のみ、未割り当て許容）
         for (Integer floorNum : remainingMainTwins.keySet()) {
             if (remainingMainTwins.get(floorNum) > 0) {
-                LOGGER.fine(String.format("ツイン割り振り: 本館%d階に%d室のツインが残っています",
+                LOGGER.info(String.format("ツイン割り振り: 本館%d階に%d室のツインが未割り当て（残し部屋）",
                         floorNum, remainingMainTwins.get(floorNum)));
-                success = false;
             }
         }
         for (Integer floorNum : remainingAnnexTwins.keySet()) {
             if (remainingAnnexTwins.get(floorNum) > 0) {
-                LOGGER.fine(String.format("ツイン割り振り: 別館%d階に%d室のツインが残っています",
+                LOGGER.info(String.format("ツイン割り振り: 別館%d階に%d室のツインが未割り当て（残し部屋）",
                         floorNum, remainingAnnexTwins.get(floorNum)));
-                success = false;
             }
         }
 
-        if (!success) {
-            return null;  // 完全に割り振れなかった場合はnull
+        if (!staffTargetMet) {
+            return null;  // スタッフの目標部屋数を満たせない場合は失敗
         }
 
         LOGGER.fine("ツイン割り振り（ラウンドロビン）: 成功");
@@ -1272,7 +1271,8 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // ハード制約: 各フロアの部屋を使い切る
+        // 制約: 各フロアの部屋数を超えない（未割り当て許容）
+        // ※通常清掃部屋割り設定の合計が実際の部屋数より少ない場合、余りは未割り当てになる
         for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
             for (Map.Entry<String, Integer> entry : floor.roomCounts.entrySet()) {
                 String roomType = entry.getKey();
@@ -1285,7 +1285,7 @@ public class RoomAssignmentCPSATOptimizer {
                     if (xVars.containsKey(vn)) vars.add(xVars.get(vn));
                 }
                 if (!vars.isEmpty()) {
-                    model.addEquality(LinearExpr.sum(vars.toArray(new IntVar[0])), entry.getValue());
+                    model.addLessOrEqual(LinearExpr.sum(vars.toArray(new IntVar[0])), entry.getValue());
                 }
             }
         }

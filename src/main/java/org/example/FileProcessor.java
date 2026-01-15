@@ -682,7 +682,7 @@ public class FileProcessor {
             LOGGER.info("対象日の列: " + targetColumn);
 
             // スタッフは6行目から52行目まで
-            for (int i = 5; i <= 51; i++) {
+            for (int i = 5; i <= 999; i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
 

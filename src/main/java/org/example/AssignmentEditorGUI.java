@@ -121,6 +121,7 @@ public class AssignmentEditorGUI extends JFrame {
 
         /**
          * ★追加: 拡張メトリクスを計算（ツイン数、エコ部屋数、換算値）
+         * ★修正: ツイン数はエコ部屋を含めない
          */
         private void calculateExtendedMetrics() {
             this.twinRoomCount = 0;
@@ -129,13 +130,12 @@ public class AssignmentEditorGUI extends JFrame {
             // ★修正: detailedRoomsByFloorから集計（ツイン数とエコ部屋数の両方）
             for (Map.Entry<Integer, List<FileProcessor.Room>> entry : detailedRoomsByFloor.entrySet()) {
                 for (FileProcessor.Room room : entry.getValue()) {
-                    // ツイン判定（T, NT, ANT, ADT）
-                    if (isTwinRoom(room.roomType)) {
-                        this.twinRoomCount++;
-                    }
-                    // ★修正: エコ部屋判定もdetailedRoomsByFloorから
                     if (room.isEco) {
+                        // エコ部屋はエコ数にのみカウント
                         this.ecoRoomCount++;
+                    } else if (isTwinRoom(room.roomType)) {
+                        // エコではないツインのみをツイン数にカウント
+                        this.twinRoomCount++;
                     }
                 }
             }
@@ -311,19 +311,38 @@ public class AssignmentEditorGUI extends JFrame {
                 if (i > 0) sb.append(" ");
 
                 int floor = sortedFloors.get(i);
-                sb.append(getFloorDisplayName(floor)).append("(");
+                sb.append(getFloorDisplayNameShort(floor)).append("（");
 
-                // 詳細部屋情報がある場合
+                // 詳細部屋情報がある場合は集計形式で表示
                 if (detailedRoomsByFloor.containsKey(floor)) {
                     List<FileProcessor.Room> rooms = detailedRoomsByFloor.get(floor);
-                    List<String> coloredRoomNumbers = rooms.stream()
-                            .sorted(Comparator.comparing(r -> r.roomNumber))
-                            .map(room -> {
-                                String color = getRoomColor(room);
-                                return "<font color='" + color + "'>" + room.roomNumber + "</font>";
-                            })
-                            .collect(Collectors.toList());
-                    sb.append(String.join(",", coloredRoomNumbers));
+
+                    // 集計: シングル（エコではない非ツイン）、ツイン（エコではないツイン）、エコ
+                    int singleCount = 0;
+                    int twinCount = 0;
+                    int ecoCount = 0;
+
+                    for (FileProcessor.Room room : rooms) {
+                        if (room.isEco) {
+                            ecoCount++;
+                        } else if (isTwinRoom(room.roomType)) {
+                            twinCount++;
+                        } else {
+                            singleCount++;
+                        }
+                    }
+
+                    List<String> summaryParts = new ArrayList<>();
+                    if (singleCount > 0) {
+                        summaryParts.add("シングル" + singleCount + "部屋");
+                    }
+                    if (twinCount > 0) {
+                        summaryParts.add("<font color='#CC9900'>ツイン" + twinCount + "部屋</font>");
+                    }
+                    if (ecoCount > 0) {
+                        summaryParts.add("<font color='#0000FF'>エコ" + ecoCount + "部屋</font>");
+                    }
+                    sb.append(String.join("、", summaryParts));
                 } else {
                     // 基本情報のみ（色分けなし）
                     AdaptiveRoomOptimizer.RoomAllocation allocation = roomsByFloor.get(floor);
@@ -338,11 +357,23 @@ public class AssignmentEditorGUI extends JFrame {
                         sb.append(String.join(" ", roomInfo));
                     }
                 }
-                sb.append(")");
+                sb.append("）");
             }
 
             sb.append("</html>");
             return sb.toString();
+        }
+
+        /**
+         * 階数を短い形式で表示（2F、別館3F など）
+         */
+        private String getFloorDisplayNameShort(int floor) {
+            if (floor <= 20) {
+                return floor + "F";
+            } else {
+                int annexFloor = floor - 20;
+                return "別館" + annexFloor + "F";
+            }
         }
 
         private String getFloorDisplayName(int floor) {
@@ -371,7 +402,9 @@ public class AssignmentEditorGUI extends JFrame {
         public String toString() {
             String floorName = floor <= 20 ?
                     floor + "階" : "別館" + (floor - 20) + "階";
-            return room.roomNumber + " (" + room.roomType + ") - " + floorName;
+            // エコ部屋の場合は「エコ」を表示
+            String typeDisplay = room.isEco ? room.roomType + "/エコ" : room.roomType;
+            return room.roomNumber + " (" + typeDisplay + ") - " + floorName;
         }
     }
 
@@ -388,20 +421,24 @@ public class AssignmentEditorGUI extends JFrame {
                 RoomListItem item = (RoomListItem) value;
                 setText(item.toString());
 
-                // ★「担当階・部屋詳細」列と同じ色設定に統一
-                // エコ清掃部屋は青
+                // エコ部屋は最優先で青色
                 if (item.room.isEco) {
-                    setForeground(java.awt.Color.decode("#0000FF"));  // 青
-                }
-                // ツインは黄色（ゴールド系）
-                // 本館ツイン: T, NT / 別館ツイン: ANT, ADT
-                else if ("T".equals(item.room.roomType) || "NT".equals(item.room.roomType) ||
-                        "ANT".equals(item.room.roomType) || "ADT".equals(item.room.roomType)) {
-                    setForeground(java.awt.Color.decode("#CC9900"));  // 黄色（ゴールド系）
-                }
-                // シングル等は黒（デフォルト）
-                else {
-                    setForeground(java.awt.Color.BLACK);
+                    setForeground(java.awt.Color.BLUE);
+                } else {
+                    // 通常部屋は部屋タイプで色分け
+                    switch (item.room.roomType) {
+                        case "T":
+                        case "NT":
+                        case "ANT":
+                        case "ADT":
+                            setForeground(new java.awt.Color(204, 153, 0)); // ゴールド（ツイン）
+                            break;
+                        case "FD":
+                            setForeground(java.awt.Color.RED);
+                            break;
+                        default:
+                            setForeground(java.awt.Color.BLACK); // シングル等
+                    }
                 }
             }
 
@@ -1087,10 +1124,14 @@ public class AssignmentEditorGUI extends JFrame {
 
         int totalRooms = 0;
 
-        // detailedRoomsByFloorから部屋数をカウント
+        // detailedRoomsByFloorから部屋数をカウント（エコ部屋は除外）
         if (!staff.detailedRoomsByFloor.isEmpty()) {
             for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
-                totalRooms += rooms.size();
+                for (FileProcessor.Room room : rooms) {
+                    if (!room.isEco) {
+                        totalRooms++;
+                    }
+                }
             }
         } else {
             // フォールバック: roomsByFloorから計算
@@ -1098,6 +1139,7 @@ public class AssignmentEditorGUI extends JFrame {
                 for (int count : allocation.roomCounts.values()) {
                     totalRooms += count;
                 }
+                // エコ部屋は含めない
             }
         }
 

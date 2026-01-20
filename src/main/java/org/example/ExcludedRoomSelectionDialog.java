@@ -155,9 +155,9 @@ public class ExcludedRoomSelectionDialog extends JDialog {
         infoPanel.setBorder(BorderFactory.createTitledBorder("残し部屋設定"));
 
         JLabel infoLabel = new JLabel("<html><div style='padding:10px;'>" +
-                "清掃予定の部屋から残し部屋（清掃しない部屋）を選択してください。<br>" +
+                "チェックアウト部屋から残し部屋（清掃しない部屋）を選択してください。<br>" +
                 "チェックを入れた部屋は清掃対象から除外されます。<br>" +
-                "現在の清掃予定部屋数: " + assignedRoomData.size() + "室" +
+                "※連泊部屋は残し部屋設定の対象外です。" +
                 "</div></html>");
         infoPanel.add(infoLabel, BorderLayout.CENTER);
         add(infoPanel, BorderLayout.NORTH);
@@ -204,6 +204,7 @@ public class ExcludedRoomSelectionDialog extends JDialog {
 
     /**
      * 部屋選択テーブルの作成
+     * ★修正: チェックアウトの部屋のみを表示し、本館→別館・階数順でソート
      */
     private void createRoomSelectionTable() {
         String[] columnNames = {"残し部屋", "部屋番号", "部屋タイプ", "階", "建物", "状態", "担当スタッフ"};
@@ -220,8 +221,17 @@ public class ExcludedRoomSelectionDialog extends JDialog {
             }
         };
 
-        // ★修正: 本館→別館の順でソート
-        List<AssignedRoomInfo> sortedRooms = new ArrayList<>(assignedRoomData.values());
+        // ★修正: チェックアウトの部屋のみをフィルタリングし、本館→別館・階数順でソート
+        List<AssignedRoomInfo> sortedRooms = new ArrayList<>();
+
+        // チェックアウトの部屋のみを抽出（roomStatus = "2" がチェックアウト）
+        for (AssignedRoomInfo roomInfo : assignedRoomData.values()) {
+            if ("2".equals(roomInfo.roomStatus)) {
+                sortedRooms.add(roomInfo);
+            }
+        }
+
+        // 本館→別館、階数順、部屋番号順でソート
         sortedRooms.sort(new Comparator<AssignedRoomInfo>() {
             @Override
             public int compare(AssignedRoomInfo r1, AssignedRoomInfo r2) {
@@ -242,6 +252,8 @@ public class ExcludedRoomSelectionDialog extends JDialog {
                 return compareRoomNumbers(r1.roomNumber, r2.roomNumber);
             }
         });
+
+        LOGGER.info("残し部屋設定: チェックアウト部屋のみ表示 - " + sortedRooms.size() + "室");
 
         for (AssignedRoomInfo roomInfo : sortedRooms) {
             Object[] row = {

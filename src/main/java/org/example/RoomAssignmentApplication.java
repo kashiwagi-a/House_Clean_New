@@ -21,6 +21,7 @@ import java.util.stream.Collectors;
  * 大浴場清掃スタッフ手動選択機能付き
  * ★修正: 制限値入力エラー修正版 + 通常清掃部屋割り振り機能追加
  * ★データベース対応版
+ * ★★ECO部屋数認識修正版
  */
 public class RoomAssignmentApplication extends JFrame {
     private static final Logger LOGGER = Logger.getLogger(RoomAssignmentApplication.class.getName());
@@ -637,7 +638,7 @@ public class RoomAssignmentApplication extends JFrame {
 
     /**
      * ★新機能: 通常清掃部屋の事前割り振り設定ダイアログ
-     * ★★修正: FileProcessorから直接部屋データを読み込み、4区分を集計
+     * ★★修正: FileProcessorから直接部屋データを読み込み、6区分を集計（ECO対応）
      */
     private Map<String, NormalRoomDistributionDialog.StaffDistribution> selectNormalRoomDistribution(
             int mainRooms, int annexRooms,
@@ -645,21 +646,21 @@ public class RoomAssignmentApplication extends JFrame {
             List<FileProcessor.Staff> availableStaff,
             AdaptiveRoomOptimizer.BathCleaningType bathType) {
 
-        // ★★追加: FileProcessorから部屋データを読み込んで4区分に集計
+        // ★★修正: FileProcessorから部屋データを読み込んで6区分に集計（ECO対応）
         int totalMainSingleRooms = 0;
         int totalMainTwinRooms = 0;
         int totalAnnexSingleRooms = 0;
         int totalAnnexTwinRooms = 0;
+        int ecoMainRooms = 0;      // ★★修正: メソッドスコープに移動（try-catchの外）
+        int ecoAnnexRooms = 0;     // ★★修正: メソッドスコープに移動（try-catchの外）
 
         try {
             // selectedRoomFileから部屋データを読み込み
             FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
 
-            // エコ清掃の部屋数をカウント（参考情報）
-            int ecoMainRooms = 0;
-            int ecoAnnexRooms = 0;
+            // ★★修正: ECO部屋数カウント用の変数は上部で宣言済み
 
-            // 本館の部屋タイプ集計（エコ清掃の部屋を除外）
+            // 本館の部屋タイプ集計（エコ清掃の部屋を分離カウント）
             for (FileProcessor.Room room : cleaningData.mainRooms) {
                 if (room.isEcoClean) {
                     ecoMainRooms++;  // エコ清掃の部屋数をカウント
@@ -673,7 +674,7 @@ public class RoomAssignmentApplication extends JFrame {
                 }
             }
 
-            // 別館の部屋タイプ集計（エコ清掃の部屋を除外）
+            // 別館の部屋タイプ集計（エコ清掃の部屋を分離カウント）
             for (FileProcessor.Room room : cleaningData.annexRooms) {
                 if (room.isEcoClean) {
                     ecoAnnexRooms++;  // エコ清掃の部屋数をカウント
@@ -687,13 +688,13 @@ public class RoomAssignmentApplication extends JFrame {
                 }
             }
 
-            appendLog(String.format("部屋タイプ集計: 本館(S:%d, T:%d), 別館(S:%d, T:%d)",
-                    totalMainSingleRooms, totalMainTwinRooms,
-                    totalAnnexSingleRooms, totalAnnexTwinRooms));
-            appendLog(String.format("エコ清掃除外: 本館 %d室, 別館 %d室", ecoMainRooms, ecoAnnexRooms));
+            // ★★修正: ログにECO部屋数も出力
+            appendLog(String.format("部屋タイプ集計: 本館(S:%d, T:%d, E:%d), 別館(S:%d, T:%d, E:%d)",
+                    totalMainSingleRooms, totalMainTwinRooms, ecoMainRooms,
+                    totalAnnexSingleRooms, totalAnnexTwinRooms, ecoAnnexRooms));
 
         } catch (Exception e) {
-            // エラー時は全てシングル等として扱う
+            // エラー時は全てシングル等として扱う（ECOは0のまま）
             totalMainSingleRooms = mainRooms;
             totalAnnexSingleRooms = annexRooms;
             appendLog("警告: 部屋タイプ集計中にエラーが発生しました。全てシングル等として扱います。");
@@ -704,12 +705,15 @@ public class RoomAssignmentApplication extends JFrame {
                 .map(s -> s.name)
                 .collect(Collectors.toList());
 
+        // ★★修正: ECO対応の6区分コンストラクタを使用
         NormalRoomDistributionDialog dialog = new NormalRoomDistributionDialog(
                 parentFrame,
                 totalMainSingleRooms,
                 totalMainTwinRooms,
+                ecoMainRooms,          // ★★追加: 本館ECO部屋数
                 totalAnnexSingleRooms,
                 totalAnnexTwinRooms,
+                ecoAnnexRooms,         // ★★追加: 別館ECO部屋数
                 pointConstraints,
                 staffNamesList,
                 bathType);

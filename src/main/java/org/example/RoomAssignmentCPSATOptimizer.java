@@ -250,7 +250,8 @@ public class RoomAssignmentCPSATOptimizer {
         // 大浴清掃スタッフがいない場合は通常のCPSAT最適化を実行
         if (bathPreAssignment.bathStaffAssignments.isEmpty()) {
             LOGGER.info("大浴清掃スタッフなし。通常のCPSAT最適化を実行します。");
-            List<AdaptiveRoomOptimizer.StaffAssignment> result = optimizeWithCPSAT(buildingData, config, new HashMap<>());
+            // ★修正: originalConfigも渡す（ECO割り振りで全スタッフの目標値を使用）
+            List<AdaptiveRoomOptimizer.StaffAssignment> result = optimizeWithCPSAT(buildingData, config, new HashMap<>(), config);
             // ECO割り振りを行う
             assignEcoWithCPSAT(result, buildingData, config);
             return result;
@@ -264,8 +265,9 @@ public class RoomAssignmentCPSATOptimizer {
         // 残りのスタッフに対してCPSAT最適化を実行
         AdaptiveRoomOptimizer.AdaptiveLoadConfig remainingConfig = createRemainingConfig(config, bathPreAssignment);
 
+        // ★修正: 元のconfigも渡す（ECO割り振りで全スタッフの目標値を使用するため）
         List<AdaptiveRoomOptimizer.StaffAssignment> cpSatAssignments =
-                optimizeWithCPSAT(bathPreAssignment.remainingBuildingData, remainingConfig, bathPreAssignment.bathStaffAssignments);
+                optimizeWithCPSAT(bathPreAssignment.remainingBuildingData, remainingConfig, bathPreAssignment.bathStaffAssignments, config);
 
         // 大浴清掃スタッフの割り振りとCPSAT結果をマージ
         List<AdaptiveRoomOptimizer.StaffAssignment> merged = mergeAssignments(bathPreAssignment.bathStaffAssignments, cpSatAssignments);
@@ -687,11 +689,13 @@ public class RoomAssignmentCPSATOptimizer {
 
     /**
      * ★修正: CPSAT最適化（複数解評価版 + フロアあたりスタッフ数制限）
+     * ★追加: originalConfigパラメータ（ECO割り振りで全スタッフの目標値を使用するため）
      */
     private static List<AdaptiveRoomOptimizer.StaffAssignment> optimizeWithCPSAT(
             AdaptiveRoomOptimizer.BuildingData buildingData,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
-            Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments) {
+            Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig) {
 
         if (config.extendedStaffInfo.isEmpty()) {
             LOGGER.info("CPSAT最適化対象のスタッフがいません。");
@@ -710,8 +714,9 @@ public class RoomAssignmentCPSATOptimizer {
              maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT;
              maxStaffPerFloor++) {
 
+            // ★修正: originalConfigを渡す
             List<AdaptiveRoomOptimizer.StaffAssignment> result =
-                    optimizeWithStaffPerFloorLimit(buildingData, config, existingAssignments, maxStaffPerFloor);
+                    optimizeWithStaffPerFloorLimit(buildingData, config, existingAssignments, maxStaffPerFloor, originalConfig);
 
             if (result != null) {
                 LOGGER.info(String.format("フロアあたり最大%d人制限で解が見つかりました。", maxStaffPerFloor));
@@ -732,12 +737,14 @@ public class RoomAssignmentCPSATOptimizer {
 
     /**
      * ★新規: フロアあたりのスタッフ数制限付きCPSAT最適化
+     * ★追加: originalConfigパラメータ（ECO割り振りで全スタッフの目標値を使用するため）
      */
     private static List<AdaptiveRoomOptimizer.StaffAssignment> optimizeWithStaffPerFloorLimit(
             AdaptiveRoomOptimizer.BuildingData buildingData,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
             Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
-            int maxStaffPerFloor) {
+            int maxStaffPerFloor,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig) {
 
         LOGGER.info(String.format("=== 残りスタッフのCPSAT最適化（フロアあたり最大%d人）===", maxStaffPerFloor));
 

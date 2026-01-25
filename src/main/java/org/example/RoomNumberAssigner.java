@@ -127,11 +127,15 @@ public class RoomNumberAssigner {
                 floorRooms.removeAll(typeRooms);
             }
 
-            // エコ部屋の割り当て
+            // エコ部屋の割り当て（allocation.ecoRoomsの数だけ）
+            int ecoCount = allocation.ecoRooms;
             List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+            int ecoAssigned = 0;
             for (FileProcessor.Room room : floorRooms) {
+                if (ecoAssigned >= ecoCount) break;
                 if (room.isEco) {
                     ecoRooms.add(room);
+                    ecoAssigned++;
                 }
             }
 

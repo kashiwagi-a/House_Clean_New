@@ -110,7 +110,7 @@ public class ExcludedRoomSelectionDialog extends JDialog {
 
                 for (FileProcessor.Room room : rooms) {
                     // 部屋状態の判定（FileProcessorから取得が理想だが、ここでは簡易実装）
-                    String roomStatus = determineRoomStatus(room.roomNumber);
+                    String roomStatus = room.roomStatus;
 
                     AssignedRoomInfo roomInfo = new AssignedRoomInfo(
                             room.roomNumber,

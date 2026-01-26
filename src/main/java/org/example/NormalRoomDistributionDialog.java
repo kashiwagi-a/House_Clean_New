@@ -2,8 +2,10 @@ package org.example;
 
 import javax.swing.*;
 import javax.swing.table.*;
+import javax.swing.text.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.text.ParseException;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -477,6 +479,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             SpinnerNumberModel mainSingleModel = new SpinnerNumberModel(staff.mainSingleAssignedRooms, 0, 99, 1);
             JSpinner mainSingleSpinner = new JSpinner(mainSingleModel);
             mainSingleSpinner.setPreferredSize(new Dimension(55, 25));
+            applyZeroAsBlankFormatter(mainSingleSpinner);
             mainSingleSpinner.addChangeListener(e -> {
                 staff.mainSingleAssignedRooms = (int) mainSingleSpinner.getValue();
                 staff.updateTotal();
@@ -492,6 +495,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             SpinnerNumberModel mainTwinModel = new SpinnerNumberModel(staff.mainTwinAssignedRooms, 0, 99, 1);
             JSpinner mainTwinSpinner = new JSpinner(mainTwinModel);
             mainTwinSpinner.setPreferredSize(new Dimension(55, 25));
+            applyZeroAsBlankFormatter(mainTwinSpinner);
             mainTwinSpinner.addChangeListener(e -> {
                 staff.mainTwinAssignedRooms = (int) mainTwinSpinner.getValue();
                 staff.updateTotal();
@@ -507,6 +511,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             SpinnerNumberModel mainEcoModel = new SpinnerNumberModel(staff.mainEcoAssignedRooms, 0, 99, 1);
             JSpinner mainEcoSpinner = new JSpinner(mainEcoModel);
             mainEcoSpinner.setPreferredSize(new Dimension(55, 25));
+            applyZeroAsBlankFormatter(mainEcoSpinner);
             mainEcoSpinner.addChangeListener(e -> {
                 staff.mainEcoAssignedRooms = (int) mainEcoSpinner.getValue();
                 updateRowDisplay(rowPanel, staff);
@@ -521,6 +526,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             SpinnerNumberModel annexSingleModel = new SpinnerNumberModel(staff.annexSingleAssignedRooms, 0, 99, 1);
             JSpinner annexSingleSpinner = new JSpinner(annexSingleModel);
             annexSingleSpinner.setPreferredSize(new Dimension(55, 25));
+            applyZeroAsBlankFormatter(annexSingleSpinner);
             annexSingleSpinner.addChangeListener(e -> {
                 staff.annexSingleAssignedRooms = (int) annexSingleSpinner.getValue();
                 staff.updateTotal();
@@ -536,6 +542,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             SpinnerNumberModel annexTwinModel = new SpinnerNumberModel(staff.annexTwinAssignedRooms, 0, 99, 1);
             JSpinner annexTwinSpinner = new JSpinner(annexTwinModel);
             annexTwinSpinner.setPreferredSize(new Dimension(55, 25));
+            applyZeroAsBlankFormatter(annexTwinSpinner);
             annexTwinSpinner.addChangeListener(e -> {
                 staff.annexTwinAssignedRooms = (int) annexTwinSpinner.getValue();
                 staff.updateTotal();
@@ -551,6 +558,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             SpinnerNumberModel annexEcoModel = new SpinnerNumberModel(staff.annexEcoAssignedRooms, 0, 99, 1);
             JSpinner annexEcoSpinner = new JSpinner(annexEcoModel);
             annexEcoSpinner.setPreferredSize(new Dimension(55, 25));
+            applyZeroAsBlankFormatter(annexEcoSpinner);
             annexEcoSpinner.addChangeListener(e -> {
                 staff.annexEcoAssignedRooms = (int) annexEcoSpinner.getValue();
                 updateRowDisplay(rowPanel, staff);
@@ -600,6 +608,40 @@ public class NormalRoomDistributionDialog extends JDialog {
         if (components.length > 11) {
             ((JLabel)components[11]).setText(String.format("%.1f", staff.getConvertedTotalWithEco()));
         }
+    }
+
+    /**
+     * 0を空白で表示するカスタムフォーマッターをスピナーに適用
+     */
+    private void applyZeroAsBlankFormatter(JSpinner spinner) {
+        JSpinner.NumberEditor editor = (JSpinner.NumberEditor) spinner.getEditor();
+        JFormattedTextField textField = editor.getTextField();
+
+        NumberFormatter formatter = new NumberFormatter() {
+            @Override
+            public String valueToString(Object value) throws ParseException {
+                if (value == null || (value instanceof Number && ((Number) value).intValue() == 0)) {
+                    return "";
+                }
+                return super.valueToString(value);
+            }
+
+            @Override
+            public Object stringToValue(String text) throws ParseException {
+                if (text == null || text.trim().isEmpty()) {
+                    return 0;
+                }
+                return super.stringToValue(text);
+            }
+        };
+
+        formatter.setValueClass(Integer.class);
+        formatter.setMinimum(0);
+        formatter.setMaximum(99);
+
+        DefaultFormatterFactory factory = new DefaultFormatterFactory(formatter);
+        textField.setFormatterFactory(factory);
+        textField.setHorizontalAlignment(JTextField.CENTER);
     }
 
     private int getBuildingPriority(StaffDistribution staff) {

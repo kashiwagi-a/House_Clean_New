@@ -59,6 +59,7 @@ public class AssignmentEditorGUI extends JFrame {
         List<Integer> floors;
         Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> roomsByFloor;
         Map<Integer, List<FileProcessor.Room>> detailedRoomsByFloor;
+        Map<Integer, List<FileProcessor.Room>> originalDetailedRoomsByFloor;  // ★追加: 元の部屋データ保持用
         int totalRooms;
         double totalPoints;
         double adjustedScore;
@@ -80,6 +81,7 @@ public class AssignmentEditorGUI extends JFrame {
             this.floors = new ArrayList<>(assignment.floors);
             this.roomsByFloor = new HashMap<>(assignment.roomsByFloor);
             this.detailedRoomsByFloor = new HashMap<>();
+            this.originalDetailedRoomsByFloor = new HashMap<>();  // ★追加
             this.bathCleaningType = bathType;
             this.constraintType = constraintType != null ? constraintType : "制限なし";
             this.hasMainBuilding = assignment.floors.stream().anyMatch(f -> f <= 10);
@@ -857,11 +859,12 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★新規: 残し部屋選択ダイアログを表示
+     * ★修正: 残し部屋選択ダイアログを表示（元データを使用）
      */
     private void showExcludedRoomsDialog() {
+        // ★修正: 元データ使用フラグ(true)を追加
         ExcludedRoomSelectionDialog dialog = new ExcludedRoomSelectionDialog(
-                this, staffDataMap, excludedRooms);
+                this, staffDataMap, excludedRooms, true);
         dialog.setVisible(true);
 
         if (dialog.getDialogResult()) {
@@ -877,15 +880,22 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * 残し部屋設定の適用
+     * ★修正: 元データから再構築することで、設定の解除も可能に
      */
     private void applyExcludedRooms(Set<String> newExcludedRooms) {
         this.excludedRooms = new HashSet<>(newExcludedRooms);
 
-        // 各スタッフから残し部屋を除外
+        // 各スタッフの部屋データを元データから再構築
         for (StaffData staff : staffDataMap.values()) {
+            // 元データがない場合はスキップ
+            if (staff.originalDetailedRoomsByFloor == null || staff.originalDetailedRoomsByFloor.isEmpty()) {
+                continue;
+            }
+
             Map<Integer, List<FileProcessor.Room>> updatedRooms = new HashMap<>();
 
-            for (Map.Entry<Integer, List<FileProcessor.Room>> entry : staff.detailedRoomsByFloor.entrySet()) {
+            // 元データから残し部屋を除外してフィルタリング
+            for (Map.Entry<Integer, List<FileProcessor.Room>> entry : staff.originalDetailedRoomsByFloor.entrySet()) {
                 int floor = entry.getKey();
                 List<FileProcessor.Room> rooms = entry.getValue();
 
@@ -930,10 +940,26 @@ public class AssignmentEditorGUI extends JFrame {
 
                 staffData.detailedRoomsByFloor = byFloor;
 
+                // ★追加: 元データを保存（初回のみ）
+                if (staffData.originalDetailedRoomsByFloor == null || staffData.originalDetailedRoomsByFloor.isEmpty()) {
+                    staffData.originalDetailedRoomsByFloor = deepCopyRoomsByFloor(byFloor);
+                }
+
                 // ★追加: 拡張メトリクスを再計算
                 staffData.calculateExtendedMetrics();
             }
         }
+    }
+
+    /**
+     * ★追加: 部屋データのディープコピーを作成
+     */
+    private Map<Integer, List<FileProcessor.Room>> deepCopyRoomsByFloor(Map<Integer, List<FileProcessor.Room>> original) {
+        Map<Integer, List<FileProcessor.Room>> copy = new HashMap<>();
+        for (Map.Entry<Integer, List<FileProcessor.Room>> entry : original.entrySet()) {
+            copy.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        return copy;
     }
 
     /**

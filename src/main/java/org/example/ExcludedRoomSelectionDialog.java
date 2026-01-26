@@ -13,7 +13,7 @@ import java.util.logging.Logger;
 /**
  * 残し部屋選択ダイアログ
  * 清掃予定の部屋から残し部屋（清掃しない部屋）を選択する
- * 本館→別館の順で表示するよう修正
+ * ★修正: 元データを使用して設定・解除を自由に行えるように
  */
 public class ExcludedRoomSelectionDialog extends JDialog {
     private static final Logger LOGGER = Logger.getLogger(ExcludedRoomSelectionDialog.class.getName());
@@ -23,6 +23,7 @@ public class ExcludedRoomSelectionDialog extends JDialog {
     private Map<String, AssignedRoomInfo> assignedRoomData;
     private Set<String> selectedExcludedRooms;
     private boolean dialogResult = false;
+    private int checkoutRoomCount = 0;  // ★追加: チェックアウト部屋数
 
     /**
      * 割り当てられた部屋情報クラス
@@ -33,7 +34,7 @@ public class ExcludedRoomSelectionDialog extends JDialog {
         public final String staffName;
         public final int floor;
         public final String building;
-        public final String roomStatus; // 連泊/チェックアウト情報
+        public final String roomStatus;
         public boolean isExcluded;
 
         public AssignedRoomInfo(String roomNumber, String roomType, String staffName,
@@ -51,7 +52,6 @@ public class ExcludedRoomSelectionDialog extends JDialog {
             if (isMainBuilding()) {
                 return floor + "階";
             } else {
-                // 別館の場合、実際の階数を表示
                 return "別館" + floor + "階";
             }
         }
@@ -64,9 +64,6 @@ public class ExcludedRoomSelectionDialog extends JDialog {
             }
         }
 
-        /**
-         * 本館かどうかの判定
-         */
         public boolean isMainBuilding() {
             return building.equals("本館");
         }
@@ -79,16 +76,18 @@ public class ExcludedRoomSelectionDialog extends JDialog {
 
     /**
      * コンストラクタ
+     * ★修正: 元データ使用フラグを追加
      */
     public ExcludedRoomSelectionDialog(JFrame parent,
                                        Map<String, AssignmentEditorGUI.StaffData> staffDataMap,
-                                       Set<String> currentExcludedRooms) {
+                                       Set<String> currentExcludedRooms,
+                                       boolean useOriginalData) {
         super(parent, "残し部屋設定", true);
         this.assignedRoomData = new HashMap<>();
         this.selectedExcludedRooms = new HashSet<>(currentExcludedRooms);
 
-        // 割り当てられた部屋データを構築
-        buildAssignedRoomData(staffDataMap);
+        // 割り当てられた部屋データを構築（元データを使用）
+        buildAssignedRoomData(staffDataMap, useOriginalData);
 
         initializeGUI();
         setSize(800, 600);
@@ -96,20 +95,41 @@ public class ExcludedRoomSelectionDialog extends JDialog {
     }
 
     /**
-     * 割り当てられた部屋データの構築
+     * 後方互換性のためのコンストラクタ
      */
-    private void buildAssignedRoomData(Map<String, AssignmentEditorGUI.StaffData> staffDataMap) {
+    public ExcludedRoomSelectionDialog(JFrame parent,
+                                       Map<String, AssignmentEditorGUI.StaffData> staffDataMap,
+                                       Set<String> currentExcludedRooms) {
+        this(parent, staffDataMap, currentExcludedRooms, false);
+    }
+
+    /**
+     * 割り当てられた部屋データの構築
+     * ★修正: 元データを使用してすべてのチェックアウト部屋を表示
+     */
+    private void buildAssignedRoomData(Map<String, AssignmentEditorGUI.StaffData> staffDataMap, boolean useOriginalData) {
         for (Map.Entry<String, AssignmentEditorGUI.StaffData> entry : staffDataMap.entrySet()) {
             String staffName = entry.getKey();
             AssignmentEditorGUI.StaffData staffData = entry.getValue();
 
+            // ★修正: 元データがあれば元データを使用
+            Map<Integer, List<FileProcessor.Room>> roomsToUse;
+            if (useOriginalData && staffData.originalDetailedRoomsByFloor != null
+                    && !staffData.originalDetailedRoomsByFloor.isEmpty()) {
+                roomsToUse = staffData.originalDetailedRoomsByFloor;
+            } else {
+                roomsToUse = staffData.detailedRoomsByFloor;
+            }
+
+            if (roomsToUse == null) continue;
+
             // 各スタッフの担当部屋を処理
-            for (Map.Entry<Integer, List<FileProcessor.Room>> floorEntry : staffData.detailedRoomsByFloor.entrySet()) {
+            for (Map.Entry<Integer, List<FileProcessor.Room>> floorEntry : roomsToUse.entrySet()) {
                 int floor = floorEntry.getKey();
                 List<FileProcessor.Room> rooms = floorEntry.getValue();
 
                 for (FileProcessor.Room room : rooms) {
-                    // 部屋状態の判定（FileProcessorから取得が理想だが、ここでは簡易実装）
+                    // ★修正: 実際のroomStatusを使用
                     String roomStatus = room.roomStatus;
 
                     AssignedRoomInfo roomInfo = new AssignedRoomInfo(
@@ -135,16 +155,6 @@ public class ExcludedRoomSelectionDialog extends JDialog {
     }
 
     /**
-     * 部屋状態の判定（簡易実装）
-     * 実際のCSVデータから取得する場合は、FileProcessorとの連携が必要
-     */
-    private String determineRoomStatus(String roomNumber) {
-        // TODO: 実際のCSVデータから部屋状態を取得
-        // ここでは簡易的にランダムで設定
-        return Math.random() > 0.5 ? "3" : "2"; // 3=連泊, 2=チェックアウト
-    }
-
-    /**
      * GUI初期化
      */
     private void initializeGUI() {
@@ -157,6 +167,7 @@ public class ExcludedRoomSelectionDialog extends JDialog {
         JLabel infoLabel = new JLabel("<html><div style='padding:10px;'>" +
                 "チェックアウト部屋から残し部屋（清掃しない部屋）を選択してください。<br>" +
                 "チェックを入れた部屋は清掃対象から除外されます。<br>" +
+                "チェックを外すと清掃対象に戻ります。<br>" +
                 "※連泊部屋は残し部屋設定の対象外です。" +
                 "</div></html>");
         infoPanel.add(infoLabel, BorderLayout.CENTER);
@@ -193,18 +204,21 @@ public class ExcludedRoomSelectionDialog extends JDialog {
         add(buttonPanel, BorderLayout.SOUTH);
 
         // 部屋が0の場合の処理
-        if (assignedRoomData.isEmpty()) {
-            JLabel noDataLabel = new JLabel("清掃予定の部屋がありません", JLabel.CENTER);
+        if (checkoutRoomCount == 0) {
+            JLabel noDataLabel = new JLabel("チェックアウトの部屋がありません", JLabel.CENTER);
             noDataLabel.setFont(new Font("MS Gothic", Font.PLAIN, 16));
             add(noDataLabel, BorderLayout.CENTER);
 
             okButton.setText("閉じる");
         }
+
+        // ★追加: 初期選択数を表示
+        updateSelectionCount();
     }
 
     /**
      * 部屋選択テーブルの作成
-     * ★修正: チェックアウトの部屋のみを表示し、本館→別館・階数順でソート
+     * ★修正: チェックアウトの部屋のみを表示
      */
     private void createRoomSelectionTable() {
         String[] columnNames = {"残し部屋", "部屋番号", "部屋タイプ", "階", "建物", "状態", "担当スタッフ"};
@@ -217,14 +231,13 @@ public class ExcludedRoomSelectionDialog extends JDialog {
 
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column == 0; // チェックボックスのみ編集可能
+                return column == 0;
             }
         };
 
-        // ★修正: チェックアウトの部屋のみをフィルタリングし、本館→別館・階数順でソート
+        // ★修正: チェックアウトの部屋のみをフィルタリングし、ソート
         List<AssignedRoomInfo> sortedRooms = new ArrayList<>();
 
-        // チェックアウトの部屋のみを抽出（roomStatus = "2" がチェックアウト）
         for (AssignedRoomInfo roomInfo : assignedRoomData.values()) {
             if ("2".equals(roomInfo.roomStatus)) {
                 sortedRooms.add(roomInfo);
@@ -235,29 +248,29 @@ public class ExcludedRoomSelectionDialog extends JDialog {
         sortedRooms.sort(new Comparator<AssignedRoomInfo>() {
             @Override
             public int compare(AssignedRoomInfo r1, AssignedRoomInfo r2) {
-                // 1. 建物別（本館優先）
                 boolean r1IsMain = r1.isMainBuilding();
                 boolean r2IsMain = r2.isMainBuilding();
 
                 if (r1IsMain != r2IsMain) {
-                    return r1IsMain ? -1 : 1; // 本館を先に
+                    return r1IsMain ? -1 : 1;
                 }
 
-                // 2. 同じ建物内では階数順
                 if (r1.floor != r2.floor) {
                     return Integer.compare(r1.floor, r2.floor);
                 }
 
-                // 3. 同じ階では部屋番号順（数値として比較）
                 return compareRoomNumbers(r1.roomNumber, r2.roomNumber);
             }
         });
+
+        // ★追加: チェックアウト部屋数を保存
+        this.checkoutRoomCount = sortedRooms.size();
 
         LOGGER.info("残し部屋設定: チェックアウト部屋のみ表示 - " + sortedRooms.size() + "室");
 
         for (AssignedRoomInfo roomInfo : sortedRooms) {
             Object[] row = {
-                    roomInfo.isExcluded, // 残し部屋フラグ
+                    roomInfo.isExcluded,
                     roomInfo.roomNumber,
                     roomInfo.roomType,
                     roomInfo.getFloorDisplay(),
@@ -273,13 +286,13 @@ public class ExcludedRoomSelectionDialog extends JDialog {
         roomTable.setRowHeight(25);
 
         // 列幅設定
-        roomTable.getColumnModel().getColumn(0).setPreferredWidth(80);  // 残し部屋
-        roomTable.getColumnModel().getColumn(1).setPreferredWidth(100); // 部屋番号
-        roomTable.getColumnModel().getColumn(2).setPreferredWidth(80);  // 部屋タイプ
-        roomTable.getColumnModel().getColumn(3).setPreferredWidth(80);  // 階
-        roomTable.getColumnModel().getColumn(4).setPreferredWidth(60);  // 建物
-        roomTable.getColumnModel().getColumn(5).setPreferredWidth(100); // 状態
-        roomTable.getColumnModel().getColumn(6).setPreferredWidth(120); // 担当スタッフ
+        roomTable.getColumnModel().getColumn(0).setPreferredWidth(80);
+        roomTable.getColumnModel().getColumn(1).setPreferredWidth(100);
+        roomTable.getColumnModel().getColumn(2).setPreferredWidth(80);
+        roomTable.getColumnModel().getColumn(3).setPreferredWidth(80);
+        roomTable.getColumnModel().getColumn(4).setPreferredWidth(60);
+        roomTable.getColumnModel().getColumn(5).setPreferredWidth(100);
+        roomTable.getColumnModel().getColumn(6).setPreferredWidth(120);
 
         // チェックボックスのレンダラー設定
         roomTable.getColumnModel().getColumn(0).setCellRenderer(new TableCellRenderer() {
@@ -304,7 +317,7 @@ public class ExcludedRoomSelectionDialog extends JDialog {
 
         // チェックボックス変更イベント
         tableModel.addTableModelListener(e -> {
-            if (e.getColumn() == 0) { // チェックボックス列
+            if (e.getColumn() == 0) {
                 int row = e.getFirstRow();
                 boolean selected = (Boolean) tableModel.getValueAt(row, 0);
                 String roomNumber = (String) tableModel.getValueAt(row, 1);
@@ -329,7 +342,6 @@ public class ExcludedRoomSelectionDialog extends JDialog {
      */
     private int compareRoomNumbers(String room1, String room2) {
         try {
-            // 数字部分を抽出して比較
             String num1 = room1.replaceAll("[^0-9]", "");
             String num2 = room2.replaceAll("[^0-9]", "");
 
@@ -339,7 +351,7 @@ public class ExcludedRoomSelectionDialog extends JDialog {
                 return Integer.compare(n1, n2);
             }
         } catch (NumberFormatException e) {
-            // 数値変換に失敗した場合は文字列比較
+            // 文字列比較にフォールバック
         }
 
         return room1.compareTo(room2);
@@ -356,10 +368,10 @@ public class ExcludedRoomSelectionDialog extends JDialog {
 
     /**
      * 選択数の更新
+     * ★修正: チェックアウト部屋数を母数として表示
      */
     private void updateSelectionCount() {
-        // タイトルに選択数を表示
-        setTitle("残し部屋設定 - " + selectedExcludedRooms.size() + "/" + assignedRoomData.size() + "室選択中");
+        setTitle("残し部屋設定 - " + selectedExcludedRooms.size() + "/" + checkoutRoomCount + "室選択中");
     }
 
     /**

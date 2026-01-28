@@ -14,7 +14,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import java.util.OptionalInt;
 
 /**
- * 拡張版清掃割り当て編集GUI
+ * 清掃割り当て編集GUI
  * スタッフ入れ替え機能・残し部屋設定機能追加版
  * ★修正: エコ清掃部屋のポイント計算問題を修正
  * ★修正: 表示順序変更と列変更（ポイント→内ツイン数、調整後スコア→内エコ部屋数、総部屋数追加）
@@ -70,6 +70,7 @@ public class AssignmentEditorGUI extends JFrame {
         // ★追加: 新しいフィールド
         int twinRoomCount;           // 内ツイン数
         int ecoRoomCount;            // 内エコ部屋数
+        int normalSingleRoomCount;   // 通常シングル数（エコでもツインでもない部屋）
         double convertedTotalRooms;  // 総部屋数（換算値）
         String constraintType;       // 制約タイプ
 
@@ -124,10 +125,12 @@ public class AssignmentEditorGUI extends JFrame {
         /**
          * ★追加: 拡張メトリクスを計算（ツイン数、エコ部屋数、換算値）
          * ★修正: ツイン数はエコ部屋を含めない
+         * ★修正: 通常シングル数を追加（エコでもツインでもない部屋）
          */
         private void calculateExtendedMetrics() {
             this.twinRoomCount = 0;
             this.ecoRoomCount = 0;
+            this.normalSingleRoomCount = 0;
 
             // ★修正: detailedRoomsByFloorから集計（ツイン数とエコ部屋数の両方）
             for (Map.Entry<Integer, List<FileProcessor.Room>> entry : detailedRoomsByFloor.entrySet()) {
@@ -138,6 +141,9 @@ public class AssignmentEditorGUI extends JFrame {
                     } else if (isTwinRoom(room.roomType)) {
                         // エコではないツインのみをツイン数にカウント
                         this.twinRoomCount++;
+                    } else {
+                        // エコでもツインでもない部屋 = 通常シングル
+                        this.normalSingleRoomCount++;
                     }
                 }
             }
@@ -604,8 +610,9 @@ public class AssignmentEditorGUI extends JFrame {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
         // ★修正: 列名変更（ポイント→内ツイン数、調整後スコア→内エコ部屋数、総部屋数追加）
+        // ★修正: 部屋数→通常シングル数に変更
         String[] columnNames = {
-                "スタッフ名", "作業者タイプ", "部屋数", "内ツイン数", "内エコ部屋数", "総部屋数", "担当階・部屋詳細"
+                "スタッフ名", "作業者タイプ", "通常シングル数", "内ツイン数", "内エコ部屋数", "総部屋数", "担当階・部屋詳細"
         };
 
         tableModel = new DefaultTableModel(columnNames, 0) {
@@ -1496,7 +1503,7 @@ public class AssignmentEditorGUI extends JFrame {
             Object[] row = {
                     staff.name,
                     staff.getWorkerTypeDisplay(),
-                    staff.totalRooms,
+                    staff.normalSingleRoomCount,  // ★修正: 通常シングル数を表示
                     staff.twinRoomCount,
                     staff.ecoRoomCount,
                     String.format("%.1f", staff.convertedTotalRooms),

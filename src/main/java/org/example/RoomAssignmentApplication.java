@@ -123,12 +123,73 @@ public class RoomAssignmentApplication extends JFrame {
         public final AdaptiveRoomOptimizer.OptimizationResult optimizationResult;
         public final Map<String, List<FileProcessor.Room>> detailedRoomAssignments;
 
+        // ★追加: 複数解対応
+        public final AdaptiveRoomOptimizer.MultiOptimizationResult multiOptimizationResult;
+        public final int totalSolutionCount;
+        private int currentSolutionIndex;
+
+        // 従来のコンストラクタ（単一解用）
         public ProcessingResult(FileProcessor.CleaningData cleaningData,
                                 AdaptiveRoomOptimizer.OptimizationResult optimizationResult,
                                 Map<String, List<FileProcessor.Room>> detailedAssignments) {
             this.cleaningDataObj = cleaningData;
             this.optimizationResult = optimizationResult;
             this.detailedRoomAssignments = detailedAssignments;
+            this.multiOptimizationResult = null;
+            this.totalSolutionCount = 1;
+            this.currentSolutionIndex = 0;
+        }
+
+        // ★追加: 複数解用コンストラクタ
+        public ProcessingResult(FileProcessor.CleaningData cleaningData,
+                                AdaptiveRoomOptimizer.MultiOptimizationResult multiResult,
+                                Map<String, List<FileProcessor.Room>> detailedAssignments) {
+            this.cleaningDataObj = cleaningData;
+            this.multiOptimizationResult = multiResult;
+            this.optimizationResult = multiResult.toSingleResult(); // 従来互換用
+            this.detailedRoomAssignments = detailedAssignments;
+            this.totalSolutionCount = multiResult.totalSolutionCount;
+            this.currentSolutionIndex = 0;
+        }
+
+        /**
+         * ★追加: 複数解があるかどうか
+         */
+        public boolean hasMultipleSolutions() {
+            return multiOptimizationResult != null && totalSolutionCount > 1;
+        }
+
+        /**
+         * ★追加: 現在の解のインデックスを取得
+         */
+        public int getCurrentSolutionIndex() {
+            return currentSolutionIndex;
+        }
+
+        /**
+         * ★追加: 現在の解のインデックスを設定
+         */
+        public void setCurrentSolutionIndex(int index) {
+            if (index >= 0 && index < totalSolutionCount) {
+                this.currentSolutionIndex = index;
+            }
+        }
+
+        /**
+         * ★追加: 指定インデックスの解を取得
+         */
+        public AdaptiveRoomOptimizer.OptimizationResult getOptimizationResult(int index) {
+            if (multiOptimizationResult != null) {
+                return multiOptimizationResult.toSingleResult(index);
+            }
+            return optimizationResult;
+        }
+
+        /**
+         * ★追加: 現在選択中の解を取得
+         */
+        public AdaptiveRoomOptimizer.OptimizationResult getCurrentOptimizationResult() {
+            return getOptimizationResult(currentSolutionIndex);
         }
     }
 
@@ -568,41 +629,49 @@ public class RoomAssignmentApplication extends JFrame {
                     availableStaff, totalRooms, cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
                     bathType, pointConstraints, roomDistribution);
 
-            // 7. 最適化実行
-            appendLog("最適化を実行中...");
+            // 7. ★修正: 複数解最適化実行（最初の解は元のoptimize()と同じ結果を保証）
+            appendLog("最適化を実行中（最大7つの解を探索）...");
             AdaptiveRoomOptimizer.AdaptiveOptimizer optimizer =
                     new AdaptiveRoomOptimizer.AdaptiveOptimizer(floors, config);
-            AdaptiveRoomOptimizer.OptimizationResult result = optimizer.optimize(selectedDate);
+            AdaptiveRoomOptimizer.MultiOptimizationResult multiResult = optimizer.optimizeMultiple(selectedDate);
+            appendLog(String.format("最適化完了: %d個の解が見つかりました", multiResult.totalSolutionCount));
 
-            // 8. 部屋番号の割り当て(オプション)
+            // 8. 部屋番号の割り当て(オプション) - 最初の解に対して実行
             Map<String, List<FileProcessor.Room>> detailedAssignments = new HashMap<>();
             try {
                 RoomNumberAssigner assigner = new RoomNumberAssigner(cleaningData);
-                detailedAssignments = assigner.assignDetailedRooms(result.assignments);
+                detailedAssignments = assigner.assignDetailedRooms(multiResult.getAssignments(0));
                 appendLog("部屋番号の詳細割り当てが完了しました。");
             } catch (Exception ex) {
                 appendLog("部屋番号の詳細割り当てに失敗しましたが、処理を続行します: " + ex.getMessage());
             }
 
-            // 9. 結果の保存
-            lastResult = new ProcessingResult(cleaningData, result, detailedAssignments);
+            // 9. ★修正: 複数解対応の結果を保存
+            lastResult = new ProcessingResult(cleaningData, multiResult, detailedAssignments);
             viewResultsButton.setEnabled(true);
 
             // 10. 結果サマリーの表示
             appendLog("\n=== 処理完了 ===");
-            result.printDetailedSummary();
+            multiResult.printDetailedSummary();
 
             appendLog("\n結果表示ボタンで詳細を確認できます。");
+            if (multiResult.hasMultipleSolutions()) {
+                appendLog(String.format("★ %d個の解が生成されました。結果画面で切り替えできます。", multiResult.totalSolutionCount));
+            }
 
             long selectedBrokenRoomsForCleaningCount = cleaningData.brokenRooms.stream()
                     .filter(r -> cleaningData.mainRooms.contains(r) || cleaningData.annexRooms.contains(r))
                     .count();
 
+            String solutionInfo = multiResult.hasMultipleSolutions()
+                    ? String.format("\n生成された解の数: %d個（結果画面で切り替え可能）", multiResult.totalSolutionCount)
+                    : "";
+
             JOptionPane.showMessageDialog(this,
                     String.format("処理が完了しました。\n\n利用可能スタッフ: %d人\n清掃対象部屋: %d室\n" +
-                                    "制限設定スタッフ: %d人\n大浴場清掃スタッフ: %d人\n故障部屋(清掃対象): %d室\n\n結果表示ボタンで詳細を確認してください。",
+                                    "制限設定スタッフ: %d人\n大浴場清掃スタッフ: %d人\n故障部屋(清掃対象): %d室%s\n\n結果表示ボタンで詳細を確認してください。",
                             availableStaff.size(), totalRooms, pointConstraints.size(), bathStaffCount,
-                            selectedBrokenRoomsForCleaningCount),
+                            selectedBrokenRoomsForCleaningCount, solutionInfo),
                     "処理完了", JOptionPane.INFORMATION_MESSAGE);
 
         } catch (Exception ex) {

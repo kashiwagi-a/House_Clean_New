@@ -18,6 +18,7 @@ import java.util.OptionalInt;
  * スタッフ入れ替え機能・残し部屋設定機能追加版
  * ★修正: エコ清掃部屋のポイント計算問題を修正
  * ★修正: 表示順序変更と列変更（ポイント→内ツイン数、調整後スコア→内エコ部屋数、総部屋数追加）
+ * ★追加: 複数解切り替え機能
  */
 public class AssignmentEditorGUI extends JFrame {
 
@@ -39,6 +40,13 @@ public class AssignmentEditorGUI extends JFrame {
 
     // ★追加: グループ境界の行インデックス（罫線表示用）
     private Set<Integer> groupBoundaryRows = new HashSet<>();
+
+    // ★追加: 複数解切り替え用フィールド
+    private int currentSolutionIndex = 0;
+    private JButton prevSolutionButton;
+    private JButton nextSolutionButton;
+    private JLabel solutionIndexLabel;
+    private JPanel solutionNavigationPanel;
 
     // ★修正: 部屋タイプ別のポイント（ECOは削除）
     private static final Map<String, Double> ROOM_POINTS = new HashMap<>() {{
@@ -653,9 +661,19 @@ public class AssignmentEditorGUI extends JFrame {
         scrollPane.setPreferredSize(new Dimension(1200, 400));
         mainPanel.add(scrollPane, BorderLayout.CENTER);
 
+        // ★追加: 複数解切り替えパネル（複数解がある場合のみ表示）
+        JPanel southPanel = new JPanel(new BorderLayout());
+
+        if (processingResult.hasMultipleSolutions()) {
+            solutionNavigationPanel = createSolutionNavigationPanel();
+            southPanel.add(solutionNavigationPanel, BorderLayout.NORTH);
+        }
+
         // ★修正: 新しいボタンパネル
         JPanel buttonPanel = createNewButtonPanel();
-        mainPanel.add(buttonPanel, BorderLayout.SOUTH);
+        southPanel.add(buttonPanel, BorderLayout.CENTER);
+
+        mainPanel.add(southPanel, BorderLayout.SOUTH);
 
         statusLabel = new JLabel("準備完了");
         statusLabel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
@@ -673,6 +691,7 @@ public class AssignmentEditorGUI extends JFrame {
     /**
      * ★修正版: サマリーパネルの作成（エコ清掃部屋数を常に表示）
      * ★修正: availableStaff → staff に変更
+     * ★追加: 複数解の情報を表示
      */
     private JPanel createSummaryPanel() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
@@ -705,6 +724,15 @@ public class AssignmentEditorGUI extends JFrame {
         panel.add(new JLabel(String.format("総部屋数: %d | ", actualTotalRooms)));
         panel.add(new JLabel(String.format("スタッフ数: %d | ", actualStaffCount)));
         panel.add(new JLabel(String.format("平均部屋数: %.1f", avgRooms)));
+
+        // ★追加: 複数解の場合は現在の解番号を表示
+        if (processingResult.hasMultipleSolutions()) {
+            JLabel solutionLabel = new JLabel(String.format(" | 解 %d/%d",
+                    currentSolutionIndex + 1, processingResult.totalSolutionCount));
+            solutionLabel.setForeground(new java.awt.Color(0, 100, 200));
+            solutionLabel.setFont(solutionLabel.getFont().deriveFont(java.awt.Font.BOLD));
+            panel.add(solutionLabel);
+        }
 
         // 残し部屋数表示
         if (!excludedRooms.isEmpty()) {
@@ -808,6 +836,157 @@ public class AssignmentEditorGUI extends JFrame {
         } catch (NumberFormatException e) {
             // エラー時のデフォルト
             return 1;
+        }
+    }
+
+    /**
+     * ★追加: 解切り替えパネルを作成
+     */
+    private JPanel createSolutionNavigationPanel() {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 5));
+        panel.setBorder(BorderFactory.createTitledBorder("解の切り替え"));
+        panel.setBackground(new java.awt.Color(230, 245, 255)); // 薄い青色の背景
+
+        // 前の解ボタン
+        prevSolutionButton = new JButton("◀ 前の解");
+        prevSolutionButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        prevSolutionButton.addActionListener(e -> showPreviousSolution());
+        prevSolutionButton.setEnabled(false); // 最初は無効
+        panel.add(prevSolutionButton);
+
+        // 解のインデックス表示
+        solutionIndexLabel = new JLabel(String.format("解 %d / %d",
+                currentSolutionIndex + 1, processingResult.totalSolutionCount));
+        solutionIndexLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 14));
+        solutionIndexLabel.setBorder(BorderFactory.createEmptyBorder(0, 20, 0, 20));
+        panel.add(solutionIndexLabel);
+
+        // 次の解ボタン
+        nextSolutionButton = new JButton("次の解 ▶");
+        nextSolutionButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        nextSolutionButton.addActionListener(e -> showNextSolution());
+        nextSolutionButton.setEnabled(processingResult.totalSolutionCount > 1);
+        panel.add(nextSolutionButton);
+
+        // 説明ラベル
+        JLabel helpLabel = new JLabel("（気に入る解が見つかるまで切り替えてください）");
+        helpLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 11));
+        helpLabel.setForeground(java.awt.Color.GRAY);
+        panel.add(helpLabel);
+
+        return panel;
+    }
+
+    /**
+     * ★追加: 前の解を表示
+     */
+    private void showPreviousSolution() {
+        if (currentSolutionIndex > 0) {
+            currentSolutionIndex--;
+            switchToSolution(currentSolutionIndex);
+        }
+    }
+
+    /**
+     * ★追加: 次の解を表示
+     */
+    private void showNextSolution() {
+        if (currentSolutionIndex < processingResult.totalSolutionCount - 1) {
+            currentSolutionIndex++;
+            switchToSolution(currentSolutionIndex);
+        }
+    }
+
+    /**
+     * ★追加: 指定した解に切り替え
+     */
+    private void switchToSolution(int solutionIndex) {
+        if (processingResult.multiOptimizationResult == null) {
+            return;
+        }
+
+        // 現在のインデックスを更新
+        currentSolutionIndex = solutionIndex;
+        processingResult.setCurrentSolutionIndex(solutionIndex);
+
+        // 新しい解のassignmentsを取得
+        List<AdaptiveRoomOptimizer.StaffAssignment> newAssignments =
+                processingResult.multiOptimizationResult.getAssignments(solutionIndex);
+
+        // currentAssignmentsを更新
+        currentAssignments = new ArrayList<>(newAssignments);
+
+        // staffDataMapを再構築
+        rebuildStaffDataMap(newAssignments);
+
+        // 部屋番号を再割り当て
+        if (roomAssigner != null) {
+            assignRoomNumbers();
+        }
+
+        // 残し部屋をリセット
+        excludedRooms.clear();
+
+        // テーブルを更新
+        loadAssignmentData();
+
+        // サマリーパネルを更新
+        updateSummaryPanel();
+
+        // ナビゲーションボタンの状態を更新
+        updateNavigationButtons();
+
+        // ステータス表示
+        statusLabel.setText(String.format("解 %d に切り替えました", solutionIndex + 1));
+    }
+
+    /**
+     * ★追加: staffDataMapを再構築
+     */
+    private void rebuildStaffDataMap(List<AdaptiveRoomOptimizer.StaffAssignment> assignments) {
+        staffDataMap.clear();
+        detailedRoomAssignments.clear();
+
+        if (processingResult.optimizationResult != null) {
+            for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+                AdaptiveRoomOptimizer.BathCleaningType bathType =
+                        processingResult.optimizationResult.config.bathAssignments.getOrDefault(
+                                assignment.staff.name,
+                                AdaptiveRoomOptimizer.BathCleaningType.NONE);
+
+                String constraintType = getConstraintType(assignment.staff.name);
+                staffDataMap.put(assignment.staff.name, new StaffData(assignment, bathType, constraintType));
+            }
+        }
+    }
+
+    /**
+     * ★追加: サマリーパネルを更新
+     */
+    private void updateSummaryPanel() {
+        Container parent = summaryPanel.getParent();
+        if (parent != null) {
+            parent.remove(summaryPanel);
+            summaryPanel = createSummaryPanel();
+            parent.add(summaryPanel, BorderLayout.NORTH);
+            parent.revalidate();
+            parent.repaint();
+        }
+    }
+
+    /**
+     * ★追加: ナビゲーションボタンの状態を更新
+     */
+    private void updateNavigationButtons() {
+        if (prevSolutionButton != null) {
+            prevSolutionButton.setEnabled(currentSolutionIndex > 0);
+        }
+        if (nextSolutionButton != null) {
+            nextSolutionButton.setEnabled(currentSolutionIndex < processingResult.totalSolutionCount - 1);
+        }
+        if (solutionIndexLabel != null) {
+            solutionIndexLabel.setText(String.format("解 %d / %d",
+                    currentSolutionIndex + 1, processingResult.totalSolutionCount));
         }
     }
 

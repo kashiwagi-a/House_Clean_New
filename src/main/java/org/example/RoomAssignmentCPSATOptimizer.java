@@ -26,6 +26,9 @@ public class RoomAssignmentCPSATOptimizer {
     private static final int MAX_SINGLE_SOLUTIONS = 5;
     private static final int MAX_TOTAL_CANDIDATES = 50;
 
+    // ★追加: 複数解の最大数（ユーザーに表示する解の数）
+    public static final int MAX_SOLUTIONS_TO_KEEP = 7;
+
     // フロアあたりの最大スタッフ数（初期値と上限）
     private static final int INITIAL_MAX_STAFF_PER_FLOOR = 2;
     private static final int MAX_STAFF_PER_FLOOR_LIMIT = 10;
@@ -185,6 +188,36 @@ public class RoomAssignmentCPSATOptimizer {
             this.assignments = assignments;
             this.unassignedRooms = unassignedRooms;
             this.isComplete = !unassignedRooms.hasUnassigned();
+        }
+    }
+
+    /**
+     * ★追加: 複数解を保持する結果クラス
+     */
+    public static class MultiSolutionResult {
+        public final List<OptimizationResultWithUnassigned> solutions;
+        public final int totalSolutionCount;
+        public final int currentIndex;
+
+        public MultiSolutionResult(List<OptimizationResultWithUnassigned> solutions) {
+            this.solutions = new ArrayList<>(solutions);
+            this.totalSolutionCount = solutions.size();
+            this.currentIndex = 0;
+        }
+
+        public OptimizationResultWithUnassigned getSolution(int index) {
+            if (index < 0 || index >= solutions.size()) {
+                return solutions.isEmpty() ? null : solutions.get(0);
+            }
+            return solutions.get(index);
+        }
+
+        public OptimizationResultWithUnassigned getFirstSolution() {
+            return solutions.isEmpty() ? null : solutions.get(0);
+        }
+
+        public boolean hasMultipleSolutions() {
+            return solutions.size() > 1;
         }
     }
 
@@ -411,6 +444,157 @@ public class RoomAssignmentCPSATOptimizer {
 
         OptimizationResultWithUnassigned result = optimizeWithUnassigned(buildingData, config);
         return result.assignments;
+    }
+
+    /**
+     * ★追加: 複数解を返す最適化メソッド
+     * 最大MAX_SOLUTIONS_TO_KEEP個の異なる解を生成して返す
+     */
+    public static MultiSolutionResult optimizeMultipleSolutions(
+            AdaptiveRoomOptimizer.BuildingData buildingData,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
+
+        LOGGER.info("=== CP-SATソルバーによる複数解最適化を開始（最大" + MAX_SOLUTIONS_TO_KEEP + "解）===");
+
+        // 元の建物データを保持（未割当計算用）
+        AdaptiveRoomOptimizer.BuildingData originalBuildingData = buildingData;
+
+        List<OptimizationResultWithUnassigned> solutions = new ArrayList<>();
+
+        // ★★★ 最初の解は必ず元のoptimizeWithUnassigned()で取得（元の動作と同じ結果を保証）★★★
+        LOGGER.info("=== 解1: 元のoptimize()と同等の解を生成 ===");
+        OptimizationResultWithUnassigned firstSolution = optimizeWithUnassigned(buildingData, config);
+        solutions.add(firstSolution);
+
+        // 追加の解が不要な場合、または元の解で完全解が得られた場合は終了
+        if (MAX_SOLUTIONS_TO_KEEP <= 1) {
+            return new MultiSolutionResult(solutions);
+        }
+
+        // ★★★ 解2以降: 異なるバリエーションを探索 ★★★
+        LOGGER.info("=== 解2以降: 追加のバリエーションを探索 ===");
+
+        // ステップ0: 大浴清掃スタッフへの事前割り振り
+        BathStaffPreAssignmentResult bathPreAssignment = preAssignBathCleaningStaff(buildingData, config);
+
+        List<List<AdaptiveRoomOptimizer.StaffAssignment>> additionalAssignmentsList = new ArrayList<>();
+
+        if (bathPreAssignment.bathStaffAssignments.isEmpty()) {
+            LOGGER.info("大浴清掃スタッフなし。通常のCPSAT複数解最適化を実行します。");
+            // 追加解を探索（最大MAX_SOLUTIONS_TO_KEEP - 1個）
+            additionalAssignmentsList = optimizeWithCPSATMultiple(buildingData, config, new HashMap<>(), config, MAX_SOLUTIONS_TO_KEEP - 1);
+
+            // ECO割り振りを各解に適用
+            for (List<AdaptiveRoomOptimizer.StaffAssignment> assignments : additionalAssignmentsList) {
+                if (!assignments.isEmpty()) {
+                    assignEcoWithCPSAT(assignments, buildingData, config);
+                }
+            }
+        } else {
+            LOGGER.info("=== 大浴清掃スタッフの事前割り振り完了 ===");
+
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig remainingConfig =
+                    createRemainingConfig(config, bathPreAssignment);
+
+            List<List<AdaptiveRoomOptimizer.StaffAssignment>> cpSatAssignmentsList =
+                    optimizeWithCPSATMultiple(bathPreAssignment.remainingBuildingData,
+                            remainingConfig, bathPreAssignment.bathStaffAssignments, config, MAX_SOLUTIONS_TO_KEEP - 1);
+
+            // 各解に大浴清掃スタッフの割り振りをマージしてECO割り振りを適用
+            // ★修正: 各解ごとに大浴清掃スタッフのディープコピーを作成して独立性を確保
+            for (List<AdaptiveRoomOptimizer.StaffAssignment> cpSatAssignments : cpSatAssignmentsList) {
+                // 毎回新しいディープコピーを作成
+                Map<String, AdaptiveRoomOptimizer.StaffAssignment> bathCopy = new HashMap<>();
+                for (Map.Entry<String, AdaptiveRoomOptimizer.StaffAssignment> entry :
+                        bathPreAssignment.bathStaffAssignments.entrySet()) {
+                    bathCopy.put(entry.getKey(), entry.getValue().deepCopy());
+                }
+
+                List<AdaptiveRoomOptimizer.StaffAssignment> merged =
+                        mergeAssignments(bathCopy, cpSatAssignments);
+                assignEcoWithCPSAT(merged, originalBuildingData, config);
+                additionalAssignmentsList.add(merged);
+            }
+        }
+
+        // 追加解を評価して重複を除去
+        String firstSolutionPattern = buildFloorPattern(firstSolution.assignments);
+
+        for (List<AdaptiveRoomOptimizer.StaffAssignment> assignments : additionalAssignmentsList) {
+            // 最初の解と重複していないかチェック
+            String pattern = buildFloorPattern(assignments);
+            if (!pattern.equals(firstSolutionPattern)) {
+                // 既存の追加解とも重複していないかチェック
+                boolean isDuplicate = false;
+                for (int i = 1; i < solutions.size(); i++) {
+                    String existingPattern = buildFloorPattern(solutions.get(i).assignments);
+                    if (pattern.equals(existingPattern)) {
+                        isDuplicate = true;
+                        break;
+                    }
+                }
+                if (!isDuplicate) {
+                    UnassignedRooms unassignedRooms = calculateUnassignedRooms(originalBuildingData, assignments);
+                    solutions.add(new OptimizationResultWithUnassigned(assignments, unassignedRooms));
+                    LOGGER.info(String.format("追加解 %d を採用", solutions.size()));
+
+                    if (solutions.size() >= MAX_SOLUTIONS_TO_KEEP) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        LOGGER.info(String.format("=== 複数解最適化完了: %d個の解を生成 ===", solutions.size()));
+
+        return new MultiSolutionResult(solutions);
+    }
+
+    /**
+     * ★追加: 複数解を返すCPSAT最適化
+     */
+    private static List<List<AdaptiveRoomOptimizer.StaffAssignment>> optimizeWithCPSATMultiple(
+            AdaptiveRoomOptimizer.BuildingData buildingData,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
+            Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
+            int maxSolutions) {
+
+        if (config.extendedStaffInfo.isEmpty()) {
+            LOGGER.info("CPSAT最適化対象のスタッフがいません。");
+            return new ArrayList<>();
+        }
+
+        if (buildingData.mainRoomCount == 0 && buildingData.annexRoomCount == 0) {
+            LOGGER.info("CPSAT最適化対象の部屋がありません。");
+            return new ArrayList<>();
+        }
+
+        LOGGER.info("=== フロアあたり最大2人制限でCPSAT複数解最適化を開始 ===");
+
+        // フロアあたりのスタッフ数制限を段階的に緩和
+        for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
+             maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT;
+             maxStaffPerFloor++) {
+
+            List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
+                    optimizeWithStaffPerFloorLimitMultiple(buildingData, config, existingAssignments,
+                            maxStaffPerFloor, originalConfig, maxSolutions);
+
+            if (results != null && !results.isEmpty()) {
+                LOGGER.info(String.format("フロアあたり最大%d人制限で%d個の解が見つかりました。",
+                        maxStaffPerFloor, results.size()));
+                return results;
+            }
+
+            if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
+                LOGGER.warning(String.format("=== フロアあたり%d人制限では解が見つかりませんでした。%d人制限で再試行します ===",
+                        maxStaffPerFloor, maxStaffPerFloor + 1));
+            }
+        }
+
+        LOGGER.severe(String.format("フロアあたり%d人制限でも解が見つかりませんでした。", MAX_STAFF_PER_FLOOR_LIMIT));
+        return new ArrayList<>();
     }
 
     // ================================================================
@@ -1118,15 +1302,157 @@ public class RoomAssignmentCPSATOptimizer {
     }
 
     /**
+     * ★追加: 複数解を返すフロアあたりのスタッフ数制限付きCPSAT最適化
+     */
+    private static List<List<AdaptiveRoomOptimizer.StaffAssignment>> optimizeWithStaffPerFloorLimitMultiple(
+            AdaptiveRoomOptimizer.BuildingData buildingData,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
+            Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
+            int maxStaffPerFloor,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
+            int maxSolutions) {
+
+        LOGGER.info(String.format("=== 残りスタッフのCPSAT複数解最適化（フロアあたり最大%d人、最大%d解）===",
+                maxStaffPerFloor, maxSolutions));
+
+        List<Map<String, TwinAssignment>> twinPatterns = generateTwinPatterns(buildingData, config);
+        LOGGER.info("ツインパターン数: " + twinPatterns.size());
+
+        if (twinPatterns.isEmpty()) {
+            LOGGER.warning("ツインパターンが生成されませんでした。空の結果を返します。");
+            return new ArrayList<>();
+        }
+
+        // 完全解を収集
+        List<List<AdaptiveRoomOptimizer.StaffAssignment>> completeSolutions = new ArrayList<>();
+        // 部分解も保持（完全解が足りない場合に使用）
+        List<PartialSolutionResult> partialResults = new ArrayList<>();
+
+        for (int i = 0; i < twinPatterns.size() && completeSolutions.size() < maxSolutions; i++) {
+            Map<String, TwinAssignment> pattern = twinPatterns.get(i);
+
+            if (i % 20 == 0) {
+                LOGGER.info("=== ツインパターン " + (i + 1) + "/" + twinPatterns.size() + " を試行中（現在" + completeSolutions.size() + "解）===");
+            }
+
+            Map<String, FloorTwinAssignment> twinResult =
+                    assignTwinsRoundRobin(buildingData, config, pattern, maxStaffPerFloor);
+            if (twinResult == null) {
+                continue;
+            }
+
+            // シングル割り振り（CP-SAT）
+            List<PartialSolutionResult> singleResults =
+                    assignSinglesMultiple(buildingData, config, twinResult, maxStaffPerFloor);
+
+            for (PartialSolutionResult result : singleResults) {
+                if (result.shortage == 0) {
+                    // 完全解を収集
+                    if (completeSolutions.size() < maxSolutions) {
+                        // 重複チェック（簡易的に総部屋数の分布で判定）
+                        if (!isDuplicateSolution(completeSolutions, result.assignments)) {
+                            completeSolutions.add(result.assignments);
+                            LOGGER.info(String.format("完全解 %d を発見（パターン%d）",
+                                    completeSolutions.size(), i + 1));
+                        }
+                    }
+                } else {
+                    // 部分解を保持
+                    partialResults.add(result);
+                }
+            }
+        }
+
+        // 完全解が見つかった場合はそれを返す
+        if (!completeSolutions.isEmpty()) {
+            LOGGER.info(String.format("合計 %d 個の完全解を発見", completeSolutions.size()));
+            return completeSolutions;
+        }
+
+        // 完全解がない場合：最大制限に達していなければnullを返して次の制限で再試行
+        if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
+            return null;
+        }
+
+        // 最大制限でも完全解がない場合は部分解から最良のものを返す
+        if (!partialResults.isEmpty()) {
+            LOGGER.warning("=== 完全な解が見つかりませんでした。部分解を使用します ===");
+
+            // 未割当が少ない順にソート
+            partialResults.sort((a, b) -> Integer.compare(a.shortage, b.shortage));
+
+            List<List<AdaptiveRoomOptimizer.StaffAssignment>> results = new ArrayList<>();
+            for (int i = 0; i < Math.min(maxSolutions, partialResults.size()); i++) {
+                results.add(partialResults.get(i).assignments);
+            }
+            return results;
+        }
+
+        return null;
+    }
+
+    /**
+     * ★追加: 解の重複チェック（簡易版：スタッフごとの担当フロアの組み合わせで判定）
+     */
+    private static boolean isDuplicateSolution(
+            List<List<AdaptiveRoomOptimizer.StaffAssignment>> existingSolutions,
+            List<AdaptiveRoomOptimizer.StaffAssignment> newSolution) {
+
+        if (existingSolutions.isEmpty()) {
+            return false;
+        }
+
+        // 新しい解のフロア割り当てパターンを文字列化
+        String newPattern = buildFloorPattern(newSolution);
+
+        for (List<AdaptiveRoomOptimizer.StaffAssignment> existing : existingSolutions) {
+            String existingPattern = buildFloorPattern(existing);
+            if (newPattern.equals(existingPattern)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * ★追加: 解のフロア割り当てパターンを文字列化
+     */
+    private static String buildFloorPattern(List<AdaptiveRoomOptimizer.StaffAssignment> assignments) {
+        StringBuilder sb = new StringBuilder();
+
+        // スタッフ名でソートして一貫性を保つ
+        List<AdaptiveRoomOptimizer.StaffAssignment> sorted = new ArrayList<>(assignments);
+        sorted.sort((a, b) -> a.staff.name.compareTo(b.staff.name));
+
+        for (AdaptiveRoomOptimizer.StaffAssignment sa : sorted) {
+            sb.append(sa.staff.name).append(":");
+            List<Integer> floors = new ArrayList<>(sa.floors);
+            Collections.sort(floors);
+            for (Integer f : floors) {
+                sb.append(f).append(",");
+            }
+            sb.append(";");
+        }
+        return sb.toString();
+    }
+
+    /**
      * 大浴清掃スタッフの割り振りとCPSAT結果をマージ
+     * ★修正: ディープコピーを使用して各解が独立したオブジェクトを持つようにする
      */
     private static List<AdaptiveRoomOptimizer.StaffAssignment> mergeAssignments(
             Map<String, AdaptiveRoomOptimizer.StaffAssignment> bathStaffAssignments,
             List<AdaptiveRoomOptimizer.StaffAssignment> cpSatAssignments) {
 
         List<AdaptiveRoomOptimizer.StaffAssignment> merged = new ArrayList<>();
-        merged.addAll(bathStaffAssignments.values());
-        merged.addAll(cpSatAssignments);
+
+        // ★修正: ディープコピーを使用
+        for (AdaptiveRoomOptimizer.StaffAssignment sa : bathStaffAssignments.values()) {
+            merged.add(sa.deepCopy());
+        }
+        for (AdaptiveRoomOptimizer.StaffAssignment sa : cpSatAssignments) {
+            merged.add(sa.deepCopy());
+        }
 
         LOGGER.info("=== 最終割り振り結果 ===");
         for (AdaptiveRoomOptimizer.StaffAssignment assignment : merged) {
@@ -1276,19 +1602,102 @@ public class RoomAssignmentCPSATOptimizer {
         List<String> mainTwinStaff = new ArrayList<>();
         List<String> annexTwinStaff = new ArrayList<>();
 
+        // ★修正: 元の設定値を取得し、超過分を再配分する
+        Map<String, Integer> originalMainTwin = new HashMap<>();
+        Map<String, Integer> originalAnnexTwin = new HashMap<>();
+
+        for (Map.Entry<String, TwinAssignment> entry : twinPattern.entrySet()) {
+            String staffName = entry.getKey();
+            result.put(staffName, new FloorTwinAssignment());
+
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
+            TwinAssignment ta = entry.getValue();
+
+            // 元の設定値を保存
+            originalMainTwin.put(staffName, dist != null ? dist.mainTwinAssignedRooms : ta.mainTwinRooms);
+            originalAnnexTwin.put(staffName, dist != null ? dist.annexTwinAssignedRooms : ta.annexTwinRooms);
+        }
+
+        // 本館ツイン: 設定値を超える分を集計し、設定値に制限
+        int excessMain = 0;
         for (Map.Entry<String, TwinAssignment> entry : twinPattern.entrySet()) {
             String staffName = entry.getKey();
             TwinAssignment ta = entry.getValue();
+            int original = originalMainTwin.get(staffName);
 
-            result.put(staffName, new FloorTwinAssignment());
-
-            if (ta.mainTwinRooms > 0) {
+            if (ta.mainTwinRooms > original) {
+                // 超過分を集計
+                excessMain += ta.mainTwinRooms - original;
+                if (original > 0) {
+                    remainingMainTarget.put(staffName, original);
+                    mainTwinStaff.add(staffName);
+                }
+            } else if (ta.mainTwinRooms > 0) {
                 remainingMainTarget.put(staffName, ta.mainTwinRooms);
                 mainTwinStaff.add(staffName);
             }
-            if (ta.annexTwinRooms > 0) {
+        }
+
+        // 超過分を、設定値より少ないスタッフに再配分
+        if (excessMain > 0) {
+            for (String staffName : twinPattern.keySet()) {
+                if (excessMain <= 0) break;
+                int current = remainingMainTarget.getOrDefault(staffName, 0);
+                int original = originalMainTwin.get(staffName);
+                if (current < original) {
+                    int canAdd = original - current;
+                    int toAdd = Math.min(canAdd, excessMain);
+                    remainingMainTarget.put(staffName, current + toAdd);
+                    excessMain -= toAdd;
+                    if (current == 0 && toAdd > 0 && !mainTwinStaff.contains(staffName)) {
+                        mainTwinStaff.add(staffName);
+                    }
+                }
+            }
+            if (excessMain > 0) {
+                LOGGER.fine(String.format("本館ツイン超過分%d室を再配分できませんでした", excessMain));
+            }
+        }
+
+        // 別館ツイン: 設定値を超える分を集計し、設定値に制限
+        int excessAnnex = 0;
+        for (Map.Entry<String, TwinAssignment> entry : twinPattern.entrySet()) {
+            String staffName = entry.getKey();
+            TwinAssignment ta = entry.getValue();
+            int original = originalAnnexTwin.get(staffName);
+
+            if (ta.annexTwinRooms > original) {
+                // 超過分を集計
+                excessAnnex += ta.annexTwinRooms - original;
+                if (original > 0) {
+                    remainingAnnexTarget.put(staffName, original);
+                    annexTwinStaff.add(staffName);
+                }
+            } else if (ta.annexTwinRooms > 0) {
                 remainingAnnexTarget.put(staffName, ta.annexTwinRooms);
                 annexTwinStaff.add(staffName);
+            }
+        }
+
+        // 超過分を、設定値より少ないスタッフに再配分
+        if (excessAnnex > 0) {
+            for (String staffName : twinPattern.keySet()) {
+                if (excessAnnex <= 0) break;
+                int current = remainingAnnexTarget.getOrDefault(staffName, 0);
+                int original = originalAnnexTwin.get(staffName);
+                if (current < original) {
+                    int canAdd = original - current;
+                    int toAdd = Math.min(canAdd, excessAnnex);
+                    remainingAnnexTarget.put(staffName, current + toAdd);
+                    excessAnnex -= toAdd;
+                    if (current == 0 && toAdd > 0 && !annexTwinStaff.contains(staffName)) {
+                        annexTwinStaff.add(staffName);
+                    }
+                }
+            }
+            if (excessAnnex > 0) {
+                LOGGER.fine(String.format("別館ツイン超過分%d室を再配分できませんでした", excessAnnex));
             }
         }
 
@@ -1317,7 +1726,8 @@ public class RoomAssignmentCPSATOptimizer {
                             boolean canAddFloor = fta.usedFloors.size() < maxFloors;
 
                             if (alreadyOnFloor || canAddFloor) {
-                                int toAssign = Math.min(remaining, twinsOnFloor);
+                                // ★修正: 1回で1部屋だけ割り当て（フロア内で複数スタッフに分散）
+                                int toAssign = 1;
 
                                 int currentAssigned = fta.mainFloorTwins.getOrDefault(floorNum, 0);
                                 fta.mainFloorTwins.put(floorNum, currentAssigned + toAssign);
@@ -1368,7 +1778,8 @@ public class RoomAssignmentCPSATOptimizer {
                             boolean canAddFloor = fta.usedFloors.size() < maxFloors;
 
                             if (alreadyOnFloor || canAddFloor) {
-                                int toAssign = Math.min(remaining, twinsOnFloor);
+                                // ★修正: 1回で1部屋だけ割り当て（フロア内で複数スタッフに分散）
+                                int toAssign = 1;
 
                                 int currentAssigned = fta.annexFloorTwins.getOrDefault(floorNum, 0);
                                 fta.annexFloorTwins.put(floorNum, currentAssigned + toAssign);

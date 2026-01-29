@@ -141,6 +141,30 @@ public class AdaptiveRoomOptimizer {
         public Map<Integer, RoomAllocation> getRoomsByFloor() {
             return new HashMap<>(roomsByFloor);
         }
+
+        /**
+         * ★追加: ディープコピーを作成
+         * 複数解生成時にオブジェクト共有による副作用を防ぐため
+         */
+        public StaffAssignment deepCopy() {
+            Map<Integer, RoomAllocation> mainCopy = new HashMap<>();
+            for (Map.Entry<Integer, RoomAllocation> entry : mainBuildingAssignments.entrySet()) {
+                mainCopy.put(entry.getKey(), new RoomAllocation(
+                        new HashMap<>(entry.getValue().roomCounts),
+                        entry.getValue().ecoRooms
+                ));
+            }
+
+            Map<Integer, RoomAllocation> annexCopy = new HashMap<>();
+            for (Map.Entry<Integer, RoomAllocation> entry : annexBuildingAssignments.entrySet()) {
+                annexCopy.put(entry.getKey(), new RoomAllocation(
+                        new HashMap<>(entry.getValue().roomCounts),
+                        entry.getValue().ecoRooms
+                ));
+            }
+
+            return new StaffAssignment(this.staff, mainCopy, annexCopy, this.bathCleaningType);
+        }
     }
 
     /**
@@ -294,6 +318,57 @@ public class AdaptiveRoomOptimizer {
 
             // 最適化結果を返す
             return new OptimizationResult(assignments, config, targetDate);
+        }
+
+        /**
+         * ★追加: 複数解を返す最適化メソッド
+         */
+        public MultiOptimizationResult optimizeMultiple(LocalDate targetDate) {
+            LOGGER.info("=== 適応型複数解最適化を開始 ===");
+
+            // 部屋割り振り設定の必須チェック
+            if (config.roomDistribution == null || config.roomDistribution.isEmpty()) {
+                throw new IllegalStateException(
+                        "部屋割り振り設定が必須です。通常清掃部屋割り振りダイアログで設定してください。");
+            }
+
+            // 建物データの分離（本館・別館）
+            BuildingData buildingData = separateBuildings(floors);
+
+            // CP-SATソルバーを使用した複数解最適化
+            RoomAssignmentCPSATOptimizer.MultiSolutionResult multiResult;
+
+            try {
+                LOGGER.info("CP-SATソルバーを使用した複数解最適化を開始します");
+                multiResult = RoomAssignmentCPSATOptimizer.optimizeMultipleSolutions(buildingData, config);
+                LOGGER.info(String.format("CP-SATソルバーによる複数解最適化が成功しました（%d解）",
+                        multiResult.totalSolutionCount));
+
+            } catch (NoClassDefFoundError e) {
+                String errorMsg = "OR-Toolsライブラリが見つかりません。\n" +
+                        "pom.xmlにortools-javaの依存関係を追加してください。";
+                LOGGER.severe(errorMsg);
+                throw new RuntimeException(errorMsg, e);
+
+            } catch (UnsatisfiedLinkError e) {
+                String errorMsg = "OR-Toolsのネイティブライブラリのロードに失敗しました。\n" +
+                        "詳細: " + e.getMessage();
+                LOGGER.severe(errorMsg);
+                throw new RuntimeException(errorMsg, e);
+
+            } catch (RuntimeException e) {
+                LOGGER.severe("最適化に失敗しました: " + e.getMessage());
+                throw e;
+
+            } catch (Exception e) {
+                String errorMsg = "最適化中に予期しないエラーが発生しました: " + e.getMessage();
+                LOGGER.severe(errorMsg);
+                e.printStackTrace();
+                throw new RuntimeException(errorMsg, e);
+            }
+
+            // 複数解の最適化結果を返す
+            return new MultiOptimizationResult(multiResult, config, targetDate);
         }
 
 
@@ -988,6 +1063,107 @@ public class AdaptiveRoomOptimizer {
 
             System.out.printf("\n総計:\n");
             System.out.printf("  部屋数: %d室\n", totalRooms);
+        }
+    }
+
+    /**
+     * ★追加: 複数解を保持する最適化結果クラス
+     */
+    public static class MultiOptimizationResult {
+        public final RoomAssignmentCPSATOptimizer.MultiSolutionResult multiSolutionResult;
+        public final AdaptiveLoadConfig config;
+        public final LocalDate targetDate;
+        public final int totalSolutionCount;
+        private int currentIndex;
+
+        public MultiOptimizationResult(
+                RoomAssignmentCPSATOptimizer.MultiSolutionResult multiSolutionResult,
+                AdaptiveLoadConfig config,
+                LocalDate targetDate) {
+            this.multiSolutionResult = multiSolutionResult;
+            this.config = config;
+            this.targetDate = targetDate;
+            this.totalSolutionCount = multiSolutionResult.totalSolutionCount;
+            this.currentIndex = 0;
+        }
+
+        /**
+         * 指定インデックスの解を取得
+         */
+        public List<StaffAssignment> getAssignments(int index) {
+            RoomAssignmentCPSATOptimizer.OptimizationResultWithUnassigned result =
+                    multiSolutionResult.getSolution(index);
+            return result != null ? result.assignments : new ArrayList<>();
+        }
+
+        /**
+         * 現在の解を取得
+         */
+        public List<StaffAssignment> getCurrentAssignments() {
+            return getAssignments(currentIndex);
+        }
+
+        /**
+         * 指定インデックスの未割当情報を取得
+         */
+        public RoomAssignmentCPSATOptimizer.UnassignedRooms getUnassignedRooms(int index) {
+            RoomAssignmentCPSATOptimizer.OptimizationResultWithUnassigned result =
+                    multiSolutionResult.getSolution(index);
+            return result != null ? result.unassignedRooms : new RoomAssignmentCPSATOptimizer.UnassignedRooms();
+        }
+
+        /**
+         * 現在のインデックスを取得
+         */
+        public int getCurrentIndex() {
+            return currentIndex;
+        }
+
+        /**
+         * 現在のインデックスを設定
+         */
+        public void setCurrentIndex(int index) {
+            if (index >= 0 && index < totalSolutionCount) {
+                this.currentIndex = index;
+            }
+        }
+
+        /**
+         * 複数解があるかどうか
+         */
+        public boolean hasMultipleSolutions() {
+            return totalSolutionCount > 1;
+        }
+
+        /**
+         * 従来互換: 最初の解をOptimizationResultとして取得
+         */
+        public OptimizationResult toSingleResult() {
+            return new OptimizationResult(getAssignments(0), config, targetDate);
+        }
+
+        /**
+         * 指定インデックスの解をOptimizationResultとして取得
+         */
+        public OptimizationResult toSingleResult(int index) {
+            return new OptimizationResult(getAssignments(index), config, targetDate);
+        }
+
+        public void printDetailedSummary() {
+            System.out.println("\n=== 複数解最適化結果サマリー ===");
+            System.out.printf("対象日: %s\n", targetDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
+            System.out.printf("生成された解の数: %d\n", totalSolutionCount);
+
+            for (int i = 0; i < totalSolutionCount; i++) {
+                List<StaffAssignment> assignments = getAssignments(i);
+                int totalRooms = assignments.stream().mapToInt(StaffAssignment::getTotalRooms).sum();
+                RoomAssignmentCPSATOptimizer.UnassignedRooms unassigned = getUnassignedRooms(i);
+
+                System.out.printf("\n--- 解 %d/%d ---\n", i + 1, totalSolutionCount);
+                System.out.printf("  スタッフ数: %d人\n", assignments.size());
+                System.out.printf("  総部屋数: %d室\n", totalRooms);
+                System.out.printf("  未割当: %d室\n", unassigned.getTotalUnassigned());
+            }
         }
     }
 }

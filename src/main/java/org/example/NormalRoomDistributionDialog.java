@@ -22,6 +22,7 @@ import java.util.stream.Collectors;
  * 4. 換算値合計と実際合計の分離表示
  * 5. ツイン部屋の均等分配ロジック追加
  * 6. ★★ECO部屋の均等配分機能追加（換算係数0.2）
+ * 7. ★★「清掃割り当て調整」画面から戻る機能追加（初期パターン指定版コンストラクタ）
  */
 public class NormalRoomDistributionDialog extends JDialog {
 
@@ -269,6 +270,59 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
+     * ★★新規コンストラクタ（初期パターン指定版）
+     * 「清掃割り当て調整」画面から戻る際に使用
+     *
+     * @param initialPattern 初期表示するパターン（元の設定値）
+     */
+    public NormalRoomDistributionDialog(JFrame parent,
+                                        int totalMainSingleRooms,
+                                        int totalMainTwinRooms,
+                                        int totalMainEcoRooms,
+                                        int totalAnnexSingleRooms,
+                                        int totalAnnexTwinRooms,
+                                        int totalAnnexEcoRooms,
+                                        List<RoomAssignmentApplication.StaffPointConstraint> staffConstraints,
+                                        List<String> staffNames,
+                                        AdaptiveRoomOptimizer.BathCleaningType bathCleaningType,
+                                        Map<String, StaffDistribution> initialPattern) {
+        super(parent, "通常清掃部屋割り振り設定", true);
+
+        // ★★4区分の部屋数を設定
+        this.totalMainSingleRooms = totalMainSingleRooms;
+        this.totalMainTwinRooms = totalMainTwinRooms;
+        this.totalAnnexSingleRooms = totalAnnexSingleRooms;
+        this.totalAnnexTwinRooms = totalAnnexTwinRooms;
+
+        // ★★ECO部屋数を設定
+        this.totalMainEcoRooms = totalMainEcoRooms;
+        this.totalAnnexEcoRooms = totalAnnexEcoRooms;
+
+        // 後方互換性のため設定
+        this.totalMainRooms = totalMainSingleRooms + totalMainTwinRooms;
+        this.totalAnnexRooms = totalAnnexSingleRooms + totalAnnexTwinRooms;
+
+        this.staffConstraints = staffConstraints;
+        this.staffNames = staffNames;
+        this.bathCleaningType = bathCleaningType;
+
+        // ★★ポイント: 初期パターンが指定されている場合は計算せずにそのまま使用
+        // （元の設定値には故障者制限などの制約が既に反映されている）
+        if (initialPattern != null && !initialPattern.isEmpty()) {
+            this.currentPattern = deepCopyPattern(initialPattern);
+            this.oneDiffPattern = deepCopyPattern(initialPattern);
+            this.twoDiffPattern = deepCopyPattern(initialPattern);
+        } else {
+            calculateDistributionPatterns();
+            this.currentPattern = deepCopyPattern(oneDiffPattern);
+        }
+
+        initializeGUI();
+        setSize(1600, 750);
+        setLocationRelativeTo(parent);
+    }
+
+    /**
      * ★★4区分コンストラクタ（ECOなし・後方互換）
      */
     public NormalRoomDistributionDialog(JFrame parent,
@@ -433,8 +487,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             if (s1.isBathCleaning != s2.isBathCleaning) {
                 return s1.isBathCleaning ? -1 : 1;
             }
-            boolean s1IsBroken = "故障者制限".equals(s1.constraintType);
-            boolean s2IsBroken = "故障者制限".equals(s2.constraintType);
+            boolean s1IsBroken = "清掃制限".equals(s1.constraintType);
+            boolean s2IsBroken = "清掃制限".equals(s2.constraintType);
             if (s1IsBroken != s2IsBroken) {
                 return s1IsBroken ? -1 : 1;
             }
@@ -925,14 +979,14 @@ public class NormalRoomDistributionDialog extends JDialog {
             }
         }
 
-        // Step 4: '故障者制限'と'業者制限'がかかるスタッフを割り振る
+        // Step 4: '清掃制限'と'業者制限'がかかるスタッフを割り振る
         for (Map.Entry<String, StaffConstraintInfo> entry : staffInfo.entrySet()) {
             String staffName = entry.getKey();
             StaffConstraintInfo info = entry.getValue();
 
             if (!info.isBathCleaning && !"制限なし".equals(info.constraintType)) {
                 int assignedRooms;
-                if ("故障者制限".equals(info.constraintType)) {
+                if ("清掃制限".equals(info.constraintType)) {
                     assignedRooms = info.maxRooms;
                 } else {
                     assignedRooms = info.minRooms; // 業者制限の最低値

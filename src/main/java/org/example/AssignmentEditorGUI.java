@@ -1030,6 +1030,13 @@ public class AssignmentEditorGUI extends JFrame {
         excludeRoomsButton.addActionListener(e -> showExcludedRoomsDialog());
         buttonPanel.add(excludeRoomsButton);
 
+        // ★新規: 部屋割り振り設定ボタン
+        JButton roomDistributionButton = new JButton("部屋割り振り設定");
+        roomDistributionButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        roomDistributionButton.setBackground(new java.awt.Color(150, 200, 255)); // 青系の色
+        roomDistributionButton.addActionListener(e -> showRoomDistributionDialog());
+        buttonPanel.add(roomDistributionButton);
+
         buttonPanel.add(Box.createHorizontalStrut(20));
 
         // 既存ボタン
@@ -1107,6 +1114,470 @@ public class AssignmentEditorGUI extends JFrame {
 
         // 画面更新
         refreshTable();
+    }
+
+    /**
+     * ★新規: 部屋割り振り設定ダイアログを表示
+     * 元の設定値を反映したダイアログを表示し、変更後に再最適化を実行
+     */
+    private void showRoomDistributionDialog() {
+        if (processingResult == null || processingResult.cleaningDataObj == null) {
+            JOptionPane.showMessageDialog(this,
+                    "処理結果データがありません", "エラー", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        // ★修正: 元の設定値を取得（CPSATの結果ではなく、自分が設定した値）
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> originalDistribution = null;
+        if (processingResult.optimizationResult != null &&
+                processingResult.optimizationResult.config != null &&
+                processingResult.optimizationResult.config.roomDistribution != null) {
+            originalDistribution = processingResult.optimizationResult.config.roomDistribution;
+        }
+
+        if (originalDistribution == null || originalDistribution.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "元の部屋割り振り設定が見つかりません。\n" +
+                            "最初から処理を実行してください。",
+                    "エラー", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // 部屋タイプ別の集計
+        int totalMainSingleRooms = 0;
+        int totalMainTwinRooms = 0;
+        int totalMainEcoRooms = 0;
+        int totalAnnexSingleRooms = 0;
+        int totalAnnexTwinRooms = 0;
+        int totalAnnexEcoRooms = 0;
+
+        FileProcessor.CleaningData cleaningData = processingResult.cleaningDataObj;
+
+        // 本館の部屋タイプ集計
+        for (FileProcessor.Room room : cleaningData.mainRooms) {
+            if (room.isEcoClean) {
+                totalMainEcoRooms++;
+            } else {
+                if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
+                    totalMainTwinRooms++;
+                } else {
+                    totalMainSingleRooms++;
+                }
+            }
+        }
+
+        // 別館の部屋タイプ集計
+        for (FileProcessor.Room room : cleaningData.annexRooms) {
+            if (room.isEcoClean) {
+                totalAnnexEcoRooms++;
+            } else {
+                if ("ANT".equals(room.roomType) || "ADT".equals(room.roomType)) {
+                    totalAnnexTwinRooms++;
+                } else {
+                    totalAnnexSingleRooms++;
+                }
+            }
+        }
+
+        // ★修正: スタッフ名リストを元の設定値から取得（全スタッフを含む）
+        List<String> staffNamesList = new ArrayList<>(originalDistribution.keySet());
+        Collections.sort(staffNamesList);
+
+        // ポイント制約リストを作成
+        List<RoomAssignmentApplication.StaffPointConstraint> pointConstraints =
+                createPointConstraintsList();
+
+        // 大浴場清掃タイプを取得（bathAssignmentsから推定）
+        AdaptiveRoomOptimizer.BathCleaningType bathType =
+                AdaptiveRoomOptimizer.BathCleaningType.NORMAL;  // デフォルト
+        if (processingResult.optimizationResult != null &&
+                processingResult.optimizationResult.config != null &&
+                processingResult.optimizationResult.config.bathAssignments != null) {
+            for (AdaptiveRoomOptimizer.BathCleaningType type :
+                    processingResult.optimizationResult.config.bathAssignments.values()) {
+                if (type != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                    bathType = type;
+                    break;
+                }
+            }
+        }
+
+        // ダイアログを表示（★元の設定値を渡す）
+        NormalRoomDistributionDialog dialog = new NormalRoomDistributionDialog(
+                this,
+                totalMainSingleRooms,
+                totalMainTwinRooms,
+                totalMainEcoRooms,
+                totalAnnexSingleRooms,
+                totalAnnexTwinRooms,
+                totalAnnexEcoRooms,
+                pointConstraints,
+                staffNamesList,
+                bathType,
+                originalDistribution);  // ★元の設定値を使用
+
+        dialog.setVisible(true);
+
+        if (dialog.getDialogResult()) {
+            // ユーザーがOKを押した場合、新しい設定を適用
+            Map<String, NormalRoomDistributionDialog.StaffDistribution> newDistribution =
+                    dialog.getCurrentDistribution();
+
+            // 変更確認メッセージ
+            int confirm = JOptionPane.showConfirmDialog(this,
+                    "部屋割り振り設定を変更しました。\n" +
+                            "この設定で再最適化を実行しますか？\n\n" +
+                            "（「いいえ」を選択すると変更は破棄されます）",
+                    "確認", JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                applyNewDistribution(newDistribution);
+            }
+        }
+    }
+
+    /**
+     * ★新規: 現在のスタッフ割り当て状態からStaffDistributionマップを作成
+     */
+    private Map<String, NormalRoomDistributionDialog.StaffDistribution> createCurrentDistribution() {
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> distribution = new HashMap<>();
+
+        for (Map.Entry<String, StaffData> entry : staffDataMap.entrySet()) {
+            String staffName = entry.getKey();
+            StaffData staffData = entry.getValue();
+
+            // 建物割り当ての判定
+            String buildingAssignment;
+            if (staffData.hasMainBuilding && staffData.hasAnnexBuilding) {
+                buildingAssignment = "両方";
+            } else if (staffData.hasMainBuilding) {
+                buildingAssignment = "本館のみ";
+            } else {
+                buildingAssignment = "別館のみ";
+            }
+
+            // 大浴場清掃担当判定
+            boolean isBathCleaning = staffData.bathCleaningType != null &&
+                    staffData.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE;
+
+            // StaffDistributionを作成
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    new NormalRoomDistributionDialog.StaffDistribution(
+                            staffData.id,
+                            staffData.name,
+                            buildingAssignment,
+                            0, // 後で設定
+                            0, // 後で設定
+                            staffData.constraintType,
+                            isBathCleaning);
+
+            // 部屋タイプ別にカウント
+            int mainSingle = 0, mainTwin = 0, mainEco = 0;
+            int annexSingle = 0, annexTwin = 0, annexEco = 0;
+
+            for (Map.Entry<Integer, List<FileProcessor.Room>> floorEntry : staffData.detailedRoomsByFloor.entrySet()) {
+                int floor = floorEntry.getKey();
+                boolean isMainBuilding = floor <= 10;
+
+                for (FileProcessor.Room room : floorEntry.getValue()) {
+                    if (room.isEco || room.isEcoClean) {
+                        if (isMainBuilding) {
+                            mainEco++;
+                        } else {
+                            annexEco++;
+                        }
+                    } else if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
+                        if (isMainBuilding) {
+                            mainTwin++;
+                        } else {
+                            mainSingle++; // 本館のNTは本館ツイン
+                        }
+                    } else if ("ANT".equals(room.roomType) || "ADT".equals(room.roomType)) {
+                        annexTwin++;
+                    } else {
+                        if (isMainBuilding) {
+                            mainSingle++;
+                        } else {
+                            annexSingle++;
+                        }
+                    }
+                }
+            }
+
+            dist.mainSingleAssignedRooms = mainSingle;
+            dist.mainTwinAssignedRooms = mainTwin;
+            dist.mainEcoAssignedRooms = mainEco;
+            dist.annexSingleAssignedRooms = annexSingle;
+            dist.annexTwinAssignedRooms = annexTwin;
+            dist.annexEcoAssignedRooms = annexEco;
+            dist.updateTotal();
+
+            distribution.put(staffName, dist);
+        }
+
+        return distribution;
+    }
+
+    /**
+     * ★新規: ポイント制約リストを作成
+     * ※PointConstraintにはconstraintTypeのみが保持されているため、
+     * 詳細な数値は元のroomDistributionから推定
+     */
+    private List<RoomAssignmentApplication.StaffPointConstraint> createPointConstraintsList() {
+        List<RoomAssignmentApplication.StaffPointConstraint> constraints = new ArrayList<>();
+
+        if (processingResult.optimizationResult != null &&
+                processingResult.optimizationResult.config != null &&
+                processingResult.optimizationResult.config.pointConstraints != null) {
+
+            // 元のroomDistributionを取得（制約の詳細情報として使用）
+            Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDist =
+                    processingResult.optimizationResult.config.roomDistribution;
+
+            for (Map.Entry<String, AdaptiveRoomOptimizer.PointConstraint> entry :
+                    processingResult.optimizationResult.config.pointConstraints.entrySet()) {
+
+                String staffName = entry.getKey();
+                AdaptiveRoomOptimizer.PointConstraint pc = entry.getValue();
+                StaffData staffData = staffDataMap.get(staffName);
+
+                if (staffData != null) {
+                    RoomAssignmentApplication.StaffPointConstraint.ConstraintType cType;
+                    RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment bType =
+                            RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.BOTH;
+                    double upperLimit = 0, lowerMin = 0, lowerMax = 0;
+
+                    boolean isBathCleaning = staffData.bathCleaningType != null &&
+                            staffData.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE;
+
+                    // constraintTypeから制約タイプを判定
+                    switch (pc.constraintType) {
+                        case "故障者制限":
+                            cType = RoomAssignmentApplication.StaffPointConstraint.ConstraintType.UPPER_LIMIT;
+                            // roomDistributionから部屋数を取得して上限を推定
+                            if (roomDist != null && roomDist.containsKey(staffName)) {
+                                upperLimit = roomDist.get(staffName).getTotalRoomsWithEco();
+                            }
+                            break;
+                        case "業者制限":
+                        case "リライアンス用":
+                            cType = RoomAssignmentApplication.StaffPointConstraint.ConstraintType.LOWER_RANGE;
+                            // roomDistributionから部屋数を取得して範囲を推定
+                            if (roomDist != null && roomDist.containsKey(staffName)) {
+                                int totalRooms = roomDist.get(staffName).getTotalRoomsWithEco();
+                                lowerMin = totalRooms;
+                                lowerMax = totalRooms + 5;  // 余裕を持たせる
+                            }
+                            break;
+                        default:
+                            cType = RoomAssignmentApplication.StaffPointConstraint.ConstraintType.NONE;
+                    }
+
+                    // 建物割り当ての判定
+                    if (staffData.hasMainBuilding && !staffData.hasAnnexBuilding) {
+                        bType = RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.MAIN_ONLY;
+                    } else if (!staffData.hasMainBuilding && staffData.hasAnnexBuilding) {
+                        bType = RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.ANNEX_ONLY;
+                    }
+
+                    constraints.add(new RoomAssignmentApplication.StaffPointConstraint(
+                            staffData.id, staffName, cType, bType,
+                            upperLimit, lowerMin, lowerMax, isBathCleaning));
+                }
+            }
+        }
+
+        return constraints;
+    }
+
+    /**
+     * ★新規: 新しい部屋割り振り設定を適用して再最適化
+     */
+    private void applyNewDistribution(Map<String, NormalRoomDistributionDialog.StaffDistribution> newDistribution) {
+        try {
+            // 処理中表示
+            setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+            statusLabel.setText("再最適化を実行中...");
+
+            // 1. FloorInfoを構築
+            List<AdaptiveRoomOptimizer.FloorInfo> floors = buildFloorInfoFromCleaningData(
+                    processingResult.cleaningDataObj);
+
+            // 2. スタッフリストを取得
+            List<FileProcessor.Staff> staffList = new ArrayList<>();
+            for (StaffData sd : staffDataMap.values()) {
+                staffList.add(new FileProcessor.Staff(sd.id, sd.name));
+            }
+
+            // 3. ポイント制約を取得
+            List<RoomAssignmentApplication.StaffPointConstraint> pointConstraints =
+                    createPointConstraintsList();
+
+            // 4. 大浴場清掃タイプを取得（bathAssignmentsから推定）
+            AdaptiveRoomOptimizer.BathCleaningType bathType =
+                    AdaptiveRoomOptimizer.BathCleaningType.NORMAL;  // デフォルト
+            if (processingResult.optimizationResult != null &&
+                    processingResult.optimizationResult.config != null &&
+                    processingResult.optimizationResult.config.bathAssignments != null) {
+                // 大浴場清掃担当者がいれば、そのタイプを使用
+                for (AdaptiveRoomOptimizer.BathCleaningType type :
+                        processingResult.optimizationResult.config.bathAssignments.values()) {
+                    if (type != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                        bathType = type;
+                        break;
+                    }
+                }
+            }
+
+            // 5. 新しいAdaptiveLoadConfigを作成（新しいroomDistributionを使用）
+            int totalRooms = processingResult.cleaningDataObj.totalMainRooms +
+                    processingResult.cleaningDataObj.totalAnnexRooms;
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig newConfig =
+                    AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithBathSelection(
+                            staffList,
+                            totalRooms,
+                            processingResult.cleaningDataObj.totalMainRooms,
+                            processingResult.cleaningDataObj.totalAnnexRooms,
+                            bathType,
+                            pointConstraints,
+                            newDistribution);  // ★新しい部屋割り振り設定
+
+            // 6. 最適化を実行
+            AdaptiveRoomOptimizer.AdaptiveOptimizer optimizer =
+                    new AdaptiveRoomOptimizer.AdaptiveOptimizer(floors, newConfig);
+            AdaptiveRoomOptimizer.MultiOptimizationResult multiResult =
+                    optimizer.optimizeMultiple(processingResult.optimizationResult.targetDate);
+
+            if (multiResult == null || multiResult.totalSolutionCount == 0) {
+                throw new RuntimeException("最適化に失敗しました。解が見つかりませんでした。");
+            }
+
+            // 7. 結果を更新
+            // 新しいProcessingResultを作成（既存のものを更新する代わりに）
+            RoomAssignmentApplication.ProcessingResult newResult =
+                    new RoomAssignmentApplication.ProcessingResult(
+                            processingResult.cleaningDataObj,
+                            multiResult,
+                            new HashMap<>());
+
+            // 8. currentAssignmentsを更新
+            this.currentAssignments = new ArrayList<>(multiResult.getAssignments(0));
+            this.processingResult = newResult;
+
+            // 9. staffDataMapを再構築
+            rebuildStaffDataMap();
+
+            // 10. 部屋番号を再割り当て
+            if (roomAssigner != null) {
+                assignRoomNumbers();
+            }
+
+            // 11. 複数解ナビゲーションを更新
+            currentSolutionIndex = 0;
+            updateNavigationButtons();
+
+            // 12. 画面を更新
+            refreshTable();
+
+            setCursor(Cursor.getDefaultCursor());
+            statusLabel.setText(String.format("再最適化完了: %d個の解が見つかりました",
+                    multiResult.totalSolutionCount));
+
+            JOptionPane.showMessageDialog(this,
+                    String.format("再最適化が完了しました。\n\n" +
+                                    "生成された解の数: %d個\n" +
+                                    "解の切り替えで結果を確認できます。",
+                            multiResult.totalSolutionCount),
+                    "再最適化完了", JOptionPane.INFORMATION_MESSAGE);
+
+        } catch (Exception ex) {
+            setCursor(Cursor.getDefaultCursor());
+            statusLabel.setText("再最適化に失敗しました");
+            JOptionPane.showMessageDialog(this,
+                    "再最適化中にエラーが発生しました:\n" + ex.getMessage(),
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            ex.printStackTrace();
+        }
+    }
+
+    /**
+     * ★新規: CleaningDataからFloorInfoを構築
+     */
+    private List<AdaptiveRoomOptimizer.FloorInfo> buildFloorInfoFromCleaningData(
+            FileProcessor.CleaningData cleaningData) {
+        Map<Integer, Map<String, Integer>> floorData = new HashMap<>();
+        Map<Integer, Integer> ecoData = new HashMap<>();
+        Map<Integer, Boolean> buildingData = new HashMap<>();
+
+        // 本館
+        for (FileProcessor.Room room : cleaningData.mainRooms) {
+            int floor = room.floor;
+            buildingData.put(floor, true);
+
+            if (room.isEcoClean) {
+                ecoData.merge(floor, 1, Integer::sum);
+            } else {
+                floorData.computeIfAbsent(floor, k -> new HashMap<>())
+                        .merge(room.roomType, 1, Integer::sum);
+            }
+        }
+
+        // 別館
+        for (FileProcessor.Room room : cleaningData.annexRooms) {
+            int floor = room.floor;
+            buildingData.put(floor, false);
+
+            if (room.isEcoClean) {
+                ecoData.merge(floor, 1, Integer::sum);
+            } else {
+                floorData.computeIfAbsent(floor, k -> new HashMap<>())
+                        .merge(room.roomType, 1, Integer::sum);
+            }
+        }
+
+        List<AdaptiveRoomOptimizer.FloorInfo> floors = new ArrayList<>();
+        for (Map.Entry<Integer, Map<String, Integer>> entry : floorData.entrySet()) {
+            int floor = entry.getKey();
+            Map<String, Integer> roomCounts = entry.getValue();
+            int ecoRooms = ecoData.getOrDefault(floor, 0);
+            boolean isMainBuilding = buildingData.getOrDefault(floor, true);
+
+            floors.add(new AdaptiveRoomOptimizer.FloorInfo(floor, roomCounts, ecoRooms, isMainBuilding));
+        }
+
+        // エコ部屋のみのフロアも追加
+        for (Map.Entry<Integer, Integer> entry : ecoData.entrySet()) {
+            int floor = entry.getKey();
+            if (!floorData.containsKey(floor)) {
+                boolean isMainBuilding = buildingData.getOrDefault(floor, true);
+                floors.add(new AdaptiveRoomOptimizer.FloorInfo(
+                        floor, new HashMap<>(), entry.getValue(), isMainBuilding));
+            }
+        }
+
+        floors.sort(Comparator.comparingInt(f -> f.floorNumber));
+        return floors;
+    }
+
+    /**
+     * ★新規: staffDataMapを再構築
+     */
+    private void rebuildStaffDataMap() {
+        Map<String, StaffData> newStaffDataMap = new HashMap<>();
+
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : currentAssignments) {
+            AdaptiveRoomOptimizer.BathCleaningType bathType =
+                    processingResult.optimizationResult.config.bathAssignments.getOrDefault(
+                            assignment.staff.name,
+                            AdaptiveRoomOptimizer.BathCleaningType.NONE);
+
+            String constraintType = getConstraintType(assignment.staff.name);
+
+            newStaffDataMap.put(assignment.staff.name, new StaffData(assignment, bathType, constraintType));
+        }
+
+        this.staffDataMap = newStaffDataMap;
+        this.excludedRooms.clear();  // 残し部屋設定をクリア
     }
 
     protected void assignRoomNumbers() {

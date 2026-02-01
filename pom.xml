@@ -89,9 +89,12 @@
               <goal>shade</goal>
             </goals>
             <configuration>
+
+
+
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>com.example.roomassignment.RoomAssignmentApplication</mainClass>
+                  <mainClass>org.example.RoomAssignmentApplication</mainClass>
                 </transformer>
               </transformers>
             </configuration>

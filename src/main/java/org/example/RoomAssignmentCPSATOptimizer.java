@@ -1480,6 +1480,16 @@ public class RoomAssignmentCPSATOptimizer {
         Map<String, TwinAssignment> basePattern = new HashMap<>();
 
         LOGGER.info("=== config.roomDistribution の内容 ===");
+        for (Map.Entry<String, NormalRoomDistributionDialog.StaffDistribution> entry : config.roomDistribution.entrySet()) {
+            NormalRoomDistributionDialog.StaffDistribution dist = entry.getValue();
+            // ★追加: シングルも出力
+            LOGGER.info(String.format("  %s: 本館S=%d, 本館T=%d, 別館S=%d, 別館T=%d",
+                    entry.getKey(),
+                    dist.mainSingleAssignedRooms, dist.mainTwinAssignedRooms,
+                    dist.annexSingleAssignedRooms, dist.annexTwinAssignedRooms));
+        }
+
+        LOGGER.info("=== config.roomDistribution の内容 ===");
 
         int totalMainTwin = 0, totalAnnexTwin = 0;
 
@@ -2338,12 +2348,16 @@ public class RoomAssignmentCPSATOptimizer {
             Set<Integer> usedMainFloors = staffUsedMainFloors.getOrDefault(staffName, new HashSet<>());
             Set<Integer> usedAnnexFloors = staffUsedAnnexFloors.getOrDefault(staffName, new HashSet<>());
 
-            int maxFloorsCombined = 2;
+            // ★修正: 本館・別館それぞれに個別のフロア上限を設定
+            int maxMainFloors = 2;   // 本館の最大フロア数（デフォルト）
+            int maxAnnexFloors = 2;  // 別館の最大フロア数（デフォルト）
+
             AdaptiveRoomOptimizer.PointConstraint constraint = config.pointConstraints.get(staffName);
             if (constraint != null) {
                 String type = constraint.constraintType;
                 if (type.contains("業者") || type.contains("リライアンス")) {
-                    maxFloorsCombined = 99;
+                    maxMainFloors = 99;
+                    maxAnnexFloors = 99;
                 }
             }
             if (config.roomDistribution != null) {
@@ -2351,12 +2365,17 @@ public class RoomAssignmentCPSATOptimizer {
                 if (dist != null) {
                     int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms + dist.mainEcoAssignedRooms;
                     int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms + dist.annexEcoAssignedRooms;
-                    if (mainR > 0 && annexR > 0) maxFloorsCombined = 4;
+                    // ★両方割り振りの場合、各建物1フロアずつに制限
+                    if (mainR > 0 && annexR > 0) {
+                        maxMainFloors = 1;
+                        maxAnnexFloors = 1;
+                    }
                 }
             }
 
             // 本館の新規フロア制限
             List<IntVar> newMainEcoVars = new ArrayList<>();
+
             for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
                 if (floor.ecoRooms <= 0) continue;
                 if (usedMainFloors.contains(floor.floorNumber)) continue;
@@ -2380,7 +2399,7 @@ public class RoomAssignmentCPSATOptimizer {
             }
 
             // 本館の新規フロア数制限
-            int remainingMainFloors = Math.max(0, maxFloorsCombined - usedMainFloors.size());
+            int remainingMainFloors = Math.max(0, maxMainFloors - usedMainFloors.size());
             if (!newMainEcoVars.isEmpty() && remainingMainFloors == 0) {
                 for (IntVar v : newMainEcoVars) {
                     model.addEquality(v, 0);
@@ -2397,7 +2416,8 @@ public class RoomAssignmentCPSATOptimizer {
             }
 
             // 別館の新規フロア数制限
-            int remainingAnnexFloors = Math.max(0, maxFloorsCombined - usedAnnexFloors.size());
+            // 別館の新規フロア数制限
+            int remainingAnnexFloors = Math.max(0, maxAnnexFloors - usedAnnexFloors.size());
             if (!newAnnexEcoVars.isEmpty() && remainingAnnexFloors == 0) {
                 for (IntVar v : newAnnexEcoVars) {
                     model.addEquality(v, 0);
@@ -2413,9 +2433,9 @@ public class RoomAssignmentCPSATOptimizer {
                 model.addLessOrEqual(LinearExpr.sum(newFloorUsed.toArray(new BoolVar[0])), remainingAnnexFloors);
             }
 
-            LOGGER.info(String.format("  %s: 本館フロア=%d（残り%d）、別館フロア=%d（残り%d）、合計制限=%d",
-                    staffName, usedMainFloors.size(), remainingMainFloors,
-                    usedAnnexFloors.size(), remainingAnnexFloors, maxFloorsCombined));
+            LOGGER.info(String.format("  %s: 本館フロア=%d（残り%d、上限%d）、別館フロア=%d（残り%d、上限%d）",
+                    staffName, usedMainFloors.size(), remainingMainFloors, maxMainFloors,
+                    usedAnnexFloors.size(), remainingAnnexFloors, maxAnnexFloors));
         }
 
         // ソフト制約: スタッフのECO目標値
@@ -2647,6 +2667,10 @@ public class RoomAssignmentCPSATOptimizer {
                 .sum();
     }
 
+    /**
+     * ★修正: 本館・別館両方割り振りの場合も2フロア制限を維持
+     * （各建物1フロアずつ = 合計2フロア）
+     */
     private static int getMaxFloors(String staffName, AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
         int maxFloors = 2;
 
@@ -2665,14 +2689,10 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        if (config.roomDistribution != null) {
-            NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
-            if (dist != null) {
-                int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
-                int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
-                if (mainR > 0 && annexR > 0) maxFloors = 4;
-            }
-        }
+        // ★修正: 本館・別館両方割り振りでも maxFloors = 2 のまま
+        // （各建物で個別に1フロア制限がかかるため、合計2フロアとなる）
+        // if (mainR > 0 && annexR > 0) maxFloors = 4; は削除
+
         return maxFloors;
+        }
     }
-}

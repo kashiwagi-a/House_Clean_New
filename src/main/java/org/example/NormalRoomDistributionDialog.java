@@ -487,8 +487,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             if (s1.isBathCleaning != s2.isBathCleaning) {
                 return s1.isBathCleaning ? -1 : 1;
             }
-            boolean s1IsBroken = "清掃制限".equals(s1.constraintType);
-            boolean s2IsBroken = "清掃制限".equals(s2.constraintType);
+            boolean s1IsBroken = "故障者制限".equals(s1.constraintType);
+            boolean s2IsBroken = "故障者制限".equals(s2.constraintType);
             if (s1IsBroken != s2IsBroken) {
                 return s1IsBroken ? -1 : 1;
             }
@@ -979,14 +979,14 @@ public class NormalRoomDistributionDialog extends JDialog {
             }
         }
 
-        // Step 4: '清掃制限'と'業者制限'がかかるスタッフを割り振る
+        // Step 4: '故障者制限'と'業者制限'がかかるスタッフを割り振る
         for (Map.Entry<String, StaffConstraintInfo> entry : staffInfo.entrySet()) {
             String staffName = entry.getKey();
             StaffConstraintInfo info = entry.getValue();
 
             if (!info.isBathCleaning && !"制限なし".equals(info.constraintType)) {
                 int assignedRooms;
-                if ("清掃制限".equals(info.constraintType)) {
+                if ("故障者制限".equals(info.constraintType)) {
                     assignedRooms = info.maxRooms;
                 } else {
                     assignedRooms = info.minRooms; // 業者制限の最低値

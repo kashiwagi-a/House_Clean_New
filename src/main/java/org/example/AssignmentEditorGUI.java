@@ -1170,12 +1170,6 @@ public class AssignmentEditorGUI extends JFrame {
         for (FileProcessor.Room room : cleaningData.annexRooms) {
             if (room.isEcoClean) {
                 totalAnnexEcoRooms++;
-            } else {
-                if ("ANT".equals(room.roomType) || "ADT".equals(room.roomType)) {
-                    totalAnnexTwinRooms++;
-                } else {
-                    totalAnnexSingleRooms++;
-                }
             }
         }
 
@@ -1286,14 +1280,13 @@ public class AssignmentEditorGUI extends JFrame {
                         } else {
                             annexEco++;
                         }
-                    } else if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
+                    } else if (isTwinRoomType(room.roomType)) {
+                        // T/NT/ANT/ADT すべてツイン系として判定し、階数で本館/別館を決定
                         if (isMainBuilding) {
                             mainTwin++;
                         } else {
-                            mainSingle++; // 本館のNTは本館ツイン
+                            annexTwin++;
                         }
-                    } else if ("ANT".equals(room.roomType) || "ADT".equals(room.roomType)) {
-                        annexTwin++;
                     } else {
                         if (isMainBuilding) {
                             mainSingle++;
@@ -1854,6 +1847,11 @@ public class AssignmentEditorGUI extends JFrame {
                 return roomType;
         }
     }
+
+    private boolean isTwinRoomType(String roomType) {
+        return "T".equals(roomType) || "NT".equals(roomType) ||
+                "ANT".equals(roomType) || "ADT".equals(roomType);
+}
     /**
      * 部屋詳細編集ダイアログ（部屋入れ替え機能付き）
      */

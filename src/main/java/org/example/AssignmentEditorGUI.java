@@ -1167,9 +1167,17 @@ public class AssignmentEditorGUI extends JFrame {
         }
 
         // 別館の部屋タイプ集計
+        // ★注意: FileProcessor.determineRoomType()により
+        //   ANT/ADT → "T", ANS/ABF/AKS → "S" 等に正規化済み
         for (FileProcessor.Room room : cleaningData.annexRooms) {
             if (room.isEcoClean) {
                 totalAnnexEcoRooms++;
+            } else {
+                if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
+                    totalAnnexTwinRooms++;
+                } else {
+                    totalAnnexSingleRooms++;
+                }
             }
         }
 
@@ -1319,14 +1327,20 @@ public class AssignmentEditorGUI extends JFrame {
     private List<RoomAssignmentApplication.StaffPointConstraint> createPointConstraintsList() {
         List<RoomAssignmentApplication.StaffPointConstraint> constraints = new ArrayList<>();
 
-        if (processingResult.optimizationResult != null &&
-                processingResult.optimizationResult.config != null &&
-                processingResult.optimizationResult.config.pointConstraints != null) {
+        if (processingResult.optimizationResult == null ||
+                processingResult.optimizationResult.config == null) {
+            return constraints;
+        }
 
-            // 元のroomDistributionを取得（制約の詳細情報として使用）
-            Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDist =
-                    processingResult.optimizationResult.config.roomDistribution;
+        // 元のroomDistributionを取得（制約の詳細情報として使用）
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDist =
+                processingResult.optimizationResult.config.roomDistribution;
 
+        // ★修正: 処理済みスタッフ名を追跡（重複防止用）
+        Set<String> processedStaff = new HashSet<>();
+
+        // 1. pointConstraints に登録されているスタッフを処理
+        if (processingResult.optimizationResult.config.pointConstraints != null) {
             for (Map.Entry<String, AdaptiveRoomOptimizer.PointConstraint> entry :
                     processingResult.optimizationResult.config.pointConstraints.entrySet()) {
 
@@ -1376,6 +1390,44 @@ public class AssignmentEditorGUI extends JFrame {
                     constraints.add(new RoomAssignmentApplication.StaffPointConstraint(
                             staffData.id, staffName, cType, bType,
                             upperLimit, lowerMin, lowerMax, isBathCleaning));
+                    processedStaff.add(staffName);
+                }
+            }
+        }
+
+        // ★修正: 2. 大浴場清掃スタッフで、まだ処理されていないスタッフを追加
+        //   pointConstraintsに含まれない「制限なし」の大浴場清掃スタッフが漏れていた問題を修正
+        if (processingResult.optimizationResult.config.bathAssignments != null) {
+            for (Map.Entry<String, AdaptiveRoomOptimizer.BathCleaningType> entry :
+                    processingResult.optimizationResult.config.bathAssignments.entrySet()) {
+
+                String staffName = entry.getKey();
+                AdaptiveRoomOptimizer.BathCleaningType bathType = entry.getValue();
+
+                // 既に処理済み、または大浴場清掃でないスタッフはスキップ
+                if (processedStaff.contains(staffName) ||
+                        bathType == AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                    continue;
+                }
+
+                StaffData staffData = staffDataMap.get(staffName);
+                if (staffData != null) {
+                    RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment bType =
+                            RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.BOTH;
+
+                    if (staffData.hasMainBuilding && !staffData.hasAnnexBuilding) {
+                        bType = RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.MAIN_ONLY;
+                    } else if (!staffData.hasMainBuilding && staffData.hasAnnexBuilding) {
+                        bType = RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.ANNEX_ONLY;
+                    }
+
+                    constraints.add(new RoomAssignmentApplication.StaffPointConstraint(
+                            staffData.id, staffName,
+                            RoomAssignmentApplication.StaffPointConstraint.ConstraintType.NONE,
+                            bType,
+                            0, 0, 0,
+                            true));  // ★大浴場清掃スタッフ
+                    processedStaff.add(staffName);
                 }
             }
         }
@@ -1851,7 +1903,7 @@ public class AssignmentEditorGUI extends JFrame {
     private boolean isTwinRoomType(String roomType) {
         return "T".equals(roomType) || "NT".equals(roomType) ||
                 "ANT".equals(roomType) || "ADT".equals(roomType);
-}
+    }
     /**
      * 部屋詳細編集ダイアログ（部屋入れ替え機能付き）
      */

@@ -591,7 +591,7 @@ public class RoomAssignmentApplication extends JFrame {
             appendLog("通常清掃部屋の割り振りパターンを設定中...");
             Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution =
                     selectNormalRoomDistribution(cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                            pointConstraints, availableStaff, bathType);
+                            pointConstraints, availableStaff, bathType, floors);
 
             // 大浴場清掃スタッフの集計
             long bathStaffCount = pointConstraints.stream()
@@ -617,8 +617,10 @@ public class RoomAssignmentApplication extends JFrame {
             if (roomDistribution != null && !roomDistribution.isEmpty()) {
                 appendLog("通常清掃部屋割り振り設定:");
                 roomDistribution.values().forEach(dist -> {
-                    appendLog(String.format("  %s: %d部屋 (%s)",
-                            dist.staffName, dist.assignedRooms, dist.buildingAssignment));
+                    String floorInfo = (dist.preferredFloors != null && !dist.preferredFloors.isEmpty())
+                            ? " [指定階: " + dist.getPreferredFloorsText() + "]" : "";
+                    appendLog(String.format("  %s: %d部屋 (%s)%s",
+                            dist.staffName, dist.assignedRooms, dist.buildingAssignment, floorInfo));
                 });
             }
 
@@ -713,7 +715,8 @@ public class RoomAssignmentApplication extends JFrame {
             int mainRooms, int annexRooms,
             List<StaffPointConstraint> pointConstraints,
             List<FileProcessor.Staff> availableStaff,
-            AdaptiveRoomOptimizer.BathCleaningType bathType) {
+            AdaptiveRoomOptimizer.BathCleaningType bathType,
+            List<AdaptiveRoomOptimizer.FloorInfo> floors) {
 
         // ★★修正: FileProcessorから部屋データを読み込んで6区分に集計（ECO対応）
         int totalMainSingleRooms = 0;
@@ -786,6 +789,20 @@ public class RoomAssignmentApplication extends JFrame {
                 pointConstraints,
                 staffNamesList,
                 bathType);
+
+        // ★★追加: 利用可能フロア番号を設定（指定階バリデーション用）
+        if (floors != null) {
+            Set<Integer> mainFloors = new HashSet<>();
+            Set<Integer> annexFloors = new HashSet<>();
+            for (AdaptiveRoomOptimizer.FloorInfo fi : floors) {
+                if (fi.isMainBuilding) {
+                    mainFloors.add(fi.floorNumber);
+                } else {
+                    annexFloors.add(fi.floorNumber);
+                }
+            }
+            dialog.setAvailableFloors(mainFloors, annexFloors);
+        }
 
         dialog.setVisible(true);
 

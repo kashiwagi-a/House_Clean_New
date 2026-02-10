@@ -55,6 +55,10 @@ public class NormalRoomDistributionDialog extends JDialog {
     private boolean dialogResult = false;
     private JPanel dataPanel;
 
+    // ★★追加: 利用可能なフロア番号（バリデーション用）
+    private Set<Integer> availableMainFloors = new HashSet<>();
+    private Set<Integer> availableAnnexFloors = new HashSet<>();
+
     /**
      * ★拡張版: スタッフ割り振り情報
      * 本館/別館それぞれにシングル等/ツイン/ECOのフィールドを追加
@@ -80,6 +84,9 @@ public class NormalRoomDistributionDialog extends JDialog {
         public int mainEcoAssignedRooms;      // 本館ECO
         public int annexEcoAssignedRooms;     // 別館ECO
 
+        // ★★追加: 指定階（空の場合は制限なし）
+        public Set<Integer> preferredFloors;
+
         public String constraintType;
         public boolean isBathCleaning;
 
@@ -101,6 +108,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.annexTwinAssignedRooms = 0;
             this.mainEcoAssignedRooms = 0;
             this.annexEcoAssignedRooms = 0;
+            this.preferredFloors = new HashSet<>();
         }
 
         public StaffDistribution(String staffId, String staffName, String buildingAssignment,
@@ -128,6 +136,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.annexTwinAssignedRooms = 0;
             this.mainEcoAssignedRooms = 0;
             this.annexEcoAssignedRooms = 0;
+            this.preferredFloors = new HashSet<>();
         }
 
         public StaffDistribution(StaffDistribution other) {
@@ -145,12 +154,46 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.annexTwinAssignedRooms = other.annexTwinAssignedRooms;
             this.mainEcoAssignedRooms = other.mainEcoAssignedRooms;
             this.annexEcoAssignedRooms = other.annexEcoAssignedRooms;
+            this.preferredFloors = new HashSet<>(other.preferredFloors);
         }
 
         public void updateTotal() {
             this.mainAssignedRooms = this.mainSingleAssignedRooms + this.mainTwinAssignedRooms;
             this.annexAssignedRooms = this.annexSingleAssignedRooms + this.annexTwinAssignedRooms;
             this.assignedRooms = this.mainAssignedRooms + this.annexAssignedRooms;
+        }
+
+        // ★★追加: 指定階の文字列表現を取得（"2,3,5" 形式）
+        public String getPreferredFloorsText() {
+            if (preferredFloors == null || preferredFloors.isEmpty()) {
+                return "";
+            }
+            return preferredFloors.stream()
+                    .sorted()
+                    .map(String::valueOf)
+                    .collect(Collectors.joining(","));
+        }
+
+        // ★★追加: 指定階をテキストから設定（"2,3,5" 形式）
+        public void setPreferredFloorsFromText(String text) {
+            if (preferredFloors == null) {
+                preferredFloors = new HashSet<>();
+            }
+            preferredFloors.clear();
+            if (text == null || text.trim().isEmpty()) {
+                return;
+            }
+            String[] parts = text.split("[,、\\s]+");
+            for (String part : parts) {
+                part = part.trim();
+                if (!part.isEmpty()) {
+                    try {
+                        preferredFloors.add(Integer.parseInt(part));
+                    } catch (NumberFormatException e) {
+                        // 無効な入力は無視
+                    }
+                }
+            }
         }
 
         // ★★新規メソッド: 換算値合計を計算（通常清掃のみ）
@@ -265,7 +308,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         this.currentPattern = deepCopyPattern(oneDiffPattern);
 
         initializeGUI();
-        setSize(1600, 750);  // ECO列追加のため幅を拡大
+        setSize(1700, 750);  // ECO列追加のため幅を拡大
         setLocationRelativeTo(parent);
     }
 
@@ -318,7 +361,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         }
 
         initializeGUI();
-        setSize(1600, 750);
+        setSize(1700, 750);
         setLocationRelativeTo(parent);
     }
 
@@ -370,7 +413,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         this.currentPattern = deepCopyPattern(oneDiffPattern);
 
         initializeGUI();
-        setSize(1600, 750);
+        setSize(1700, 750);
         setLocationRelativeTo(parent);
     }
 
@@ -444,15 +487,15 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JPanel tablePanel = new JPanel(new BorderLayout());
 
-        JPanel headerPanel = new JPanel(new GridLayout(1, 12));
+        JPanel headerPanel = new JPanel(new GridLayout(1, 13));
         headerPanel.setBackground(UIManager.getColor("TableHeader.background"));
         headerPanel.setBorder(BorderFactory.createMatteBorder(1, 1, 1, 1, Color.GRAY));
 
-        String[] headers = {"スタッフ名", "制限タイプ", "お風呂",
+        String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "指定階",
                 "本館S", "本館T", "本館ECO",
                 "別館S", "別館T", "別館ECO",
                 "通常合計", "ECO合計", "換算合計"};
-        int[] widths = {100, 100, 50, 80, 80, 80, 80, 80, 80, 80, 80, 100};
+        int[] widths = {100, 100, 50, 100, 80, 80, 80, 80, 80, 80, 80, 80, 100};
 
         for (int i = 0; i < headers.length; i++) {
             JLabel headerLabel = new JLabel(headers[i], JLabel.CENTER);
@@ -506,7 +549,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         });
 
         for (StaffDistribution staff : sortedStaff) {
-            JPanel rowPanel = new JPanel(new GridLayout(1, 12));
+            JPanel rowPanel = new JPanel(new GridLayout(1, 13));
             rowPanel.setBorder(BorderFactory.createMatteBorder(0, 1, 1, 1, Color.GRAY));
             rowPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 35));
             rowPanel.setPreferredSize(new Dimension(0, 35));
@@ -526,6 +569,28 @@ public class NormalRoomDistributionDialog extends JDialog {
             JLabel bathLabel = new JLabel(staff.isBathCleaning ? "○" : "", JLabel.CENTER);
             bathLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
             rowPanel.add(bathLabel);
+
+            // ★★追加: 指定階テキストフィールド
+            JPanel floorPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
+            floorPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            JTextField floorField = new JTextField(staff.getPreferredFloorsText(), 8);
+            floorField.setFont(new Font("MS Gothic", Font.PLAIN, 11));
+            floorField.setHorizontalAlignment(JTextField.CENTER);
+            floorField.setToolTipText("階数をカンマ区切りで入力 (例: 2,3,5)");
+            floorField.addFocusListener(new FocusAdapter() {
+                @Override
+                public void focusLost(FocusEvent e) {
+                    staff.setPreferredFloorsFromText(floorField.getText());
+                    // 入力を正規化して表示
+                    floorField.setText(staff.getPreferredFloorsText());
+                }
+            });
+            floorField.addActionListener(e -> {
+                staff.setPreferredFloorsFromText(floorField.getText());
+                floorField.setText(staff.getPreferredFloorsText());
+            });
+            floorPanel.add(floorField);
+            rowPanel.add(floorPanel);
 
             // 本館シングル等スピナー
             JPanel mainSinglePanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
@@ -649,18 +714,18 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private void updateRowDisplay(JPanel rowPanel, StaffDistribution staff) {
         Component[] components = rowPanel.getComponents();
-        // 通常合計更新（index 9）
-        if (components.length > 9) {
-            ((JLabel)components[9]).setText(String.valueOf(staff.assignedRooms));
-        }
-        // ECO合計更新（index 10）
+        // 通常合計更新（index 10）※指定階列追加のため+1
         if (components.length > 10) {
-            int ecoTotal = staff.mainEcoAssignedRooms + staff.annexEcoAssignedRooms;
-            ((JLabel)components[10]).setText(String.valueOf(ecoTotal));
+            ((JLabel)components[10]).setText(String.valueOf(staff.assignedRooms));
         }
-        // 換算合計更新（index 11）
+        // ECO合計更新（index 11）
         if (components.length > 11) {
-            ((JLabel)components[11]).setText(String.format("%.1f", staff.getConvertedTotalWithEco()));
+            int ecoTotal = staff.mainEcoAssignedRooms + staff.annexEcoAssignedRooms;
+            ((JLabel)components[11]).setText(String.valueOf(ecoTotal));
+        }
+        // 換算合計更新（index 12）
+        if (components.length > 12) {
+            ((JLabel)components[12]).setText(String.format("%.1f", staff.getConvertedTotalWithEco()));
         }
     }
 
@@ -793,6 +858,65 @@ public class NormalRoomDistributionDialog extends JDialog {
                 if (mainRooms > 0 && annexRooms > 0) {
                     warnings.add(String.format("%s: 大浴場清掃担当が本館・別館の両方に割り当てられています",
                             dist.staffName));
+                }
+            }
+        }
+
+        // ★★追加: 指定階のバリデーション
+        // ※別館フロアは内部的に+20（別館2F=22等）。ユーザー入力は実際の階数（2等）
+        Set<Integer> allAvailableFloors = new HashSet<>();
+        allAvailableFloors.addAll(availableMainFloors);
+        allAvailableFloors.addAll(availableAnnexFloors);
+
+        // 別館フロアを実際の階数に変換したセット（表示・比較用）
+        Set<Integer> availableAnnexFloorsActual = availableAnnexFloors.stream()
+                .map(f -> f > 20 ? f - 20 : f)
+                .collect(Collectors.toSet());
+
+        for (StaffDistribution dist : currentPattern.values()) {
+            if (dist.preferredFloors == null || dist.preferredFloors.isEmpty()) continue;
+
+            int mainRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms + dist.mainEcoAssignedRooms;
+            int annexRooms = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms + dist.annexEcoAssignedRooms;
+
+            for (int floor : dist.preferredFloors) {
+                // フロア情報が未設定の場合はスキップ（後方互換）
+                if (allAvailableFloors.isEmpty()) {
+                    continue;
+                }
+
+                boolean valid = false;
+                if (mainRooms > 0 && annexRooms == 0) {
+                    // 本館のみ割り振り → 本館フロアのみチェック（番号そのまま）
+                    valid = availableMainFloors.contains(floor);
+                } else if (annexRooms > 0 && mainRooms == 0) {
+                    // 別館のみ割り振り → 実際の階数でチェック
+                    valid = availableAnnexFloorsActual.contains(floor);
+                } else {
+                    // 両方割り振り → 本館フロアまたは別館実際の階数でチェック
+                    valid = availableMainFloors.contains(floor) || availableAnnexFloorsActual.contains(floor);
+                }
+
+                if (!valid) {
+                    String building;
+                    String availableStr;
+                    if (mainRooms > 0 && annexRooms == 0) {
+                        building = "本館";
+                        availableStr = availableMainFloors.stream().sorted()
+                                .map(String::valueOf).collect(Collectors.joining(","));
+                    } else if (annexRooms > 0 && mainRooms == 0) {
+                        building = "別館";
+                        availableStr = availableAnnexFloorsActual.stream().sorted()
+                                .map(String::valueOf).collect(Collectors.joining(","));
+                    } else {
+                        building = "本館・別館";
+                        Set<Integer> combined = new TreeSet<>(availableMainFloors);
+                        combined.addAll(availableAnnexFloorsActual);
+                        availableStr = combined.stream()
+                                .map(String::valueOf).collect(Collectors.joining(","));
+                    }
+                    errors.add(String.format("%s: 指定階 %dF は%sに存在しません（利用可能: %s）",
+                            dist.staffName, floor, building, availableStr));
                 }
             }
         }
@@ -1294,13 +1418,16 @@ public class NormalRoomDistributionDialog extends JDialog {
                 .sum();
 
         System.out.println("換算合計(ECO含む): " + totalConverted);
-        pattern.values().forEach(d ->
-                System.out.println("  " + d.staffName + ": 本館(S" + d.mainSingleAssignedRooms +
-                        "+T" + d.mainTwinAssignedRooms + "+E" + d.mainEcoAssignedRooms +
-                        ") 別館(S" + d.annexSingleAssignedRooms +
-                        "+T" + d.annexTwinAssignedRooms + "+E" + d.annexEcoAssignedRooms +
-                        ") = " + d.getTotalRoomsWithEco() +
-                        "室 (換算" + String.format("%.1f", d.getConvertedTotalWithEco()) + ")")
+        pattern.values().forEach(d -> {
+                    String floorInfo = (d.preferredFloors != null && !d.preferredFloors.isEmpty())
+                            ? " 指定階=" + d.getPreferredFloorsText() : "";
+                    System.out.println("  " + d.staffName + ": 本館(S" + d.mainSingleAssignedRooms +
+                            "+T" + d.mainTwinAssignedRooms + "+E" + d.mainEcoAssignedRooms +
+                            ") 別館(S" + d.annexSingleAssignedRooms +
+                            "+T" + d.annexTwinAssignedRooms + "+E" + d.annexEcoAssignedRooms +
+                            ") = " + d.getTotalRoomsWithEco() +
+                            "室 (換算" + String.format("%.1f", d.getConvertedTotalWithEco()) + ")" + floorInfo);
+                }
         );
     }
 
@@ -1400,5 +1527,15 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     public Map<String, StaffDistribution> getCurrentDistribution() {
         return new HashMap<>(currentPattern);
+    }
+
+    /**
+     * ★★追加: 利用可能なフロア番号を設定（バリデーション用）
+     * @param mainFloors 本館のフロア番号セット
+     * @param annexFloors 別館のフロア番号セット
+     */
+    public void setAvailableFloors(Set<Integer> mainFloors, Set<Integer> annexFloors) {
+        this.availableMainFloors = mainFloors != null ? new HashSet<>(mainFloors) : new HashSet<>();
+        this.availableAnnexFloors = annexFloors != null ? new HashSet<>(annexFloors) : new HashSet<>();
     }
 }

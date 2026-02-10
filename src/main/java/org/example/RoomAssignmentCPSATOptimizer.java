@@ -34,7 +34,7 @@ public class RoomAssignmentCPSATOptimizer {
 
     // フロアあたりの最大スタッフ数（初期値と上限）
     private static final int INITIAL_MAX_STAFF_PER_FLOOR = 2;
-    private static final int MAX_STAFF_PER_FLOOR_LIMIT = 4;
+    private static final int MAX_STAFF_PER_FLOOR_LIMIT = 10;
 
     static {
         com.google.ortools.Loader.loadNativeLibraries();
@@ -2312,6 +2312,56 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
+        // ★★追加: 指定階制約 - preferredFloorsが設定されているスタッフは指定階を必ず含む
+        // （指定階のみに制限するのではなく、指定階に必ず割り当てられるようにする）
+        // ※別館フロアは内部的に+20されている（別館2F=22, 別館3F=23等）ため、自動変換する
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+            String staffName = staffInfo.staff.name;
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    config.roomDistribution != null ?
+                            config.roomDistribution.get(staffName) : null;
+
+            if (dist == null || dist.preferredFloors == null || dist.preferredFloors.isEmpty()) {
+                continue;
+            }
+
+            boolean hasMainRooms = (dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms) > 0;
+            boolean hasAnnexRooms = (dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms) > 0;
+
+            LOGGER.info(String.format("  %s: 指定階制約を追加 (入力値: %s, 本館:%s, 別館:%s) ※必ず含む",
+                    staffName, dist.getPreferredFloorsText(),
+                    hasMainRooms ? "あり" : "なし", hasAnnexRooms ? "あり" : "なし"));
+
+            for (int preferredFloor : dist.preferredFloors) {
+                boolean found = false;
+
+                // 本館の場合: フロア番号そのまま（2-10）
+                if (hasMainRooms) {
+                    String yVarName = String.format("y_%s_%d", staffName, preferredFloor);
+                    if (yVars.containsKey(yVarName)) {
+                        model.addEquality(yVars.get(yVarName), 1);
+                        LOGGER.info(String.format("    → 本館%dF を必ず使用", preferredFloor));
+                        found = true;
+                    }
+                }
+
+                // 別館の場合: フロア番号+20（別館2F=22, 別館3F=23等）
+                if (hasAnnexRooms) {
+                    int annexFloorNum = preferredFloor + 20;
+                    String yVarName = String.format("y_%s_%d", staffName, annexFloorNum);
+                    if (yVars.containsKey(yVarName)) {
+                        model.addEquality(yVars.get(yVarName), 1);
+                        LOGGER.info(String.format("    → 別館%dF (内部=%d) を必ず使用", preferredFloor, annexFloorNum));
+                        found = true;
+                    }
+                }
+
+                if (!found) {
+                    LOGGER.warning(String.format("    → %dF のy変数が存在しません（フロアが存在しない可能性）", preferredFloor));
+                }
+            }
+        }
+
         // フロア担当リンク制約
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
             String staffName = staffInfo.staff.name;
@@ -2662,12 +2712,32 @@ public class RoomAssignmentCPSATOptimizer {
             if (config.roomDistribution != null) {
                 NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
                 if (dist != null) {
-                    int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms + dist.mainEcoAssignedRooms;
-                    int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms + dist.annexEcoAssignedRooms;
-                    // ★両方割り振りの場合、各建物1フロアずつに制限
-                    if (mainR > 0 && annexR > 0) {
-                        maxMainFloors = 1;
-                        maxAnnexFloors = 1;
+                    // ★★追加: 指定階が設定されている場合は指定階数を最大フロア数とする
+                    // ※ユーザー入力は実際の階数（2,3,4等）、別館は内部的に+20
+                    if (dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
+                        // 指定階のうち本館フロアと別館フロアを分けてカウント
+                        long mainPreferredCount = dist.preferredFloors.stream()
+                                .filter(f -> buildingData.mainFloors.stream()
+                                        .anyMatch(mf -> mf.floorNumber == f))
+                                .count();
+                        long annexPreferredCount = dist.preferredFloors.stream()
+                                .filter(f -> buildingData.annexFloors.stream()
+                                        .anyMatch(af -> af.floorNumber == f + 20))
+                                .count();
+                        if (mainPreferredCount > 0) {
+                            maxMainFloors = Math.max(maxMainFloors, (int) mainPreferredCount);
+                        }
+                        if (annexPreferredCount > 0) {
+                            maxAnnexFloors = Math.max(maxAnnexFloors, (int) annexPreferredCount);
+                        }
+                    } else {
+                        int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms + dist.mainEcoAssignedRooms;
+                        int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms + dist.annexEcoAssignedRooms;
+                        // ★両方割り振りの場合、各建物1フロアずつに制限
+                        if (mainR > 0 && annexR > 0) {
+                            maxMainFloors = 1;
+                            maxAnnexFloors = 1;
+                        }
                     }
                 }
             }
@@ -2984,7 +3054,22 @@ public class RoomAssignmentCPSATOptimizer {
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo si : config.extendedStaffInfo) {
             if (si.staff.name.equals(staffName) &&
                     si.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                // ★★修正: 大浴場清掃スタッフでも指定階がある場合は指定階数を優先
+                if (config.roomDistribution != null) {
+                    NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
+                    if (dist != null && dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
+                        return dist.preferredFloors.size();
+                    }
+                }
                 return 1;
+            }
+        }
+
+        // ★★追加: 指定階が設定されている場合は指定階数をmaxFloorsとする
+        if (config.roomDistribution != null) {
+            NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
+            if (dist != null && dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
+                maxFloors = Math.max(maxFloors, dist.preferredFloors.size());
             }
         }
 
@@ -2993,5 +3078,5 @@ public class RoomAssignmentCPSATOptimizer {
         // if (mainR > 0 && annexR > 0) maxFloors = 4; は削除
 
         return maxFloors;
-        }
     }
+}

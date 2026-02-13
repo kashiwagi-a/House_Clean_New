@@ -488,202 +488,242 @@ public class RoomAssignmentApplication extends JFrame {
             return;
         }
 
-        SwingUtilities.invokeLater(() -> {
-            processButton.setEnabled(false);
-            processButton.setText("処理中...");
+        processButton.setEnabled(false);
+        processButton.setText("処理中...");
 
-            try {
-                executeProcessing();
-            } finally {
-                processButton.setEnabled(true);
-                processButton.setText("処理実行");
-            }
-        });
-    }
-
-    private void executeProcessing() {
         try {
-            appendLog("\n=== 処理開始 ===");
-
-            if (selectedEcoDataFile != null) {
-                System.setProperty("ecoDataFile", selectedEcoDataFile.getAbsolutePath());
-                appendLog("エコ清掃データベースを設定: " + selectedEcoDataFile.getName());
-                appendLog("  → " + selectedEcoDataFile.getAbsolutePath());
-            }
-
-            if (!selectedBrokenRoomsForCleaning.isEmpty()) {
-                String brokenRoomsStr = String.join(",", selectedBrokenRoomsForCleaning);
-                System.setProperty("selectedBrokenRooms", brokenRoomsStr);
-                appendLog("清掃対象故障部屋を設定: " + selectedBrokenRoomsForCleaning.size() + "室");
-            } else {
-                System.clearProperty("selectedBrokenRooms");
-            }
-
-            // 1. 部屋データの読み込み
-            appendLog("部屋データを読み込み中...");
-            FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
-            appendLog(String.format("部屋データ読み込み完了: 本館%d室, 別館%d室, エコ%d室, 故障%d室",
-                    cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                    cleaningData.ecoRooms.size(), cleaningData.totalBrokenRooms));
-
-            // エコ清掃警告チェック
-            if (!cleaningData.ecoWarnings.isEmpty()) {
-                appendLog("\n【エコ清掃警告】");
-                appendLog("エコ清掃情報に以下の問題が検出されました:");
-                for (String warning : cleaningData.ecoWarnings) {
-                    appendLog("  " + warning);
-                }
-                appendLog("");
-
-                StringBuilder warningMessage = new StringBuilder();
-                warningMessage.append("エコ清掃情報に ").append(cleaningData.ecoWarnings.size())
-                        .append(" 件の警告があります:\n\n");
-
-                int displayCount = Math.min(10, cleaningData.ecoWarnings.size());
-                for (int i = 0; i < displayCount; i++) {
-                    warningMessage.append("• ").append(cleaningData.ecoWarnings.get(i)).append("\n");
-                }
-
-                if (cleaningData.ecoWarnings.size() > 10) {
-                    warningMessage.append("\n... 他 ").append(cleaningData.ecoWarnings.size() - 10)
-                            .append(" 件の警告があります。\n詳細はログをご確認ください。");
-                }
-
-                int result = JOptionPane.showConfirmDialog(
-                        this,
-                        warningMessage.toString(),
-                        "エコ清掃情報の警告",
-                        JOptionPane.OK_CANCEL_OPTION,
-                        JOptionPane.WARNING_MESSAGE
-                );
-
-                if (result != JOptionPane.OK_OPTION) {
-                    appendLog("処理がユーザーによってキャンセルされました。");
-                    return;
-                }
-            }
-
-            // 2. スタッフデータの読み込み
-            appendLog("スタッフデータを読み込み中...");
-            List<FileProcessor.Staff> availableStaff = FileProcessor.getAvailableStaff(selectedShiftFile, selectedDate);
-            appendLog(String.format("利用可能スタッフ: %d人", availableStaff.size()));
-
-            if (availableStaff.isEmpty()) {
-                appendLog("警告: 利用可能なスタッフが見つかりませんでした。");
-                JOptionPane.showMessageDialog(this, "指定日に利用可能なスタッフが見つかりませんでした。",
-                        "警告", JOptionPane.WARNING_MESSAGE);
-                return;
-            }
-
-            // 3. フロア情報の構築
-            appendLog("フロア情報を構築中...");
-            List<AdaptiveRoomOptimizer.FloorInfo> floors = buildFloorInfo(cleaningData);
-            appendLog(String.format("フロア情報構築完了: %d階層", floors.size()));
-
-            // 4. 大浴場清掃タイプの選択
-            AdaptiveRoomOptimizer.BathCleaningType bathType = selectBathCleaningType();
-
-            // 5. ポイント制限の設定(大浴場清掃スタッフ選択機能付き)
-            appendLog("ポイント制限・大浴場清掃スタッフ設定を確認中...");
-            List<StaffPointConstraint> pointConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType);
-
-            // 5.5. ★新機能: 通常清掃部屋の事前割り振り設定
-            appendLog("通常清掃部屋の割り振りパターンを設定中...");
-            Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution =
-                    selectNormalRoomDistribution(cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                            pointConstraints, availableStaff, bathType, floors);
-
-            // 大浴場清掃スタッフの集計
-            long bathStaffCount = pointConstraints.stream()
-                    .mapToLong(constraint -> constraint.isBathCleaningStaff ? 1 : 0)
-                    .sum();
-
-            if (!pointConstraints.isEmpty()) {
-                appendLog(String.format("ポイント制限が設定されました: %d人", pointConstraints.size()));
-                appendLog(String.format("大浴場清掃スタッフ: %d人", bathStaffCount));
-                pointConstraints.forEach(constraint -> {
-                    String bathInfo = constraint.isBathCleaningStaff ? " [大浴場清掃担当]" : "";
-                    appendLog(String.format("  %s: %s, %s%s",
-                            constraint.staffName,
-                            constraint.getConstraintDisplay(),
-                            constraint.buildingAssignment.displayName,
-                            bathInfo));
-                });
-            } else {
-                appendLog("ポイント制限は設定されませんでした(全員均等配分)");
-            }
-
-            // ★追加: 部屋割り振り結果の表示
-            if (roomDistribution != null && !roomDistribution.isEmpty()) {
-                appendLog("通常清掃部屋割り振り設定:");
-                roomDistribution.values().forEach(dist -> {
-                    String floorInfo = (dist.preferredFloors != null && !dist.preferredFloors.isEmpty())
-                            ? " [指定階: " + dist.getPreferredFloorsText() + "]" : "";
-                    appendLog(String.format("  %s: %d部屋 (%s)%s",
-                            dist.staffName, dist.assignedRooms, dist.buildingAssignment, floorInfo));
-                });
-            }
-
-            // 6. ★修正: 適応型設定の作成（roomDistribution を含む）
-            appendLog("最適化設定を作成中...");
-            int totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithPointConstraints(
-                    availableStaff, totalRooms, cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                    bathType, pointConstraints, roomDistribution);
-
-            // 7. ★修正: 複数解最適化実行（最初の解は元のoptimize()と同じ結果を保証）
-            appendLog("最適化を実行中（最大7つの解を探索）...");
-            AdaptiveRoomOptimizer.AdaptiveOptimizer optimizer =
-                    new AdaptiveRoomOptimizer.AdaptiveOptimizer(floors, config);
-            AdaptiveRoomOptimizer.MultiOptimizationResult multiResult = optimizer.optimizeMultiple(selectedDate);
-            appendLog(String.format("最適化完了: %d個の解が見つかりました", multiResult.totalSolutionCount));
-
-            // 8. 部屋番号の割り当て(オプション) - 最初の解に対して実行
-            Map<String, List<FileProcessor.Room>> detailedAssignments = new HashMap<>();
-            try {
-                RoomNumberAssigner assigner = new RoomNumberAssigner(cleaningData);
-                detailedAssignments = assigner.assignDetailedRooms(multiResult.getAssignments(0));
-                appendLog("部屋番号の詳細割り当てが完了しました。");
-            } catch (Exception ex) {
-                appendLog("部屋番号の詳細割り当てに失敗しましたが、処理を続行します: " + ex.getMessage());
-            }
-
-            // 9. ★修正: 複数解対応の結果を保存
-            lastResult = new ProcessingResult(cleaningData, multiResult, detailedAssignments);
-            viewResultsButton.setEnabled(true);
-
-            // 10. 結果サマリーの表示
-            appendLog("\n=== 処理完了 ===");
-            multiResult.printDetailedSummary();
-
-            appendLog("\n結果表示ボタンで詳細を確認できます。");
-            if (multiResult.hasMultipleSolutions()) {
-                appendLog(String.format("★ %d個の解が生成されました。結果画面で切り替えできます。", multiResult.totalSolutionCount));
-            }
-
-            long selectedBrokenRoomsForCleaningCount = cleaningData.brokenRooms.stream()
-                    .filter(r -> cleaningData.mainRooms.contains(r) || cleaningData.annexRooms.contains(r))
-                    .count();
-
-            String solutionInfo = multiResult.hasMultipleSolutions()
-                    ? String.format("\n生成された解の数: %d個（結果画面で切り替え可能）", multiResult.totalSolutionCount)
-                    : "";
-
-            JOptionPane.showMessageDialog(this,
-                    String.format("処理が完了しました。\n\n利用可能スタッフ: %d人\n清掃対象部屋: %d室\n" +
-                                    "制限設定スタッフ: %d人\n大浴場清掃スタッフ: %d人\n故障部屋(清掃対象): %d室%s\n\n結果表示ボタンで詳細を確認してください。",
-                            availableStaff.size(), totalRooms, pointConstraints.size(), bathStaffCount,
-                            selectedBrokenRoomsForCleaningCount, solutionInfo),
-                    "処理完了", JOptionPane.INFORMATION_MESSAGE);
-
+            executeProcessingWithWorker();
         } catch (Exception ex) {
             String errorMsg = "処理中にエラーが発生しました: " + ex.getMessage();
             appendLog("エラー: " + errorMsg);
             LOGGER.severe(errorMsg);
             ex.printStackTrace();
-
             JOptionPane.showMessageDialog(this, errorMsg, "エラー", JOptionPane.ERROR_MESSAGE);
+            processButton.setEnabled(true);
+            processButton.setText("処理実行");
         }
+    }
+
+    /**
+     * 処理実行（ダイアログ操作はEDT、最適化はバックグラウンド）
+     */
+    private void executeProcessingWithWorker() {
+        // === Phase 1: データ読み込み・ダイアログ操作（EDT上で実行） ===
+        appendLog("\n=== 処理開始 ===");
+
+        if (selectedEcoDataFile != null) {
+            System.setProperty("ecoDataFile", selectedEcoDataFile.getAbsolutePath());
+            appendLog("エコ清掃データベースを設定: " + selectedEcoDataFile.getName());
+            appendLog("  → " + selectedEcoDataFile.getAbsolutePath());
+        }
+
+        if (!selectedBrokenRoomsForCleaning.isEmpty()) {
+            String brokenRoomsStr = String.join(",", selectedBrokenRoomsForCleaning);
+            System.setProperty("selectedBrokenRooms", brokenRoomsStr);
+            appendLog("清掃対象故障部屋を設定: " + selectedBrokenRoomsForCleaning.size() + "室");
+        } else {
+            System.clearProperty("selectedBrokenRooms");
+        }
+
+        // 1. 部屋データの読み込み
+        appendLog("部屋データを読み込み中...");
+        final FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
+        appendLog(String.format("部屋データ読み込み完了: 本館%d室, 別館%d室, エコ%d室, 故障%d室",
+                cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
+                cleaningData.ecoRooms.size(), cleaningData.totalBrokenRooms));
+
+        // エコ清掃警告チェック
+        if (!cleaningData.ecoWarnings.isEmpty()) {
+            appendLog("\n【エコ清掃警告】");
+            appendLog("エコ清掃情報に以下の問題が検出されました:");
+            for (String warning : cleaningData.ecoWarnings) {
+                appendLog("  " + warning);
+            }
+            appendLog("");
+
+            StringBuilder warningMessage = new StringBuilder();
+            warningMessage.append("エコ清掃情報に ").append(cleaningData.ecoWarnings.size())
+                    .append(" 件の警告があります:\n\n");
+
+            int displayCount = Math.min(10, cleaningData.ecoWarnings.size());
+            for (int i = 0; i < displayCount; i++) {
+                warningMessage.append("• ").append(cleaningData.ecoWarnings.get(i)).append("\n");
+            }
+
+            if (cleaningData.ecoWarnings.size() > 10) {
+                warningMessage.append("\n... 他 ").append(cleaningData.ecoWarnings.size() - 10)
+                        .append(" 件の警告があります。\n詳細はログをご確認ください。");
+            }
+
+            int result = JOptionPane.showConfirmDialog(
+                    this,
+                    warningMessage.toString(),
+                    "エコ清掃情報の警告",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE
+            );
+
+            if (result != JOptionPane.OK_OPTION) {
+                appendLog("処理がユーザーによってキャンセルされました。");
+                processButton.setEnabled(true);
+                processButton.setText("処理実行");
+                return;
+            }
+        }
+
+        // 2. スタッフデータの読み込み
+        appendLog("スタッフデータを読み込み中...");
+        final List<FileProcessor.Staff> availableStaff = FileProcessor.getAvailableStaff(selectedShiftFile, selectedDate);
+        appendLog(String.format("利用可能スタッフ: %d人", availableStaff.size()));
+
+        if (availableStaff.isEmpty()) {
+            appendLog("警告: 利用可能なスタッフが見つかりませんでした。");
+            JOptionPane.showMessageDialog(this, "指定日に利用可能なスタッフが見つかりませんでした。",
+                    "警告", JOptionPane.WARNING_MESSAGE);
+            processButton.setEnabled(true);
+            processButton.setText("処理実行");
+            return;
+        }
+
+        // 3. フロア情報の構築
+        appendLog("フロア情報を構築中...");
+        final List<AdaptiveRoomOptimizer.FloorInfo> floors = buildFloorInfo(cleaningData);
+        appendLog(String.format("フロア情報構築完了: %d階層", floors.size()));
+
+        // 4. 大浴場清掃タイプの選択
+        final AdaptiveRoomOptimizer.BathCleaningType bathType = selectBathCleaningType();
+
+        // 5. ポイント制限の設定(大浴場清掃スタッフ選択機能付き)
+        appendLog("ポイント制限・大浴場清掃スタッフ設定を確認中...");
+        final List<StaffPointConstraint> pointConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType);
+
+        // 5.5. ★新機能: 通常清掃部屋の事前割り振り設定
+        appendLog("通常清掃部屋の割り振りパターンを設定中...");
+        final Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution =
+                selectNormalRoomDistribution(cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
+                        pointConstraints, availableStaff, bathType, floors);
+
+        // 大浴場清掃スタッフの集計
+        final long bathStaffCount = pointConstraints.stream()
+                .mapToLong(constraint -> constraint.isBathCleaningStaff ? 1 : 0)
+                .sum();
+
+        if (!pointConstraints.isEmpty()) {
+            appendLog(String.format("ポイント制限が設定されました: %d人", pointConstraints.size()));
+            appendLog(String.format("大浴場清掃スタッフ: %d人", bathStaffCount));
+            pointConstraints.forEach(constraint -> {
+                String bathInfo = constraint.isBathCleaningStaff ? " [大浴場清掃担当]" : "";
+                appendLog(String.format("  %s: %s, %s%s",
+                        constraint.staffName,
+                        constraint.getConstraintDisplay(),
+                        constraint.buildingAssignment.displayName,
+                        bathInfo));
+            });
+        } else {
+            appendLog("ポイント制限は設定されませんでした(全員均等配分)");
+        }
+
+        // ★追加: 部屋割り振り結果の表示
+        if (roomDistribution != null && !roomDistribution.isEmpty()) {
+            appendLog("通常清掃部屋割り振り設定:");
+            roomDistribution.values().forEach(dist -> {
+                String floorInfo = (dist.preferredFloors != null && !dist.preferredFloors.isEmpty())
+                        ? " [指定階: " + dist.getPreferredFloorsText() + "]" : "";
+                appendLog(String.format("  %s: %d部屋 (%s)%s",
+                        dist.staffName, dist.assignedRooms, dist.buildingAssignment, floorInfo));
+            });
+        }
+
+        // 6. 適応型設定の作成
+        appendLog("最適化設定を作成中...");
+        final int totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
+        final AdaptiveRoomOptimizer.AdaptiveLoadConfig config = createAdaptiveConfigWithPointConstraints(
+                availableStaff, totalRooms, cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
+                bathType, pointConstraints, roomDistribution);
+
+        // === Phase 2: 最適化実行（バックグラウンドスレッド） ===
+        appendLog("最適化を実行中（最大7つの解を探索）...");
+
+        final AdaptiveRoomOptimizer.AdaptiveOptimizer optimizer =
+                new AdaptiveRoomOptimizer.AdaptiveOptimizer(floors, config);
+
+        new SwingWorker<AdaptiveRoomOptimizer.MultiOptimizationResult, String>() {
+            @Override
+            protected AdaptiveRoomOptimizer.MultiOptimizationResult doInBackground() {
+                // 進捗リスナーを設定（LOGGERの出力をGUIに転送）
+                RoomAssignmentCPSATOptimizer.setProgressListener(msg -> publish(msg));
+                return optimizer.optimizeMultiple(selectedDate);
+            }
+
+            @Override
+            protected void process(List<String> chunks) {
+                // バックグラウンドからのログメッセージをGUIに表示
+                for (String msg : chunks) {
+                    logArea.append(msg + "\n");
+                    logArea.setCaretPosition(logArea.getDocument().getLength());
+                }
+            }
+
+            @Override
+            protected void done() {
+                // 進捗リスナーを解除
+                RoomAssignmentCPSATOptimizer.setProgressListener(null);
+
+                try {
+                    AdaptiveRoomOptimizer.MultiOptimizationResult multiResult = get();
+                    appendLog(String.format("最適化完了: %d個の解が見つかりました", multiResult.totalSolutionCount));
+
+                    // 8. 部屋番号の割り当て
+                    Map<String, List<FileProcessor.Room>> detailedAssignments = new HashMap<>();
+                    try {
+                        RoomNumberAssigner assigner = new RoomNumberAssigner(cleaningData);
+                        detailedAssignments = assigner.assignDetailedRooms(multiResult.getAssignments(0));
+                        appendLog("部屋番号の詳細割り当てが完了しました。");
+                    } catch (Exception ex) {
+                        appendLog("部屋番号の詳細割り当てに失敗しましたが、処理を続行します: " + ex.getMessage());
+                    }
+
+                    // 9. 結果を保存
+                    lastResult = new ProcessingResult(cleaningData, multiResult, detailedAssignments);
+                    viewResultsButton.setEnabled(true);
+
+                    // 10. 結果サマリーの表示
+                    appendLog("\n=== 処理完了 ===");
+                    multiResult.printDetailedSummary();
+
+                    appendLog("\n結果表示ボタンで詳細を確認できます。");
+                    if (multiResult.hasMultipleSolutions()) {
+                        appendLog(String.format("★ %d個の解が生成されました。結果画面で切り替えできます。", multiResult.totalSolutionCount));
+                    }
+
+                    long selectedBrokenRoomsForCleaningCount = cleaningData.brokenRooms.stream()
+                            .filter(r -> cleaningData.mainRooms.contains(r) || cleaningData.annexRooms.contains(r))
+                            .count();
+
+                    String solutionInfo = multiResult.hasMultipleSolutions()
+                            ? String.format("\n生成された解の数: %d個（結果画面で切り替え可能）", multiResult.totalSolutionCount)
+                            : "";
+
+                    JOptionPane.showMessageDialog(RoomAssignmentApplication.this,
+                            String.format("処理が完了しました。\n\n利用可能スタッフ: %d人\n清掃対象部屋: %d室\n" +
+                                            "制限設定スタッフ: %d人\n大浴場清掃スタッフ: %d人\n故障部屋(清掃対象): %d室%s\n\n結果表示ボタンで詳細を確認してください。",
+                                    availableStaff.size(), totalRooms, pointConstraints.size(), bathStaffCount,
+                                    selectedBrokenRoomsForCleaningCount, solutionInfo),
+                            "処理完了", JOptionPane.INFORMATION_MESSAGE);
+
+                } catch (Exception ex) {
+                    String errorMsg = "最適化中にエラーが発生しました: " + ex.getMessage();
+                    appendLog("エラー: " + errorMsg);
+                    LOGGER.severe(errorMsg);
+                    ex.printStackTrace();
+                    JOptionPane.showMessageDialog(RoomAssignmentApplication.this,
+                            errorMsg, "エラー", JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    processButton.setEnabled(true);
+                    processButton.setText("処理実行");
+                }
+            }
+        }.execute();
     }
     /**
      * ★新規追加: roomDistribution を含む AdaptiveLoadConfig を作成

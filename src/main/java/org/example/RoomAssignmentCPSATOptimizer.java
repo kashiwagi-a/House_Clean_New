@@ -22,19 +22,58 @@ import java.util.logging.Logger;
 public class RoomAssignmentCPSATOptimizer {
     private static final Logger LOGGER = Logger.getLogger(RoomAssignmentCPSATOptimizer.class.getName());
 
+    // 進捗通知用リスナー（GUI表示用）
+    private static java.util.function.Consumer<String> progressListener;
+    private static java.util.logging.Handler guiHandler;
+
+    /**
+     * GUI進捗リスナーを設定する。
+     * LOGGERの出力を自動的にGUIに転送する。
+     */
+    public static void setProgressListener(java.util.function.Consumer<String> listener) {
+        // 既存のハンドラがあれば除去
+        if (guiHandler != null) {
+            LOGGER.removeHandler(guiHandler);
+            guiHandler = null;
+        }
+        progressListener = listener;
+        if (listener != null) {
+            guiHandler = new java.util.logging.Handler() {
+                @Override
+                public void publish(java.util.logging.LogRecord record) {
+                    if (progressListener != null && record.getMessage() != null) {
+                        try {
+                            String msg = record.getMessage();
+                            // ツインパターン進捗とECOフロア制約の詳細は多すぎるのでフィルタ
+                            if (msg.contains("ECOフロア使用制約追加")) {
+                                return;
+                            }
+                            progressListener.accept(msg);
+                        } catch (Exception e) {
+                            // GUI通知失敗は無視
+                        }
+                    }
+                }
+                @Override public void flush() {}
+                @Override public void close() throws SecurityException {}
+            };
+            guiHandler.setLevel(java.util.logging.Level.INFO);
+            LOGGER.addHandler(guiHandler);
+        }
+    }
+
     // 探索する解の最大数
     private static final int MAX_SINGLE_SOLUTIONS = 5;
     private static final int MAX_TOTAL_CANDIDATES = 50;
 
-    // ★追加: 全体タイムアウト（秒）
-    private static final int TOTAL_TIMEOUT_SECONDS = 60;
+    // タイムアウトは無効（全パターン探索を保証）
 
     // ★追加: 複数解の最大数（ユーザーに表示する解の数）
     public static final int MAX_SOLUTIONS_TO_KEEP = 7;
 
     // フロアあたりの最大スタッフ数（初期値と上限）
     private static final int INITIAL_MAX_STAFF_PER_FLOOR = 2;
-    private static final int MAX_STAFF_PER_FLOOR_LIMIT = 10;
+    private static final int MAX_STAFF_PER_FLOOR_LIMIT = 7;
 
     static {
         com.google.ortools.Loader.loadNativeLibraries();
@@ -595,35 +634,27 @@ public class RoomAssignmentCPSATOptimizer {
             return new ArrayList<>();
         }
 
-        // ★追加: タイムアウト管理
+        // タイムアウトなし（全パターン探索）
         long startTime = System.currentTimeMillis();
-        long timeoutMillis = TOTAL_TIMEOUT_SECONDS * 1000L;
 
         // ★追加: 全体で最良の部分解を管理
         List<PartialSolutionResult> globalPartialResults = new ArrayList<>();
 
-        LOGGER.info("=== フロアあたり最大2人制限でCPSAT複数解最適化を開始 ===");
-        LOGGER.info(String.format("タイムアウト: %d秒", TOTAL_TIMEOUT_SECONDS));
+        LOGGER.info("=== フロアあたり最大2人制限でCPSAT複数解最適化を開始（タイムアウトなし）===");
 
         // フロアあたりのスタッフ数制限を段階的に緩和
         for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
              maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT;
              maxStaffPerFloor++) {
 
-            // ★追加: タイムアウトチェック
             long elapsed = System.currentTimeMillis() - startTime;
-            if (elapsed > timeoutMillis) {
-                LOGGER.warning(String.format("=== タイムアウト（%d秒経過）===", elapsed / 1000));
-                break;
-            }
+            LOGGER.info(String.format("経過時間: %d秒", elapsed / 1000));
 
-            LOGGER.info(String.format("経過時間: %d秒 / %d秒", elapsed / 1000, TOTAL_TIMEOUT_SECONDS));
-
-            // ★変更: 部分解も収集するバージョンを呼び出す
+            // 部分解も収集するバージョンを呼び出す
             OptimizationResultWithPartials result = optimizeWithStaffPerFloorLimitMultipleWithPartials(
                     buildingData, config, existingAssignments,
                     maxStaffPerFloor, originalConfig, maxSolutions,
-                    startTime, timeoutMillis);
+                    startTime);
 
             // 部分解を全体リストに追加
             if (result.partialResults != null) {
@@ -635,12 +666,6 @@ public class RoomAssignmentCPSATOptimizer {
                 LOGGER.info(String.format("フロアあたり最大%d人制限で%d個の解が見つかりました。",
                         maxStaffPerFloor, result.completeSolutions.size()));
                 return result.completeSolutions;
-            }
-
-            // タイムアウトフラグがセットされていたら終了
-            if (result.timedOut) {
-                LOGGER.warning("タイムアウトにより探索を中断します。");
-                break;
             }
 
             if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
@@ -1270,34 +1295,26 @@ public class RoomAssignmentCPSATOptimizer {
             return new ArrayList<>();
         }
 
-        // ★追加: タイムアウト管理
+        // タイムアウトなし（全パターン探索）
         long startTime = System.currentTimeMillis();
-        long timeoutMillis = TOTAL_TIMEOUT_SECONDS * 1000L;
 
         // ★追加: 全体で最良の部分解を管理
         PartialSolutionResult globalBestPartial = null;
 
-        LOGGER.info("=== フロアあたり最大2人制限でCPSAT最適化を開始 ===");
-        LOGGER.info(String.format("タイムアウト: %d秒", TOTAL_TIMEOUT_SECONDS));
+        LOGGER.info("=== フロアあたり最大2人制限でCPSAT最適化を開始（タイムアウトなし）===");
 
         // フロアあたりのスタッフ数制限を段階的に緩和
         for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
              maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT;
              maxStaffPerFloor++) {
 
-            // ★追加: タイムアウトチェック
             long elapsed = System.currentTimeMillis() - startTime;
-            if (elapsed > timeoutMillis) {
-                LOGGER.warning(String.format("=== タイムアウト（%d秒経過）===", elapsed / 1000));
-                break;
-            }
+            LOGGER.info(String.format("経過時間: %d秒", elapsed / 1000));
 
-            LOGGER.info(String.format("経過時間: %d秒 / %d秒", elapsed / 1000, TOTAL_TIMEOUT_SECONDS));
-
-            // ★変更: タイムアウト情報を渡す
+            // タイムアウト情報を渡す（タイムアウトなし）
             OptimizeWithLimitResult result = optimizeWithStaffPerFloorLimitWithTimeout(
                     buildingData, config, existingAssignments, maxStaffPerFloor, originalConfig,
-                    startTime, timeoutMillis);
+                    startTime);
 
             // 部分解を更新
             if (result.bestPartial != null) {
@@ -1309,12 +1326,6 @@ public class RoomAssignmentCPSATOptimizer {
             if (result.assignments != null) {
                 LOGGER.info(String.format("フロアあたり最大%d人制限で解が見つかりました。", maxStaffPerFloor));
                 return result.assignments;
-            }
-
-            // タイムアウトフラグがセットされていたら終了
-            if (result.timedOut) {
-                LOGGER.warning("タイムアウトにより探索を中断します。");
-                break;
             }
 
             if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
@@ -1353,7 +1364,7 @@ public class RoomAssignmentCPSATOptimizer {
     }
 
     /**
-     * ★追加: タイムアウト対応版のoptimizeWithStaffPerFloorLimit
+     * ★変更: タイムアウト解除版のoptimizeWithStaffPerFloorLimit
      */
     private static OptimizeWithLimitResult optimizeWithStaffPerFloorLimitWithTimeout(
             AdaptiveRoomOptimizer.BuildingData buildingData,
@@ -1361,8 +1372,7 @@ public class RoomAssignmentCPSATOptimizer {
             Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
             int maxStaffPerFloor,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
-            long startTime,
-            long timeoutMillis) {
+            long startTime) {
 
         LOGGER.info(String.format("=== 残りスタッフのCPSAT最適化（フロアあたり最大%d人）===", maxStaffPerFloor));
 
@@ -1377,24 +1387,14 @@ public class RoomAssignmentCPSATOptimizer {
         // 最良の部分解を保持
         PartialSolutionResult bestPartialResult = null;
         int bestPartialPatternIndex = -1;
-        boolean timedOut = false;
 
         for (int i = 0; i < twinPatterns.size(); i++) {
-            // ★追加: パターンごとにタイムアウトチェック
             long elapsed = System.currentTimeMillis() - startTime;
-            if (elapsed > timeoutMillis) {
-                LOGGER.warning(String.format("タイムアウト（%d秒経過）- パターン%d/%dで中断",
-                        elapsed / 1000, i + 1, twinPatterns.size()));
-                timedOut = true;
-                break;
-            }
 
             Map<String, TwinAssignment> pattern = twinPatterns.get(i);
 
-            if (i % 20 == 0) {
-                LOGGER.info(String.format("=== ツインパターン %d/%d を試行中（経過%d秒）===",
-                        i + 1, twinPatterns.size(), elapsed / 1000));
-            }
+            LOGGER.info(String.format("=== ツインパターン %d/%d を試行中（経過%d秒）===",
+                    i + 1, twinPatterns.size(), elapsed / 1000));
 
             Map<String, FloorTwinAssignment> twinResult =
                     assignTwinsRoundRobin(buildingData, config, pattern, maxStaffPerFloor);
@@ -1424,7 +1424,7 @@ public class RoomAssignmentCPSATOptimizer {
         }
 
         // 完全解がない場合
-        return new OptimizeWithLimitResult(null, bestPartialResult, timedOut);
+        return new OptimizeWithLimitResult(null, bestPartialResult, false);
     }
 
     /**
@@ -1455,9 +1455,7 @@ public class RoomAssignmentCPSATOptimizer {
         for (int i = 0; i < twinPatterns.size(); i++) {
             Map<String, TwinAssignment> pattern = twinPatterns.get(i);
 
-            if (i % 20 == 0) {
-                LOGGER.info("=== ツインパターン " + (i + 1) + "/" + twinPatterns.size() + " を試行中 ===");
-            }
+            LOGGER.info("=== ツインパターン " + (i + 1) + "/" + twinPatterns.size() + " を試行中 ===");
 
             Map<String, FloorTwinAssignment> twinResult =
                     assignTwinsRoundRobin(buildingData, config, pattern, maxStaffPerFloor);
@@ -1534,9 +1532,7 @@ public class RoomAssignmentCPSATOptimizer {
         for (int i = 0; i < twinPatterns.size() && completeSolutions.size() < maxSolutions; i++) {
             Map<String, TwinAssignment> pattern = twinPatterns.get(i);
 
-            if (i % 20 == 0) {
-                LOGGER.info("=== ツインパターン " + (i + 1) + "/" + twinPatterns.size() + " を試行中（現在" + completeSolutions.size() + "解）===");
-            }
+            LOGGER.info("=== ツインパターン " + (i + 1) + "/" + twinPatterns.size() + " を試行中（現在" + completeSolutions.size() + "解）===");
 
             Map<String, FloorTwinAssignment> twinResult =
                     assignTwinsRoundRobin(buildingData, config, pattern, maxStaffPerFloor);
@@ -1604,8 +1600,7 @@ public class RoomAssignmentCPSATOptimizer {
             int maxStaffPerFloor,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
             int maxSolutions,
-            long startTime,
-            long timeoutMillis) {
+            long startTime) {
 
         LOGGER.info(String.format("=== 残りスタッフのCPSAT複数解最適化（フロアあたり最大%d人、最大%d解）===",
                 maxStaffPerFloor, maxSolutions));
@@ -1622,24 +1617,14 @@ public class RoomAssignmentCPSATOptimizer {
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> completeSolutions = new ArrayList<>();
         // 部分解も保持
         List<PartialSolutionResult> partialResults = new ArrayList<>();
-        boolean timedOut = false;
 
         for (int i = 0; i < twinPatterns.size() && completeSolutions.size() < maxSolutions; i++) {
-            // ★追加: パターンごとにタイムアウトチェック
             long elapsed = System.currentTimeMillis() - startTime;
-            if (elapsed > timeoutMillis) {
-                LOGGER.warning(String.format("タイムアウト（%d秒経過）- パターン%d/%dで中断",
-                        elapsed / 1000, i + 1, twinPatterns.size()));
-                timedOut = true;
-                break;
-            }
 
             Map<String, TwinAssignment> pattern = twinPatterns.get(i);
 
-            if (i % 20 == 0) {
-                LOGGER.info(String.format("=== ツインパターン %d/%d を試行中（現在%d解、経過%d秒）===",
-                        i + 1, twinPatterns.size(), completeSolutions.size(), elapsed / 1000));
-            }
+            LOGGER.info(String.format("=== ツインパターン %d/%d を試行中（現在%d解、経過%d秒）===",
+                    i + 1, twinPatterns.size(), completeSolutions.size(), elapsed / 1000));
 
             Map<String, FloorTwinAssignment> twinResult =
                     assignTwinsRoundRobin(buildingData, config, pattern, maxStaffPerFloor);
@@ -1683,11 +1668,11 @@ public class RoomAssignmentCPSATOptimizer {
         // 完全解が見つかった場合
         if (!completeSolutions.isEmpty()) {
             LOGGER.info(String.format("合計 %d 個の完全解を発見", completeSolutions.size()));
-            return new OptimizationResultWithPartials(completeSolutions, partialResults, timedOut);
+            return new OptimizationResultWithPartials(completeSolutions, partialResults, false);
         }
 
         // 完全解がない場合
-        return new OptimizationResultWithPartials(null, partialResults, timedOut);
+        return new OptimizationResultWithPartials(null, partialResults, false);
     }
 
     /**
@@ -2312,56 +2297,6 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // ★★追加: 指定階制約 - preferredFloorsが設定されているスタッフは指定階を必ず含む
-        // （指定階のみに制限するのではなく、指定階に必ず割り当てられるようにする）
-        // ※別館フロアは内部的に+20されている（別館2F=22, 別館3F=23等）ため、自動変換する
-        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
-            String staffName = staffInfo.staff.name;
-            NormalRoomDistributionDialog.StaffDistribution dist =
-                    config.roomDistribution != null ?
-                            config.roomDistribution.get(staffName) : null;
-
-            if (dist == null || dist.preferredFloors == null || dist.preferredFloors.isEmpty()) {
-                continue;
-            }
-
-            boolean hasMainRooms = (dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms) > 0;
-            boolean hasAnnexRooms = (dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms) > 0;
-
-            LOGGER.info(String.format("  %s: 指定階制約を追加 (入力値: %s, 本館:%s, 別館:%s) ※必ず含む",
-                    staffName, dist.getPreferredFloorsText(),
-                    hasMainRooms ? "あり" : "なし", hasAnnexRooms ? "あり" : "なし"));
-
-            for (int preferredFloor : dist.preferredFloors) {
-                boolean found = false;
-
-                // 本館の場合: フロア番号そのまま（2-10）
-                if (hasMainRooms) {
-                    String yVarName = String.format("y_%s_%d", staffName, preferredFloor);
-                    if (yVars.containsKey(yVarName)) {
-                        model.addEquality(yVars.get(yVarName), 1);
-                        LOGGER.info(String.format("    → 本館%dF を必ず使用", preferredFloor));
-                        found = true;
-                    }
-                }
-
-                // 別館の場合: フロア番号+20（別館2F=22, 別館3F=23等）
-                if (hasAnnexRooms) {
-                    int annexFloorNum = preferredFloor + 20;
-                    String yVarName = String.format("y_%s_%d", staffName, annexFloorNum);
-                    if (yVars.containsKey(yVarName)) {
-                        model.addEquality(yVars.get(yVarName), 1);
-                        LOGGER.info(String.format("    → 別館%dF (内部=%d) を必ず使用", preferredFloor, annexFloorNum));
-                        found = true;
-                    }
-                }
-
-                if (!found) {
-                    LOGGER.warning(String.format("    → %dF のy変数が存在しません（フロアが存在しない可能性）", preferredFloor));
-                }
-            }
-        }
-
         // フロア担当リンク制約
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
             String staffName = staffInfo.staff.name;
@@ -2712,32 +2647,12 @@ public class RoomAssignmentCPSATOptimizer {
             if (config.roomDistribution != null) {
                 NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
                 if (dist != null) {
-                    // ★★追加: 指定階が設定されている場合は指定階数を最大フロア数とする
-                    // ※ユーザー入力は実際の階数（2,3,4等）、別館は内部的に+20
-                    if (dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
-                        // 指定階のうち本館フロアと別館フロアを分けてカウント
-                        long mainPreferredCount = dist.preferredFloors.stream()
-                                .filter(f -> buildingData.mainFloors.stream()
-                                        .anyMatch(mf -> mf.floorNumber == f))
-                                .count();
-                        long annexPreferredCount = dist.preferredFloors.stream()
-                                .filter(f -> buildingData.annexFloors.stream()
-                                        .anyMatch(af -> af.floorNumber == f + 20))
-                                .count();
-                        if (mainPreferredCount > 0) {
-                            maxMainFloors = Math.max(maxMainFloors, (int) mainPreferredCount);
-                        }
-                        if (annexPreferredCount > 0) {
-                            maxAnnexFloors = Math.max(maxAnnexFloors, (int) annexPreferredCount);
-                        }
-                    } else {
-                        int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms + dist.mainEcoAssignedRooms;
-                        int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms + dist.annexEcoAssignedRooms;
-                        // ★両方割り振りの場合、各建物1フロアずつに制限
-                        if (mainR > 0 && annexR > 0) {
-                            maxMainFloors = 1;
-                            maxAnnexFloors = 1;
-                        }
+                    int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms + dist.mainEcoAssignedRooms;
+                    int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms + dist.annexEcoAssignedRooms;
+                    // ★両方割り振りの場合、各建物1フロアずつに制限
+                    if (mainR > 0 && annexR > 0) {
+                        maxMainFloors = 1;
+                        maxAnnexFloors = 1;
                     }
                 }
             }
@@ -3054,22 +2969,7 @@ public class RoomAssignmentCPSATOptimizer {
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo si : config.extendedStaffInfo) {
             if (si.staff.name.equals(staffName) &&
                     si.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
-                // ★★修正: 大浴場清掃スタッフでも指定階がある場合は指定階数を優先
-                if (config.roomDistribution != null) {
-                    NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
-                    if (dist != null && dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
-                        return dist.preferredFloors.size();
-                    }
-                }
                 return 1;
-            }
-        }
-
-        // ★★追加: 指定階が設定されている場合は指定階数をmaxFloorsとする
-        if (config.roomDistribution != null) {
-            NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
-            if (dist != null && dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
-                maxFloors = Math.max(maxFloors, dist.preferredFloors.size());
             }
         }
 

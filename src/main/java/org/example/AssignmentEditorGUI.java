@@ -2502,6 +2502,9 @@ public class AssignmentEditorGUI extends JFrame {
                 normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
                 ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
 
+                // スタッフの最初の行を記録（リネン担当階を書き込むため）
+                int staffFirstRow = currentRow;
+
                 // 通常清掃部屋を出力
                 for (FileProcessor.Room room : normalRooms) {
                     Row row = sheet.createRow(currentRow);
@@ -2520,13 +2523,38 @@ public class AssignmentEditorGUI extends JFrame {
                         currentRow++;
                     }
                 }
+
+                // E列: リネン担当階（スタッフの最初の行に出力）
+                if (staff.isLinenClosetCleaning && staff.linenClosetFloors != null
+                        && !staff.linenClosetFloors.isEmpty()) {
+                    Row firstRow = sheet.getRow(staffFirstRow);
+                    if (firstRow != null) {
+                        Cell cellLinen = firstRow.createCell(4);
+                        // 階番号をソートして "2,8F" 形式で出力
+                        List<Integer> sortedFloors = new ArrayList<>(staff.linenClosetFloors);
+                        Collections.sort(sortedFloors);
+                        StringBuilder floorSb = new StringBuilder();
+                        for (int i = 0; i < sortedFloors.size(); i++) {
+                            if (i > 0) floorSb.append(",");
+                            int f = sortedFloors.get(i);
+                            if (f > 20) {
+                                floorSb.append("別").append(f - 20);
+                            } else {
+                                floorSb.append(f);
+                            }
+                        }
+                        floorSb.append("F");
+                        cellLinen.setCellValue(floorSb.toString());
+                    }
+                }
             }
 
             // 列幅を調整
             sheet.setColumnWidth(0, 12 * 256);  // 担当: 12文字幅
             sheet.setColumnWidth(1, 8 * 256);   // 部屋: 8文字幅
             sheet.setColumnWidth(2, 6 * 256);   // 連泊: 6文字幅
-            sheet.setColumnWidth(3, 6 * 256);   // エコ: 6文字幅
+            sheet.setColumnWidth(3, 8 * 256);   // エコ清掃: 8文字幅
+            sheet.setColumnWidth(4, 10 * 256);  // リネン担当階: 10文字幅
 
             // ファイルに保存
             try (FileOutputStream fos = new FileOutputStream(filePath)) {
@@ -2579,7 +2607,7 @@ public class AssignmentEditorGUI extends JFrame {
         // D列: エコ
         Cell cellEco = row.createCell(3);
         if (room.isEcoClean) {
-            cellEco.setCellValue("エコ");
+            cellEco.setCellValue("エコ清掃");
         }
     }
 

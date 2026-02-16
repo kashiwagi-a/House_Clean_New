@@ -8,8 +8,8 @@ import java.util.logging.Logger;
  * 部屋番号自動割り当て機能
  * スタッフ割り当て結果に具体的な部屋番号を割り当てる
  *
- * ★修正: リネン庫清掃スタッフは部屋番号を大きい順に割り当て
- * （大浴清掃スタッフの降順ソートは廃止）
+ * ★修正: リネン庫担当フロアのみ部屋番号を大きい順に割り当て
+ * （リネン庫担当でないフロアは通常の昇順を維持）
  */
 public class RoomNumberAssigner {
     private static final Logger LOGGER = Logger.getLogger(RoomNumberAssigner.class.getName());
@@ -58,8 +58,8 @@ public class RoomNumberAssigner {
 
     /**
      * 特定のスタッフに部屋を割り当て
-     * ★修正: リネン庫清掃スタッフは部屋番号を大きい順に割り当て
-     * （大浴清掃スタッフの降順ソートは削除）
+     * ★修正: リネン庫担当フロアのみ部屋番号を大きい順に割り当て
+     * （リネン庫担当でないフロアは通常の昇順を維持）
      */
     private List<FileProcessor.Room> assignRoomsToStaff(
             AdaptiveRoomOptimizer.StaffAssignment assignment,
@@ -68,12 +68,13 @@ public class RoomNumberAssigner {
 
         List<FileProcessor.Room> assignedRooms = new ArrayList<>();
 
-        // ★修正: リネン庫清掃スタッフかどうかを判定（大浴清掃スタッフの降順は廃止）
+        // ★修正: リネン庫担当フロアのみ部屋番号を大きい順に割り当て
         boolean isLinenClosetStaff = assignment.isLinenClosetCleaning;
+        Set<Integer> linenFloorSet = new HashSet<>(assignment.getLinenClosetFloors());
 
-        if (isLinenClosetStaff) {
-            LOGGER.info(String.format("%s はリネン庫清掃スタッフのため、部屋番号を大きい順に割り当てます",
-                    assignment.staff.name));
+        if (isLinenClosetStaff && !linenFloorSet.isEmpty()) {
+            LOGGER.info(String.format("%s はリネン庫清掃スタッフのため、リネン庫担当フロア(%s)の部屋番号を大きい順に割り当てます",
+                    assignment.staff.name, assignment.getLinenClosetFloorsDisplay()));
         }
 
         // 階ごとに処理
@@ -91,9 +92,9 @@ public class RoomNumberAssigner {
                 continue;
             }
 
-            // ★修正: リネン庫清掃スタッフは部屋番号を大きい順にソート
-            if (isLinenClosetStaff) {
-                // 部屋番号の数値部分で降順ソート（大きい順）
+            // ★修正: リネン庫担当フロアのみ部屋番号を大きい順にソート
+            if (linenFloorSet.contains(floor)) {
+                // リネン庫担当フロア: 部屋番号の数値部分で降順ソート（大きい順）
                 floorRooms.sort((r1, r2) -> {
                     int num1 = extractRoomNumber(r1.roomNumber);
                     int num2 = extractRoomNumber(r2.roomNumber);
@@ -141,8 +142,8 @@ public class RoomNumberAssigner {
             }
 
             if (!ecoRooms.isEmpty()) {
-                // ★修正: エコ部屋もリネン庫清掃スタッフなら大きい順
-                if (isLinenClosetStaff) {
+                // ★修正: エコ部屋もリネン庫担当フロアなら大きい順
+                if (linenFloorSet.contains(floor)) {
                     ecoRooms.sort((r1, r2) -> {
                         int num1 = extractRoomNumber(r1.roomNumber);
                         int num2 = extractRoomNumber(r2.roomNumber);
@@ -155,17 +156,20 @@ public class RoomNumberAssigner {
             }
         }
 
-        // ★修正: 最終ソート（リネン庫清掃スタッフは大きい順を維持）
-        if (isLinenClosetStaff) {
-            // リネン庫清掃スタッフ: 階ごとに部屋番号の大きい順
+        // ★修正: 最終ソート（リネン庫担当フロアのみ大きい順、それ以外は昇順）
+        if (isLinenClosetStaff && !linenFloorSet.isEmpty()) {
             assignedRooms.sort((r1, r2) -> {
                 // まず階で比較（昇順）
                 int floorCompare = Integer.compare(r1.floor, r2.floor);
                 if (floorCompare != 0) return floorCompare;
-                // 同じ階なら部屋番号で比較（降順＝大きい順）
+                // 同じ階の場合、リネン庫担当フロアなら降順、そうでなければ昇順
                 int num1 = extractRoomNumber(r1.roomNumber);
                 int num2 = extractRoomNumber(r2.roomNumber);
-                return Integer.compare(num2, num1);
+                if (linenFloorSet.contains(r1.floor)) {
+                    return Integer.compare(num2, num1); // 降順
+                } else {
+                    return Integer.compare(num1, num2); // 昇順
+                }
             });
         } else {
             // 通常スタッフ: 部屋番号順（昇順）

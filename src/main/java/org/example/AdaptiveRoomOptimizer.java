@@ -249,48 +249,107 @@ public class AdaptiveRoomOptimizer {
 
         LOGGER.info("=== リネン庫担当フロア割り当て開始 ===");
 
-        // 既に割り当て済みのフロアを追跡（重複防止）
-        Set<Integer> assignedLinenFloors = new HashSet<>();
+        // --- 二部マッチングによる最適割り当て ---
+        // スタッフが複数フロアを要求する場合に備え、スロット方式を採用
+        // 例: スタッフAが2フロア必要 → スロット(A,0), (A,1) を作成
 
-        // 担当フロア数が多いスタッフを先に割り当て（選択肢が少ないスタッフ優先）
-        linenStaff.sort((a, b) -> {
-            // 清掃担当フロア数が少ないスタッフを優先（選択肢が限られるため）
-            int floorsA = a.floors.size();
-            int floorsB = b.floors.size();
-            if (floorsA != floorsB) return Integer.compare(floorsA, floorsB);
-            // 同じならリネン庫担当フロア数が多いスタッフを優先
-            return Integer.compare(b.linenClosetFloorCount, a.linenClosetFloorCount);
-        });
-
+        // 全候補フロアを収集し、インデックス化
+        Set<Integer> allFloorSet = new LinkedHashSet<>();
         for (StaffAssignment staff : linenStaff) {
-            List<Integer> candidateFloors = new ArrayList<>(staff.floors);
-            Collections.sort(candidateFloors);
+            allFloorSet.addAll(staff.floors);
+        }
+        List<Integer> allFloors = new ArrayList<>(allFloorSet);
+        Collections.sort(allFloors);
+        Map<Integer, Integer> floorToIndex = new HashMap<>();
+        for (int i = 0; i < allFloors.size(); i++) {
+            floorToIndex.put(allFloors.get(i), i);
+        }
+        int numFloors = allFloors.size();
 
-            // 既に他のスタッフに割り当て済みのフロアを除外
-            candidateFloors.removeAll(assignedLinenFloors);
+        // スロットを構築: (スタッフインデックス, スロット番号) → スロット通し番号
+        List<int[]> slots = new ArrayList<>(); // [staffIdx, slotNum]
+        List<List<Integer>> slotToFloorIndices = new ArrayList<>(); // 各スロットが接続可能なフロアインデックス
 
-            // 必要数分を割り当て（フロア番号昇順で選択）
-            int needed = staff.linenClosetFloorCount;
-            List<Integer> selected = new ArrayList<>();
-            for (int floor : candidateFloors) {
-                if (selected.size() >= needed) break;
-                selected.add(floor);
+        for (int si = 0; si < linenStaff.size(); si++) {
+            StaffAssignment staff = linenStaff.get(si);
+            Set<Integer> staffFloorIndices = new HashSet<>();
+            for (int floor : staff.floors) {
+                Integer idx = floorToIndex.get(floor);
+                if (idx != null) staffFloorIndices.add(idx);
             }
+            List<Integer> sortedFloorIndices = new ArrayList<>(staffFloorIndices);
+            Collections.sort(sortedFloorIndices);
 
-            staff.setLinenClosetFloors(selected);
-            assignedLinenFloors.addAll(selected);
+            for (int k = 0; k < staff.linenClosetFloorCount; k++) {
+                slots.add(new int[]{si, k});
+                slotToFloorIndices.add(sortedFloorIndices);
+            }
+        }
+        int numSlots = slots.size();
 
+        // 二部マッチング: スロット → フロア（増加パス法 / Hungarian method）
+        int[] slotMatch = new int[numSlots];   // slotMatch[slot] = マッチしたフロアインデックス (-1 = 未マッチ)
+        int[] floorMatch = new int[numFloors]; // floorMatch[floor] = マッチしたスロット番号 (-1 = 未マッチ)
+        Arrays.fill(slotMatch, -1);
+        Arrays.fill(floorMatch, -1);
+
+        for (int s = 0; s < numSlots; s++) {
+            // 各スロットについて増加パスを探索
+            boolean[] visited = new boolean[numFloors];
+            augment(s, slotToFloorIndices, slotMatch, floorMatch, visited);
+        }
+
+        // マッチング結果を各スタッフに反映
+        // まずスタッフごとに割り当てられたフロアを集める
+        Map<Integer, List<Integer>> staffIdxToFloors = new HashMap<>();
+        for (int s = 0; s < numSlots; s++) {
+            int staffIdx = slots.get(s)[0];
+            if (slotMatch[s] >= 0) {
+                staffIdxToFloors.computeIfAbsent(staffIdx, k -> new ArrayList<>())
+                        .add(allFloors.get(slotMatch[s]));
+            }
+        }
+
+        for (int si = 0; si < linenStaff.size(); si++) {
+            StaffAssignment staff = linenStaff.get(si);
+            List<Integer> assigned = staffIdxToFloors.getOrDefault(si, new ArrayList<>());
+            Collections.sort(assigned);
+            staff.setLinenClosetFloors(assigned);
+
+            int needed = staff.linenClosetFloorCount;
             LOGGER.info(String.format("  %s: リネン庫担当フロア = %s（要求: %d階、割当: %d階）",
                     staff.staff.name, staff.getLinenClosetFloorsDisplay(),
-                    needed, selected.size()));
+                    needed, assigned.size()));
 
-            if (selected.size() < needed) {
+            if (assigned.size() < needed) {
                 LOGGER.warning(String.format("  警告: %s のリネン庫フロアが不足しています（要求: %d、割当: %d）",
-                        staff.staff.name, needed, selected.size()));
+                        staff.staff.name, needed, assigned.size()));
             }
         }
 
         LOGGER.info("=== リネン庫担当フロア割り当て完了 ===");
+    }
+
+    /**
+     * 二部マッチングの増加パス探索（DFS）
+     * スロットsから未マッチのフロアへの増加パスを見つけ、マッチングを更新する
+     *
+     * @return 増加パスが見つかった場合true
+     */
+    private static boolean augment(int slot, List<List<Integer>> slotToFloorIndices,
+                                   int[] slotMatch, int[] floorMatch, boolean[] visited) {
+        for (int floorIdx : slotToFloorIndices.get(slot)) {
+            if (visited[floorIdx]) continue;
+            visited[floorIdx] = true;
+
+            // このフロアが未マッチ、または既マッチ先スロットから別の増加パスが見つかる場合
+            if (floorMatch[floorIdx] < 0 || augment(floorMatch[floorIdx], slotToFloorIndices, slotMatch, floorMatch, visited)) {
+                slotMatch[slot] = floorIdx;
+                floorMatch[floorIdx] = slot;
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -2126,7 +2126,7 @@ public class RoomAssignmentCPSATOptimizer {
             }
 
             result.add(new AdaptiveRoomOptimizer.StaffAssignment(
-                    staffInfo.staff, mainAssignments, annexAssignments, staffInfo.bathCleaningType));
+                    staffInfo.staff, mainAssignments, annexAssignments, staffInfo.bathCleaningType, staffInfo.isLinenClosetCleaning, staffInfo.linenClosetFloorCount));
         }
 
         return result;

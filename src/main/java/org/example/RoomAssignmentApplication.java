@@ -629,8 +629,10 @@ public class RoomAssignmentApplication extends JFrame {
             roomDistribution.values().forEach(dist -> {
                 String floorInfo = (dist.preferredFloors != null && !dist.preferredFloors.isEmpty())
                         ? " [指定階: " + dist.getPreferredFloorsText() + "]" : "";
-                appendLog(String.format("  %s: %d部屋 (%s)%s",
-                        dist.staffName, dist.assignedRooms, dist.buildingAssignment, floorInfo));
+                String linenInfo = dist.isLinenClosetCleaning
+                        ? String.format(" [リネン庫: %d階分]", dist.linenClosetFloorCount) : "";
+                appendLog(String.format("  %s: %d部屋 (%s)%s%s",
+                        dist.staffName, dist.assignedRooms, dist.buildingAssignment, floorInfo, linenInfo));
             });
         }
 

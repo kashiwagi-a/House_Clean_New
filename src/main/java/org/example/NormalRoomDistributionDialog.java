@@ -54,10 +54,12 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private boolean dialogResult = false;
     private JPanel dataPanel;
+    private JLabel availableFloorsLabel;  // ★★追加: 売れている階数表示用
 
     // ★★追加: 利用可能なフロア番号（バリデーション用）
     private Set<Integer> availableMainFloors = new HashSet<>();
     private Set<Integer> availableAnnexFloors = new HashSet<>();
+    private int totalAvailableFloors = 0;  // ★★追加: 売れている階の総数（リネン庫用）
 
     /**
      * ★拡張版: スタッフ割り振り情報
@@ -87,6 +89,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         // ★★追加: 指定階（空の場合は制限なし）
         public Set<Integer> preferredFloors;
 
+        // ★★追加: リネン庫清掃
+        public boolean isLinenClosetCleaning;
+        public int linenClosetFloorCount;
+
         public String constraintType;
         public boolean isBathCleaning;
 
@@ -109,6 +115,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.mainEcoAssignedRooms = 0;
             this.annexEcoAssignedRooms = 0;
             this.preferredFloors = new HashSet<>();
+            this.isLinenClosetCleaning = false;
+            this.linenClosetFloorCount = 0;
         }
 
         public StaffDistribution(String staffId, String staffName, String buildingAssignment,
@@ -137,6 +145,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.mainEcoAssignedRooms = 0;
             this.annexEcoAssignedRooms = 0;
             this.preferredFloors = new HashSet<>();
+            this.isLinenClosetCleaning = false;
+            this.linenClosetFloorCount = 0;
         }
 
         public StaffDistribution(StaffDistribution other) {
@@ -155,6 +165,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.mainEcoAssignedRooms = other.mainEcoAssignedRooms;
             this.annexEcoAssignedRooms = other.annexEcoAssignedRooms;
             this.preferredFloors = new HashSet<>(other.preferredFloors);
+            this.isLinenClosetCleaning = other.isLinenClosetCleaning;
+            this.linenClosetFloorCount = other.linenClosetFloorCount;
         }
 
         public void updateTotal() {
@@ -205,12 +217,13 @@ public class NormalRoomDistributionDialog extends JDialog {
                     this.annexSingleAssignedRooms + annexTwinConverted;
         }
 
-        // ★★追加: ECOを含めた換算値合計を計算
-        // ECOは軽作業なので0.2換算
+        // ★★追加: ECOとリネン庫を含めた換算値合計を計算
+        // ECOは軽作業なので0.2換算、リネン庫は1フロアあたり0.4換算
         public double getConvertedTotalWithEco() {
             double baseConverted = getConvertedTotal();
             double ecoConverted = (this.mainEcoAssignedRooms + this.annexEcoAssignedRooms) * 0.2;
-            return baseConverted + ecoConverted;
+            double linenConverted = this.linenClosetFloorCount * 0.4;
+            return baseConverted + ecoConverted + linenConverted;
         }
 
         // ★★追加: ECOを含めた総部屋数
@@ -308,7 +321,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         this.currentPattern = deepCopyPattern(oneDiffPattern);
 
         initializeGUI();
-        setSize(1700, 750);  // ECO列追加のため幅を拡大
+        setSize(1850, 750);  // ECO列追加のため幅を拡大
         setLocationRelativeTo(parent);
     }
 
@@ -361,7 +374,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         }
 
         initializeGUI();
-        setSize(1700, 750);
+        setSize(1850, 750);
         setLocationRelativeTo(parent);
     }
 
@@ -413,7 +426,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         this.currentPattern = deepCopyPattern(oneDiffPattern);
 
         initializeGUI();
-        setSize(1700, 750);
+        setSize(1850, 750);
         setLocationRelativeTo(parent);
     }
 
@@ -464,6 +477,10 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         infoPanel.add(new JLabel(" | 大浴場清掃: " + bathCleaningType.displayName + " (-" + bathCleaningType.reduction + "部屋)"));
 
+        // ★★追加: 売れている階数表示（リネン庫用）- setAvailableFloors後に更新
+        availableFloorsLabel = new JLabel("");
+        infoPanel.add(availableFloorsLabel);
+
         JPanel selectorPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         selectorPanel.add(new JLabel("割り振りパターン:"));
         patternSelector = new JComboBox<>(new String[]{"1部屋差パターン", "2部屋差パターン"});
@@ -487,15 +504,15 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JPanel tablePanel = new JPanel(new BorderLayout());
 
-        JPanel headerPanel = new JPanel(new GridLayout(1, 13));
+        JPanel headerPanel = new JPanel(new GridLayout(1, 15));
         headerPanel.setBackground(UIManager.getColor("TableHeader.background"));
         headerPanel.setBorder(BorderFactory.createMatteBorder(1, 1, 1, 1, Color.GRAY));
 
-        String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "指定階",
+        String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "指定階",
                 "本館S", "本館T", "本館ECO",
                 "別館S", "別館T", "別館ECO",
                 "通常合計", "ECO合計", "換算合計"};
-        int[] widths = {100, 100, 50, 100, 80, 80, 80, 80, 80, 80, 80, 80, 100};
+        int[] widths = {100, 100, 50, 55, 70, 100, 80, 80, 80, 80, 80, 80, 80, 80, 100};
 
         for (int i = 0; i < headers.length; i++) {
             JLabel headerLabel = new JLabel(headers[i], JLabel.CENTER);
@@ -549,7 +566,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         });
 
         for (StaffDistribution staff : sortedStaff) {
-            JPanel rowPanel = new JPanel(new GridLayout(1, 13));
+            JPanel rowPanel = new JPanel(new GridLayout(1, 15));
             rowPanel.setBorder(BorderFactory.createMatteBorder(0, 1, 1, 1, Color.GRAY));
             rowPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 35));
             rowPanel.setPreferredSize(new Dimension(0, 35));
@@ -569,6 +586,47 @@ public class NormalRoomDistributionDialog extends JDialog {
             JLabel bathLabel = new JLabel(staff.isBathCleaning ? "○" : "", JLabel.CENTER);
             bathLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
             rowPanel.add(bathLabel);
+
+            // ★★追加: リネン庫チェックボックス
+            JPanel linenCheckPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
+            linenCheckPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            JCheckBox linenCheckBox = new JCheckBox();
+            linenCheckBox.setSelected(staff.isLinenClosetCleaning);
+            linenCheckPanel.add(linenCheckBox);
+            rowPanel.add(linenCheckPanel);
+
+            // ★★追加: リネン庫階数スピナー（最大値=売れている階数）
+            JPanel linenFloorPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
+            linenFloorPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            int maxLinenFloors = totalAvailableFloors > 0 ? totalAvailableFloors : 20;
+            SpinnerNumberModel linenFloorModel = new SpinnerNumberModel(
+                    Math.min(staff.linenClosetFloorCount, maxLinenFloors), 0, maxLinenFloors, 1);
+            JSpinner linenFloorSpinner = new JSpinner(linenFloorModel);
+            linenFloorSpinner.setPreferredSize(new Dimension(50, 25));
+            applyZeroAsBlankFormatter(linenFloorSpinner);
+            linenFloorSpinner.setEnabled(staff.isLinenClosetCleaning);
+            linenFloorSpinner.addChangeListener(e -> {
+                staff.linenClosetFloorCount = (int) linenFloorSpinner.getValue();
+                updateRowDisplay(rowPanel, staff);
+                updateSummary();
+            });
+            linenFloorPanel.add(linenFloorSpinner);
+            rowPanel.add(linenFloorPanel);
+
+            // リネン庫チェックボックスの変更リスナー（複数人選択可能）
+            linenCheckBox.addActionListener(e -> {
+                boolean selected = linenCheckBox.isSelected();
+                staff.isLinenClosetCleaning = selected;
+                if (!selected) {
+                    staff.linenClosetFloorCount = 0;
+                }
+                linenFloorSpinner.setEnabled(selected);
+                if (!selected) {
+                    linenFloorSpinner.setValue(0);
+                }
+                updateRowDisplay(rowPanel, staff);
+                updateSummary();
+            });
 
             // ★★追加: 指定階テキストフィールド
             JPanel floorPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
@@ -714,18 +772,18 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private void updateRowDisplay(JPanel rowPanel, StaffDistribution staff) {
         Component[] components = rowPanel.getComponents();
-        // 通常合計更新（index 10）※指定階列追加のため+1
-        if (components.length > 10) {
-            ((JLabel)components[10]).setText(String.valueOf(staff.assignedRooms));
-        }
-        // ECO合計更新（index 11）
-        if (components.length > 11) {
-            int ecoTotal = staff.mainEcoAssignedRooms + staff.annexEcoAssignedRooms;
-            ((JLabel)components[11]).setText(String.valueOf(ecoTotal));
-        }
-        // 換算合計更新（index 12）
+        // 通常合計更新（index 12）※リネン庫列追加のため+2
         if (components.length > 12) {
-            ((JLabel)components[12]).setText(String.format("%.1f", staff.getConvertedTotalWithEco()));
+            ((JLabel)components[12]).setText(String.valueOf(staff.assignedRooms));
+        }
+        // ECO合計更新（index 13）
+        if (components.length > 13) {
+            int ecoTotal = staff.mainEcoAssignedRooms + staff.annexEcoAssignedRooms;
+            ((JLabel)components[13]).setText(String.valueOf(ecoTotal));
+        }
+        // 換算合計更新（index 14）
+        if (components.length > 14) {
+            ((JLabel)components[14]).setText(String.format("%.1f", staff.getConvertedTotalWithEco()));
         }
     }
 
@@ -848,6 +906,22 @@ public class NormalRoomDistributionDialog extends JDialog {
             warnings.add(String.format("別館ECO: 割当%d室 ≠ 実際%d室 (差分%d)",
                     assignedAnnexEco, totalAnnexEcoRooms,
                     assignedAnnexEco - totalAnnexEcoRooms));
+        }
+
+        // ★★追加: リネン庫のバリデーション
+        int totalLinenFloors = 0;
+        for (StaffDistribution dist : currentPattern.values()) {
+            if (dist.isLinenClosetCleaning) {
+                if (dist.linenClosetFloorCount <= 0) {
+                    errors.add(String.format("%s: リネン庫清掃担当に指定されていますが、階数が0です",
+                            dist.staffName));
+                }
+                totalLinenFloors += dist.linenClosetFloorCount;
+            }
+        }
+        if (totalAvailableFloors > 0 && totalLinenFloors > totalAvailableFloors) {
+            warnings.add(String.format("リネン庫担当の合計階数(%d)が売れている階数(%d)を超えています",
+                    totalLinenFloors, totalAvailableFloors));
         }
 
         // 大浴場スタッフが本館と別館の両方に割り当てがある場合は警告
@@ -1421,12 +1495,15 @@ public class NormalRoomDistributionDialog extends JDialog {
         pattern.values().forEach(d -> {
                     String floorInfo = (d.preferredFloors != null && !d.preferredFloors.isEmpty())
                             ? " 指定階=" + d.getPreferredFloorsText() : "";
+                    String linenInfo = d.isLinenClosetCleaning
+                            ? " リネン庫=" + d.linenClosetFloorCount + "階" : "";
                     System.out.println("  " + d.staffName + ": 本館(S" + d.mainSingleAssignedRooms +
                             "+T" + d.mainTwinAssignedRooms + "+E" + d.mainEcoAssignedRooms +
                             ") 別館(S" + d.annexSingleAssignedRooms +
                             "+T" + d.annexTwinAssignedRooms + "+E" + d.annexEcoAssignedRooms +
                             ") = " + d.getTotalRoomsWithEco() +
-                            "室 (換算" + String.format("%.1f", d.getConvertedTotalWithEco()) + ")" + floorInfo);
+                            "室 (換算" + String.format("%.1f", d.getConvertedTotalWithEco()) + ")" +
+                            floorInfo + linenInfo);
                 }
         );
     }
@@ -1441,7 +1518,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         updateDataPanel();
     }
 
-    // ★★拡張: 6区分の情報を含むサマリー（ECO含む）
+    // ★★拡張: 6区分の情報を含むサマリー（ECO・リネン庫含む）
     private void updateSummary() {
         int totalAssignedMainSingle = currentPattern.values().stream()
                 .mapToInt(d -> d.mainSingleAssignedRooms).sum();
@@ -1463,6 +1540,22 @@ public class NormalRoomDistributionDialog extends JDialog {
                 totalAssignedAnnexSingle + totalAssignedAnnexTwin;
         int totalEco = totalAssignedMainEco + totalAssignedAnnexEco;
 
+        // ★★追加: リネン庫情報（複数人対応）
+        StringBuilder linenBuilder = new StringBuilder();
+        int totalLinenFloorCount = 0;
+        for (StaffDistribution dist : currentPattern.values()) {
+            if (dist.isLinenClosetCleaning && dist.linenClosetFloorCount > 0) {
+                if (linenBuilder.length() > 0) linenBuilder.append(", ");
+                linenBuilder.append(String.format("%s(%d階)", dist.staffName, dist.linenClosetFloorCount));
+                totalLinenFloorCount += dist.linenClosetFloorCount;
+            }
+        }
+        String linenInfo = "";
+        if (totalLinenFloorCount > 0) {
+            linenInfo = String.format(" | リネン庫: %s 計%.1fP",
+                    linenBuilder.toString(), totalLinenFloorCount * 0.4);
+        }
+
         String mainSingleText = formatWithColor(totalAssignedMainSingle, totalMainSingleRooms, "S");
         String mainTwinText = formatWithColor(totalAssignedMainTwin, totalMainTwinRooms, "T");
         String mainEcoText = formatWithColor(totalAssignedMainEco, totalMainEcoRooms, "E");
@@ -1471,11 +1564,11 @@ public class NormalRoomDistributionDialog extends JDialog {
         String annexEcoText = formatWithColor(totalAssignedAnnexEco, totalAnnexEcoRooms, "E");
 
         String summaryText = String.format(
-                "<html>割当: 本館%s+%s+%s, 別館%s+%s+%s | 通常合計: %d室 | ECO合計: %d室 | 換算合計: %.1f</html>",
+                "<html>割当: 本館%s+%s+%s, 別館%s+%s+%s | 通常合計: %d室 | ECO合計: %d室 | 換算合計: %.1f%s</html>",
                 mainSingleText, mainTwinText, mainEcoText,
                 annexSingleText, annexTwinText, annexEcoText,
                 totalActual, totalEco,
-                totalConvertedRooms
+                totalConvertedRooms, linenInfo
         );
 
         summaryLabel.setText(summaryText);
@@ -1537,5 +1630,12 @@ public class NormalRoomDistributionDialog extends JDialog {
     public void setAvailableFloors(Set<Integer> mainFloors, Set<Integer> annexFloors) {
         this.availableMainFloors = mainFloors != null ? new HashSet<>(mainFloors) : new HashSet<>();
         this.availableAnnexFloors = annexFloors != null ? new HashSet<>(annexFloors) : new HashSet<>();
+        this.totalAvailableFloors = this.availableMainFloors.size() + this.availableAnnexFloors.size();
+        // ★★追加: ヘッダーの売れている階数表示を更新
+        if (availableFloorsLabel != null && totalAvailableFloors > 0) {
+            availableFloorsLabel.setText(" | 売れている階: " + totalAvailableFloors + "階");
+        }
+        // ★★追加: フロア情報更新後にUIを再描画（リネン庫スピナー最大値を反映）
+        updateDataPanel();
     }
 }

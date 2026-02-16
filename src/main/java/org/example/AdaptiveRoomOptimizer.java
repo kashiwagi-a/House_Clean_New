@@ -61,11 +61,22 @@ public class AdaptiveRoomOptimizer {
     public static class ExtendedStaffInfo {
         public final FileProcessor.Staff staff;
         public final BathCleaningType bathCleaningType;
+        public final boolean isLinenClosetCleaning;
+        public final int linenClosetFloorCount;
 
         public ExtendedStaffInfo(FileProcessor.Staff staff,
                                  BathCleaningType bathType) {
+            this(staff, bathType, false, 0);
+        }
+
+        public ExtendedStaffInfo(FileProcessor.Staff staff,
+                                 BathCleaningType bathType,
+                                 boolean isLinenClosetCleaning,
+                                 int linenClosetFloorCount) {
             this.staff = staff;
             this.bathCleaningType = bathType;
+            this.isLinenClosetCleaning = isLinenClosetCleaning;
+            this.linenClosetFloorCount = linenClosetFloorCount;
         }
     }
 
@@ -112,15 +123,39 @@ public class AdaptiveRoomOptimizer {
         public final Map<Integer, RoomAllocation> annexBuildingAssignments;
         public final Map<Integer, RoomAllocation> roomsByFloor;
         public final BathCleaningType bathCleaningType;
+        public final boolean isLinenClosetCleaning;
+        public final int linenClosetFloorCount;
+        // ★★追加: 具体的なリネン庫担当フロア（後処理で割り当て）
+        private List<Integer> linenClosetFloors;
 
         public StaffAssignment(FileProcessor.Staff staff,
                                Map<Integer, RoomAllocation> mainAssignments,
                                Map<Integer, RoomAllocation> annexAssignments,
                                BathCleaningType bathType) {
+            this(staff, mainAssignments, annexAssignments, bathType, false, 0);
+        }
+
+        public StaffAssignment(FileProcessor.Staff staff,
+                               Map<Integer, RoomAllocation> mainAssignments,
+                               Map<Integer, RoomAllocation> annexAssignments,
+                               BathCleaningType bathType,
+                               boolean isLinenClosetCleaning) {
+            this(staff, mainAssignments, annexAssignments, bathType, isLinenClosetCleaning, 0);
+        }
+
+        public StaffAssignment(FileProcessor.Staff staff,
+                               Map<Integer, RoomAllocation> mainAssignments,
+                               Map<Integer, RoomAllocation> annexAssignments,
+                               BathCleaningType bathType,
+                               boolean isLinenClosetCleaning,
+                               int linenClosetFloorCount) {
             this.staff = staff;
             this.mainBuildingAssignments = new HashMap<>(mainAssignments);
             this.annexBuildingAssignments = new HashMap<>(annexAssignments);
             this.bathCleaningType = bathType;
+            this.isLinenClosetCleaning = isLinenClosetCleaning;
+            this.linenClosetFloorCount = linenClosetFloorCount;
+            this.linenClosetFloors = new ArrayList<>();
 
             Set<Integer> allFloors = new HashSet<>();
             allFloors.addAll(mainAssignments.keySet());
@@ -140,6 +175,35 @@ public class AdaptiveRoomOptimizer {
 
         public Map<Integer, RoomAllocation> getRoomsByFloor() {
             return new HashMap<>(roomsByFloor);
+        }
+
+        // ★★追加: リネン庫担当フロアのgetter/setter
+        public List<Integer> getLinenClosetFloors() {
+            return new ArrayList<>(linenClosetFloors);
+        }
+
+        public void setLinenClosetFloors(List<Integer> floors) {
+            this.linenClosetFloors = floors != null ? new ArrayList<>(floors) : new ArrayList<>();
+        }
+
+        // ★★追加: リネン庫担当フロアの表示用テキスト
+        public String getLinenClosetFloorsDisplay() {
+            if (linenClosetFloors == null || linenClosetFloors.isEmpty()) {
+                return "";
+            }
+            List<Integer> sorted = new ArrayList<>(linenClosetFloors);
+            Collections.sort(sorted);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < sorted.size(); i++) {
+                if (i > 0) sb.append(",");
+                int f = sorted.get(i);
+                if (f > 20) {
+                    sb.append("別館").append(f - 20).append("F");
+                } else {
+                    sb.append(f).append("F");
+                }
+            }
+            return sb.toString();
         }
 
         /**
@@ -163,8 +227,70 @@ public class AdaptiveRoomOptimizer {
                 ));
             }
 
-            return new StaffAssignment(this.staff, mainCopy, annexCopy, this.bathCleaningType);
+            StaffAssignment copy = new StaffAssignment(this.staff, mainCopy, annexCopy, this.bathCleaningType, this.isLinenClosetCleaning, this.linenClosetFloorCount);
+            copy.setLinenClosetFloors(this.linenClosetFloors);
+            return copy;
         }
+    }
+
+    /**
+     * ★★追加: リネン庫担当フロアの割り当て後処理
+     * 各リネン庫担当スタッフの清掃担当フロアから、重複なくリネン庫フロアを割り振る
+     */
+    public static void assignLinenClosetFloors(List<StaffAssignment> assignments) {
+        // リネン庫担当スタッフを抽出
+        List<StaffAssignment> linenStaff = new ArrayList<>();
+        for (StaffAssignment a : assignments) {
+            if (a.isLinenClosetCleaning && a.linenClosetFloorCount > 0) {
+                linenStaff.add(a);
+            }
+        }
+        if (linenStaff.isEmpty()) return;
+
+        LOGGER.info("=== リネン庫担当フロア割り当て開始 ===");
+
+        // 既に割り当て済みのフロアを追跡（重複防止）
+        Set<Integer> assignedLinenFloors = new HashSet<>();
+
+        // 担当フロア数が多いスタッフを先に割り当て（選択肢が少ないスタッフ優先）
+        linenStaff.sort((a, b) -> {
+            // 清掃担当フロア数が少ないスタッフを優先（選択肢が限られるため）
+            int floorsA = a.floors.size();
+            int floorsB = b.floors.size();
+            if (floorsA != floorsB) return Integer.compare(floorsA, floorsB);
+            // 同じならリネン庫担当フロア数が多いスタッフを優先
+            return Integer.compare(b.linenClosetFloorCount, a.linenClosetFloorCount);
+        });
+
+        for (StaffAssignment staff : linenStaff) {
+            List<Integer> candidateFloors = new ArrayList<>(staff.floors);
+            Collections.sort(candidateFloors);
+
+            // 既に他のスタッフに割り当て済みのフロアを除外
+            candidateFloors.removeAll(assignedLinenFloors);
+
+            // 必要数分を割り当て（フロア番号昇順で選択）
+            int needed = staff.linenClosetFloorCount;
+            List<Integer> selected = new ArrayList<>();
+            for (int floor : candidateFloors) {
+                if (selected.size() >= needed) break;
+                selected.add(floor);
+            }
+
+            staff.setLinenClosetFloors(selected);
+            assignedLinenFloors.addAll(selected);
+
+            LOGGER.info(String.format("  %s: リネン庫担当フロア = %s（要求: %d階、割当: %d階）",
+                    staff.staff.name, staff.getLinenClosetFloorsDisplay(),
+                    needed, selected.size()));
+
+            if (selected.size() < needed) {
+                LOGGER.warning(String.format("  警告: %s のリネン庫フロアが不足しています（要求: %d、割当: %d）",
+                        staff.staff.name, needed, selected.size()));
+            }
+        }
+
+        LOGGER.info("=== リネン庫担当フロア割り当て完了 ===");
     }
 
     /**
@@ -216,7 +342,18 @@ public class AdaptiveRoomOptimizer {
                     }
                 }
 
-                extendedInfo.add(new ExtendedStaffInfo(staff, staffBathType));
+                // ★★追加: リネン庫清掃情報をroomDistributionから取得
+                boolean isLinenCleaning = false;
+                int linenFloorCount = 0;
+                if (roomDistribution != null) {
+                    NormalRoomDistributionDialog.StaffDistribution dist = roomDistribution.get(staff.name);
+                    if (dist != null && dist.isLinenClosetCleaning) {
+                        isLinenCleaning = true;
+                        linenFloorCount = dist.linenClosetFloorCount;
+                    }
+                }
+
+                extendedInfo.add(new ExtendedStaffInfo(staff, staffBathType, isLinenCleaning, linenFloorCount));
                 bathAssignments.put(staff.name, staffBathType);
             }
 
@@ -315,6 +452,9 @@ public class AdaptiveRoomOptimizer {
                 e.printStackTrace();
                 throw new RuntimeException(errorMsg, e);
             }
+
+            // ★★追加: リネン庫担当フロアを割り当て
+            assignLinenClosetFloors(assignments);
 
             // 最適化結果を返す
             return new OptimizationResult(assignments, config, targetDate);
@@ -1006,7 +1146,7 @@ public class AdaptiveRoomOptimizer {
             }
 
             return new StaffAssignment(staffInfo.staff, mainAssignments, annexAssignments,
-                    staffInfo.bathCleaningType);
+                    staffInfo.bathCleaningType, staffInfo.isLinenClosetCleaning, staffInfo.linenClosetFloorCount);
         }
     }
 
@@ -1085,6 +1225,15 @@ public class AdaptiveRoomOptimizer {
             this.targetDate = targetDate;
             this.totalSolutionCount = multiSolutionResult.totalSolutionCount;
             this.currentIndex = 0;
+
+            // ★★追加: 各解のリネン庫担当フロアを割り当て
+            for (int i = 0; i < totalSolutionCount; i++) {
+                RoomAssignmentCPSATOptimizer.OptimizationResultWithUnassigned result =
+                        multiSolutionResult.getSolution(i);
+                if (result != null && result.assignments != null) {
+                    assignLinenClosetFloors(result.assignments);
+                }
+            }
         }
 
         /**

@@ -81,6 +81,8 @@ public class AssignmentEditorGUI extends JFrame {
         int normalSingleRoomCount;   // 通常シングル数（エコでもツインでもない部屋）
         double convertedTotalRooms;  // 総部屋数（換算値）
         String constraintType;       // 制約タイプ
+        boolean isLinenClosetCleaning;      // ★★追加: リネン庫清掃担当
+        List<Integer> linenClosetFloors;    // ★★追加: リネン庫担当フロア（具体的なフロア番号）
 
         StaffData(AdaptiveRoomOptimizer.StaffAssignment assignment,
                   AdaptiveRoomOptimizer.BathCleaningType bathType,
@@ -93,6 +95,8 @@ public class AssignmentEditorGUI extends JFrame {
             this.originalDetailedRoomsByFloor = new HashMap<>();  // ★追加
             this.bathCleaningType = bathType;
             this.constraintType = constraintType != null ? constraintType : "制限なし";
+            this.isLinenClosetCleaning = assignment.isLinenClosetCleaning;
+            this.linenClosetFloors = assignment.getLinenClosetFloors();
             this.hasMainBuilding = assignment.floors.stream().anyMatch(f -> f <= 10);
             this.hasAnnexBuilding = assignment.floors.stream().anyMatch(f -> f > 10);
 
@@ -194,8 +198,9 @@ public class AssignmentEditorGUI extends JFrame {
             // ★エコ部屋は0.2換算（1部屋 = 0.2）
             double ecoConverted = this.ecoRoomCount * 0.2;
 
-            // 合計 = 通常部屋×1.0 + ツイン換算値 + エコ部屋×0.2
-            return normalRooms + twinConverted + ecoConverted;
+            // 合計 = 通常部屋×1.0 + ツイン換算値 + エコ部屋×0.2 + リネン庫負荷
+            double linenConverted = (this.linenClosetFloors != null ? this.linenClosetFloors.size() : 0) * 0.4;
+            return normalRooms + twinConverted + ecoConverted + linenConverted;
         }
 
 
@@ -229,6 +234,23 @@ public class AssignmentEditorGUI extends JFrame {
             // 制約タイプを追加表示（制限なし以外の場合）
             if (constraintType != null && !"制限なし".equals(constraintType)) {
                 sb.append("/").append(constraintType);
+            }
+
+            // ★★追加: リネン庫清掃担当を表示（具体的なフロア番号）
+            if (isLinenClosetCleaning && linenClosetFloors != null && !linenClosetFloors.isEmpty()) {
+                sb.append("/リネン庫(");
+                List<Integer> sorted = new ArrayList<>(linenClosetFloors);
+                Collections.sort(sorted);
+                for (int i = 0; i < sorted.size(); i++) {
+                    if (i > 0) sb.append(",");
+                    int f = sorted.get(i);
+                    if (f > 20) {
+                        sb.append("別").append(f - 20).append("F");
+                    } else {
+                        sb.append(f).append("F");
+                    }
+                }
+                sb.append(")");
             }
 
             return sb.toString();
@@ -374,6 +396,23 @@ public class AssignmentEditorGUI extends JFrame {
                     }
                 }
                 sb.append("）");
+            }
+
+            // ★★追加: リネン庫清掃情報を表示（具体的なフロア番号）
+            if (isLinenClosetCleaning && linenClosetFloors != null && !linenClosetFloors.isEmpty()) {
+                List<Integer> sorted = new ArrayList<>(linenClosetFloors);
+                Collections.sort(sorted);
+                StringBuilder floorSb = new StringBuilder();
+                for (int i = 0; i < sorted.size(); i++) {
+                    if (i > 0) floorSb.append(",");
+                    int f = sorted.get(i);
+                    if (f > 20) {
+                        floorSb.append("別館").append(f - 20).append("F");
+                    } else {
+                        floorSb.append(f).append("F");
+                    }
+                }
+                sb.append(" <font color='#009900'><b>[リネン庫: ").append(floorSb).append("]</b></font>");
             }
 
             sb.append("</html>");
@@ -650,7 +689,7 @@ public class AssignmentEditorGUI extends JFrame {
         assignmentTable.getColumnModel().getColumn(6).setCellRenderer(htmlRenderer);   // 担当階・部屋詳細
 
         assignmentTable.getColumnModel().getColumn(0).setPreferredWidth(100);
-        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(130);  // 作業者タイプ列を拡張
+        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(180);  // 作業者タイプ列を拡張（リネン庫フロア表示対応）
         assignmentTable.getColumnModel().getColumn(2).setPreferredWidth(60);
         assignmentTable.getColumnModel().getColumn(3).setPreferredWidth(80);
         assignmentTable.getColumnModel().getColumn(4).setPreferredWidth(90);

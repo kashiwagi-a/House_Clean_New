@@ -594,7 +594,6 @@ public class RoomAssignmentApplication extends JFrame {
         final AdaptiveRoomOptimizer.BathCleaningType bathType = selectBathCleaningType();
 
         // 5. ポイント制限の設定(大浴場清掃スタッフ選択機能付き)
-        appendLog("ポイント制限・大浴場清掃スタッフ設定を確認中...");
         final List<StaffPointConstraint> pointConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType);
 
         // 5.5. ★新機能: 通常清掃部屋の事前割り振り設定
@@ -863,22 +862,6 @@ public class RoomAssignmentApplication extends JFrame {
     private List<StaffPointConstraint> selectStaffPointConstraintsWithBathCleaning(
             List<FileProcessor.Staff> availableStaff, AdaptiveRoomOptimizer.BathCleaningType bathType) {
         List<StaffPointConstraint> constraints = new ArrayList<>();
-
-        int result = JOptionPane.showConfirmDialog(
-                parentFrame,
-                "清掃スタッフを設定しますか?\n" +
-                        "・故障者制限:体調不良者用\n" +
-                        "・業者制限:リライアンス用\n" +
-                        "・建物指定:本館のみ/別館のみの担当を指定\n" +
-                        "・大浴場清掃:担当スタッフをチェック",
-                "ポイント制限・大浴場清掃設定",
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.QUESTION_MESSAGE
-        );
-
-        if (result != JOptionPane.YES_OPTION) {
-            return constraints;
-        }
 
         JDialog dialog = new JDialog(parentFrame, "ポイント制限・大浴場清掃設定", true);
         dialog.setLayout(new BorderLayout());

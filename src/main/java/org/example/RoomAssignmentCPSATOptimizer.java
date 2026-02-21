@@ -6,12 +6,10 @@ import java.util.logging.Logger;
 
 /**
  * CP-SATソルバーを使用した部屋割り振り最適化
- *
  * ★修正版: 未割当部屋対応
  * - 完全解が見つからない場合も処理を継続
  * - 未割当部屋を返却し、手動割り振りを可能にする
  * - 均等性評価を削除してシンプル化
- *
  * 処理フロー:
  * 0. 大浴清掃スタッフ: フロア単位ラウンドロビン（データ順序維持）
  * 1. ツイン割り振り（複数解を列挙）
@@ -52,10 +50,6 @@ public class RoomAssignmentCPSATOptimizer {
             LOGGER.addHandler(progressHandler);
         }
     }
-
-    // 探索する解の最大数
-    private static final int MAX_SINGLE_SOLUTIONS = 5;
-    private static final int MAX_TOTAL_CANDIDATES = 50;
 
     // ★追加: 複数解の最大数（ユーザーに表示する解の数）
     public static final int MAX_SOLUTIONS_TO_KEEP = 7;
@@ -100,10 +94,6 @@ public class RoomAssignmentCPSATOptimizer {
 
         public int getTotalNormalRooms() {
             return normalRooms.values().stream().mapToInt(Integer::intValue).sum();
-        }
-
-        public int getTotalRooms() {
-            return getTotalNormalRooms() + ecoRooms;
         }
 
         @Override
@@ -242,35 +232,6 @@ public class RoomAssignmentCPSATOptimizer {
             }
             return solutions.get(index);
         }
-
-        public OptimizationResultWithUnassigned getFirstSolution() {
-            return solutions.isEmpty() ? null : solutions.get(0);
-        }
-
-        public boolean hasMultipleSolutions() {
-            return solutions.size() > 1;
-        }
-    }
-
-    // ================================================================
-    // 既存クラス
-    // ================================================================
-
-    /**
-     * ツイン割り振り結果
-     */
-    public static class FloorTwinAssignment {
-        public final Map<Integer, Integer> mainFloorTwins = new HashMap<>();
-        public final Map<Integer, Integer> annexFloorTwins = new HashMap<>();
-        public final Set<Integer> usedFloors = new HashSet<>();
-
-        public FloorTwinAssignment() {}
-
-        public FloorTwinAssignment(FloorTwinAssignment other) {
-            this.mainFloorTwins.putAll(other.mainFloorTwins);
-            this.annexFloorTwins.putAll(other.annexFloorTwins);
-            this.usedFloors.addAll(other.usedFloors);
-        }
     }
 
     /**
@@ -299,12 +260,6 @@ public class RoomAssignmentCPSATOptimizer {
 
         public PartialSolutionResult(List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
                                      int totalAssigned, int totalTarget,
-                                     Map<String, Integer> staffShortage) {
-            this(assignments, totalAssigned, totalTarget, staffShortage, 0);
-        }
-
-        public PartialSolutionResult(List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
-                                     int totalAssigned, int totalTarget,
                                      Map<String, Integer> staffShortage,
                                      int ecoShortage) {
             this.assignments = assignments;
@@ -317,21 +272,6 @@ public class RoomAssignmentCPSATOptimizer {
     }
 
     /**
-     * ECOフロア情報（内部クラス）
-     */
-    private static class EcoFloorInfo {
-        final int floorNumber;
-        final int ecoCount;
-        final boolean isMain;
-
-        EcoFloorInfo(int floor, int eco, boolean main) {
-            this.floorNumber = floor;
-            this.ecoCount = eco;
-            this.isMain = main;
-        }
-    }
-
-    /**
      * 大浴清掃スタッフの部屋目標（4区分）
      */
     private static class BathStaffRoomTarget {
@@ -339,25 +279,30 @@ public class RoomAssignmentCPSATOptimizer {
         int mainTwinTarget;
         int annexSingleTarget;
         int annexTwinTarget;
+        // ★追加: エコ清掃ターゲット
+        int mainEcoTarget;
+        int annexEcoTarget;
 
         int mainSingleAssigned = 0;
         int mainTwinAssigned = 0;
         int annexSingleAssigned = 0;
         int annexTwinAssigned = 0;
+        // ★追加: エコ清掃割り当て済み
+        int mainEcoAssigned = 0;
+        int annexEcoAssigned = 0;
 
-        BathStaffRoomTarget(int mainSingle, int mainTwin, int annexSingle, int annexTwin) {
+        BathStaffRoomTarget(int mainSingle, int mainTwin, int annexSingle, int annexTwin,
+                            int mainEco, int annexEco) {
             this.mainSingleTarget = mainSingle;
             this.mainTwinTarget = mainTwin;
             this.annexSingleTarget = annexSingle;
             this.annexTwinTarget = annexTwin;
+            this.mainEcoTarget = mainEco;
+            this.annexEcoTarget = annexEco;
         }
 
         int getTotalTarget() {
             return mainSingleTarget + mainTwinTarget + annexSingleTarget + annexTwinTarget;
-        }
-
-        int getTotalAssigned() {
-            return mainSingleAssigned + mainTwinAssigned + annexSingleAssigned + annexTwinAssigned;
         }
 
         int getMainSingleRemaining() {
@@ -384,12 +329,28 @@ public class RoomAssignmentCPSATOptimizer {
             return getAnnexSingleRemaining() + getAnnexTwinRemaining();
         }
 
+        int getMainEcoRemaining() {
+            return Math.max(0, mainEcoTarget - mainEcoAssigned);
+        }
+
+        int getAnnexEcoRemaining() {
+            return Math.max(0, annexEcoTarget - annexEcoAssigned);
+        }
+
         boolean needsMainRooms() {
             return getMainRemaining() > 0;
         }
 
         boolean needsAnnexRooms() {
             return getAnnexRemaining() > 0;
+        }
+
+        boolean needsMainEco() {
+            return getMainEcoRemaining() > 0;
+        }
+
+        boolean needsAnnexEco() {
+            return getAnnexEcoRemaining() > 0;
         }
     }
 
@@ -723,26 +684,6 @@ public class RoomAssignmentCPSATOptimizer {
         return unassigned;
     }
 
-    // ================================================================
-    // 大浴清掃スタッフ事前割り振り
-    // ================================================================
-
-    /**
-     * 大浴清掃スタッフへの事前割り振り（フロア単位ラウンドロビン方式）
-     */
-    // ================================================================
-// 大浴清掃スタッフ事前割り振り（修正版）
-// ================================================================
-//
-// 【修正内容】
-// - フロアを部屋数の少ない順にソートし、目標を満たせる最小フロアを選択（貪欲法）
-// - 大浴清掃スタッフは1フロアのみ使用する制限を厳守
-//
-// 【この部分だけを差し替えてください】
-// RoomAssignmentCPSATOptimizer.java の preAssignBathCleaningStaff メソッド全体を
-// 以下のコードで置き換えてください。
-// ================================================================
-
     /**
      * 大浴清掃スタッフへの事前割り振り（貪欲法：目標を満たせる最小フロアを選択）
      *
@@ -784,16 +725,19 @@ public class RoomAssignmentCPSATOptimizer {
                         dist.mainSingleAssignedRooms,
                         dist.mainTwinAssignedRooms,
                         dist.annexSingleAssignedRooms,
-                        dist.annexTwinAssignedRooms
+                        dist.annexTwinAssignedRooms,
+                        dist.mainEcoAssignedRooms,
+                        dist.annexEcoAssignedRooms
                 );
                 staffTargets.put(staffName, target);
-                LOGGER.info(String.format("  %s: 本館S=%d, 本館T=%d, 別館S=%d, 別館T=%d (合計%d室)",
+                LOGGER.info(String.format("  %s: 本館S=%d, 本館T=%d, 別館S=%d, 別館T=%d (合計%d室), ECO: 本館=%d, 別館=%d",
                         staffName,
                         dist.mainSingleAssignedRooms, dist.mainTwinAssignedRooms,
                         dist.annexSingleAssignedRooms, dist.annexTwinAssignedRooms,
-                        target.getTotalTarget()));
+                        target.getTotalTarget(),
+                        dist.mainEcoAssignedRooms, dist.annexEcoAssignedRooms));
             } else {
-                staffTargets.put(staffName, new BathStaffRoomTarget(0, 0, 0, 0));
+                staffTargets.put(staffName, new BathStaffRoomTarget(0, 0, 0, 0, 0, 0));
             }
         }
 
@@ -1033,6 +977,146 @@ public class RoomAssignmentCPSATOptimizer {
         }
 
         // ================================================================
+        // 大浴清掃スタッフは通常清掃1フロア＋エコ清掃別1フロアが許可される
+        // ================================================================
+        LOGGER.info("--- エコ清掃フロアの割り振り（通常清掃とは別フロア） ---");
+
+        // エコ用の使用済みフロアを追跡（エコ部屋の二重割り当てを防止）
+        Map<Integer, Integer> usedMainEcoByFloor = new HashMap<>();
+        Map<Integer, Integer> usedAnnexEcoByFloor = new HashMap<>();
+
+        // 本館エコの割り振り
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : bathStaffList) {
+            String staffName = staffInfo.staff.name;
+            BathStaffRoomTarget target = staffTargets.get(staffName);
+            if (target == null || !target.needsMainEco()) continue;
+
+            int ecoNeeded = target.getMainEcoRemaining();
+            LOGGER.info(String.format("  %s: 本館ECO %d室必要", staffName, ecoNeeded));
+
+            // 通常清掃で使用しているフロアを取得
+            Set<Integer> normalFloors = staffMainAssignments.get(staffName).keySet();
+
+            // エコ部屋がある本館フロアを探索（通常清掃フロアを除外）
+            Integer selectedEcoFloor = null;
+            int bestEcoCount = 0;
+
+            for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
+                if (normalFloors.contains(floor.floorNumber)) continue; // 通常清掃フロアは除外
+                int availableEco = floor.ecoRooms - usedMainEcoByFloor.getOrDefault(floor.floorNumber, 0);
+                if (availableEco <= 0) continue;
+
+                // 目標を満たせるフロアの中で最小のものを選ぶ
+                if (availableEco >= ecoNeeded) {
+                    if (selectedEcoFloor == null || availableEco < bestEcoCount) {
+                        selectedEcoFloor = floor.floorNumber;
+                        bestEcoCount = availableEco;
+                    }
+                }
+            }
+
+            // 目標を満たせるフロアがなければ、最もエコ部屋が多いフロアを選択
+            if (selectedEcoFloor == null) {
+                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
+                    if (normalFloors.contains(floor.floorNumber)) continue;
+                    int availableEco = floor.ecoRooms - usedMainEcoByFloor.getOrDefault(floor.floorNumber, 0);
+                    if (availableEco > bestEcoCount) {
+                        selectedEcoFloor = floor.floorNumber;
+                        bestEcoCount = availableEco;
+                    }
+                }
+            }
+
+            if (selectedEcoFloor != null) {
+                int ecoToAssign = Math.min(ecoNeeded, bestEcoCount);
+                usedMainEcoByFloor.merge(selectedEcoFloor, ecoToAssign, Integer::sum);
+                target.mainEcoAssigned += ecoToAssign;
+
+                // エコフロアの割り当てをstaffMainAssignmentsに追加
+                Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> mainAssignments = staffMainAssignments.get(staffName);
+                if (mainAssignments.containsKey(selectedEcoFloor)) {
+                    // 既存の割り当てがある場合（通常はないはず）エコを追加
+                    AdaptiveRoomOptimizer.RoomAllocation existing = mainAssignments.get(selectedEcoFloor);
+                    mainAssignments.put(selectedEcoFloor,
+                            new AdaptiveRoomOptimizer.RoomAllocation(existing.roomCounts, existing.ecoRooms + ecoToAssign));
+                } else {
+                    // エコのみのフロアエントリを作成
+                    mainAssignments.put(selectedEcoFloor,
+                            new AdaptiveRoomOptimizer.RoomAllocation(new HashMap<>(), ecoToAssign));
+                }
+
+                LOGGER.info(String.format("    → %d階からECO %d室を割り当て（通常清掃フロア%sとは別）",
+                        selectedEcoFloor, ecoToAssign, normalFloors));
+            } else {
+                LOGGER.warning(String.format("    → %s: 本館ECO %d室を割り当てられるフロアがありません",
+                        staffName, ecoNeeded));
+            }
+        }
+
+        // 別館エコの割り振り
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : bathStaffList) {
+            String staffName = staffInfo.staff.name;
+            BathStaffRoomTarget target = staffTargets.get(staffName);
+            if (target == null || !target.needsAnnexEco()) continue;
+
+            int ecoNeeded = target.getAnnexEcoRemaining();
+            LOGGER.info(String.format("  %s: 別館ECO %d室必要", staffName, ecoNeeded));
+
+            // 通常清掃で使用しているフロアを取得
+            Set<Integer> normalFloors = staffAnnexAssignments.get(staffName).keySet();
+
+            // エコ部屋がある別館フロアを探索（通常清掃フロアを除外）
+            Integer selectedEcoFloor = null;
+            int bestEcoCount = 0;
+
+            for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
+                if (normalFloors.contains(floor.floorNumber)) continue;
+                int availableEco = floor.ecoRooms - usedAnnexEcoByFloor.getOrDefault(floor.floorNumber, 0);
+                if (availableEco <= 0) continue;
+
+                if (availableEco >= ecoNeeded) {
+                    if (selectedEcoFloor == null || availableEco < bestEcoCount) {
+                        selectedEcoFloor = floor.floorNumber;
+                        bestEcoCount = availableEco;
+                    }
+                }
+            }
+
+            if (selectedEcoFloor == null) {
+                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
+                    if (normalFloors.contains(floor.floorNumber)) continue;
+                    int availableEco = floor.ecoRooms - usedAnnexEcoByFloor.getOrDefault(floor.floorNumber, 0);
+                    if (availableEco > bestEcoCount) {
+                        selectedEcoFloor = floor.floorNumber;
+                        bestEcoCount = availableEco;
+                    }
+                }
+            }
+
+            if (selectedEcoFloor != null) {
+                int ecoToAssign = Math.min(ecoNeeded, bestEcoCount);
+                usedAnnexEcoByFloor.merge(selectedEcoFloor, ecoToAssign, Integer::sum);
+                target.annexEcoAssigned += ecoToAssign;
+
+                Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> annexAssignments = staffAnnexAssignments.get(staffName);
+                if (annexAssignments.containsKey(selectedEcoFloor)) {
+                    AdaptiveRoomOptimizer.RoomAllocation existing = annexAssignments.get(selectedEcoFloor);
+                    annexAssignments.put(selectedEcoFloor,
+                            new AdaptiveRoomOptimizer.RoomAllocation(existing.roomCounts, existing.ecoRooms + ecoToAssign));
+                } else {
+                    annexAssignments.put(selectedEcoFloor,
+                            new AdaptiveRoomOptimizer.RoomAllocation(new HashMap<>(), ecoToAssign));
+                }
+
+                LOGGER.info(String.format("    → %d階からECO %d室を割り当て（通常清掃フロア%sとは別）",
+                        selectedEcoFloor, ecoToAssign, normalFloors));
+            } else {
+                LOGGER.warning(String.format("    → %s: 別館ECO %d室を割り当てられるフロアがありません",
+                        staffName, ecoNeeded));
+            }
+        }
+
+        // ================================================================
         // 結果のStaffAssignmentを作成
         // ================================================================
         LOGGER.info("=== 大浴清掃スタッフの事前割り振り完了 ===");
@@ -1047,24 +1131,31 @@ public class RoomAssignmentCPSATOptimizer {
                     staffInfo.staff,
                     mainAssignments,
                     annexAssignments,
-                    staffInfo.bathCleaningType
+                    staffInfo.bathCleaningType,
+                    staffInfo.isLinenClosetCleaning,
+                    staffInfo.linenClosetFloorCount
             );
             bathStaffAssignments.put(staffName, assignment);
 
             BathStaffRoomTarget target = staffTargets.get(staffName);
-            LOGGER.info(String.format("  %s: 本館S=%d/%d, 本館T=%d/%d, 別館S=%d/%d, 別館T=%d/%d, 合計=%d室, フロア数=%d",
+            LOGGER.info(String.format("  %s: 本館S=%d/%d, 本館T=%d/%d, 別館S=%d/%d, 別館T=%d/%d, 合計=%d室, フロア数=%d, ECO: 本館=%d/%d, 別館=%d/%d",
                     staffName,
                     target.mainSingleAssigned, target.mainSingleTarget,
                     target.mainTwinAssigned, target.mainTwinTarget,
                     target.annexSingleAssigned, target.annexSingleTarget,
                     target.annexTwinAssigned, target.annexTwinTarget,
                     assignment.getTotalRooms(),
-                    mainAssignments.size() + annexAssignments.size()));
+                    mainAssignments.size() + annexAssignments.size(),
+                    target.mainEcoAssigned, target.mainEcoTarget,
+                    target.annexEcoAssigned, target.annexEcoTarget));
         }
 
         // 使用済み部屋を計算
         Map<Integer, Map<String, Integer>> usedMainRooms = new HashMap<>();
         Map<Integer, Map<String, Integer>> usedAnnexRooms = new HashMap<>();
+        // ★追加: 使用済みエコ部屋の追跡
+        Map<Integer, Integer> usedMainEcoRooms = new HashMap<>();
+        Map<Integer, Integer> usedAnnexEcoRooms = new HashMap<>();
 
         for (AdaptiveRoomOptimizer.StaffAssignment assignment : bathStaffAssignments.values()) {
             for (Map.Entry<Integer, AdaptiveRoomOptimizer.RoomAllocation> entry : assignment.mainBuildingAssignments.entrySet()) {
@@ -1074,6 +1165,10 @@ public class RoomAssignmentCPSATOptimizer {
                 for (Map.Entry<String, Integer> roomEntry : allocation.roomCounts.entrySet()) {
                     usedMainRooms.get(floorNumber).merge(roomEntry.getKey(), roomEntry.getValue(), Integer::sum);
                 }
+                // ★追加: エコ部屋の使用を追跡
+                if (allocation.ecoRooms > 0) {
+                    usedMainEcoRooms.merge(floorNumber, allocation.ecoRooms, Integer::sum);
+                }
             }
             for (Map.Entry<Integer, AdaptiveRoomOptimizer.RoomAllocation> entry : assignment.annexBuildingAssignments.entrySet()) {
                 int floorNumber = entry.getKey();
@@ -1082,11 +1177,15 @@ public class RoomAssignmentCPSATOptimizer {
                 for (Map.Entry<String, Integer> roomEntry : allocation.roomCounts.entrySet()) {
                     usedAnnexRooms.get(floorNumber).merge(roomEntry.getKey(), roomEntry.getValue(), Integer::sum);
                 }
+                // ★追加: エコ部屋の使用を追跡
+                if (allocation.ecoRooms > 0) {
+                    usedAnnexEcoRooms.merge(floorNumber, allocation.ecoRooms, Integer::sum);
+                }
             }
         }
 
         AdaptiveRoomOptimizer.BuildingData remainingBuildingData = createRemainingBuildingData(
-                buildingData, usedMainRooms, usedAnnexRooms);
+                buildingData, usedMainRooms, usedAnnexRooms, usedMainEcoRooms, usedAnnexEcoRooms);
 
         Map<String, NormalRoomDistributionDialog.StaffDistribution> remainingRoomDistribution = new HashMap<>();
         if (config.roomDistribution != null) {
@@ -1113,11 +1212,14 @@ public class RoomAssignmentCPSATOptimizer {
 
     /**
      * 残りの建物データを作成（使用済み部屋を除外）
+     * ★修正: エコ部屋の使用も考慮
      */
     private static AdaptiveRoomOptimizer.BuildingData createRemainingBuildingData(
             AdaptiveRoomOptimizer.BuildingData original,
             Map<Integer, Map<String, Integer>> usedMainRooms,
-            Map<Integer, Map<String, Integer>> usedAnnexRooms) {
+            Map<Integer, Map<String, Integer>> usedAnnexRooms,
+            Map<Integer, Integer> usedMainEcoRooms,
+            Map<Integer, Integer> usedAnnexEcoRooms) {
 
         List<AdaptiveRoomOptimizer.FloorInfo> remainingMainFloors = new ArrayList<>();
         List<AdaptiveRoomOptimizer.FloorInfo> remainingAnnexFloors = new ArrayList<>();
@@ -1136,9 +1238,13 @@ public class RoomAssignmentCPSATOptimizer {
                 }
             }
 
-            if (!remainingRooms.isEmpty() || floor.ecoRooms > 0) {
+            // ★修正: エコ部屋も差し引く
+            int usedEco = usedMainEcoRooms.getOrDefault(floor.floorNumber, 0);
+            int remainingEco = Math.max(0, floor.ecoRooms - usedEco);
+
+            if (!remainingRooms.isEmpty() || remainingEco > 0) {
                 remainingMainFloors.add(new AdaptiveRoomOptimizer.FloorInfo(
-                        floor.floorNumber, remainingRooms, floor.ecoRooms, true));
+                        floor.floorNumber, remainingRooms, remainingEco, true));
             }
         }
 
@@ -1156,9 +1262,13 @@ public class RoomAssignmentCPSATOptimizer {
                 }
             }
 
-            if (!remainingRooms.isEmpty() || floor.ecoRooms > 0) {
+            // ★修正: エコ部屋も差し引く
+            int usedEco = usedAnnexEcoRooms.getOrDefault(floor.floorNumber, 0);
+            int remainingEco = Math.max(0, floor.ecoRooms - usedEco);
+
+            if (!remainingRooms.isEmpty() || remainingEco > 0) {
                 remainingAnnexFloors.add(new AdaptiveRoomOptimizer.FloorInfo(
-                        floor.floorNumber, remainingRooms, floor.ecoRooms, false));
+                        floor.floorNumber, remainingRooms, remainingEco, false));
             }
         }
 
@@ -1202,11 +1312,6 @@ public class RoomAssignmentCPSATOptimizer {
                 bathPreAssignment.remainingRoomDistribution
         );
     }
-
-    // ================================================================
-    // CPSAT最適化
-    // ================================================================
-
     /**
      * CPSAT最適化（フロアあたりスタッフ数制限を段階的に緩和）
      */
@@ -1405,7 +1510,7 @@ public class RoomAssignmentCPSATOptimizer {
     }
 
     /**
-     * ★追加: 解の重複チェック（簡易版：スタッフごとの担当フロアの組み合わせで判定）
+     *  解の重複チェック（簡易版：スタッフごとの担当フロアの組み合わせで判定）
      */
     private static boolean isDuplicateSolution(
             List<List<AdaptiveRoomOptimizer.StaffAssignment>> existingSolutions,
@@ -1428,7 +1533,7 @@ public class RoomAssignmentCPSATOptimizer {
     }
 
     /**
-     * ★追加: 解のフロア割り当てパターンを文字列化
+     *  解のフロア割り当てパターンを文字列化
      */
     private static String buildFloorPattern(List<AdaptiveRoomOptimizer.StaffAssignment> assignments) {
         StringBuilder sb = new StringBuilder();
@@ -1451,7 +1556,7 @@ public class RoomAssignmentCPSATOptimizer {
 
     /**
      * 大浴清掃スタッフの割り振りとCPSAT結果をマージ
-     * ★修正: ディープコピーを使用して各解が独立したオブジェクトを持つようにする
+     * 各解が独立したオブジェクトを持つようにする
      */
     private static List<AdaptiveRoomOptimizer.StaffAssignment> mergeAssignments(
             Map<String, AdaptiveRoomOptimizer.StaffAssignment> bathStaffAssignments,
@@ -1459,7 +1564,7 @@ public class RoomAssignmentCPSATOptimizer {
 
         List<AdaptiveRoomOptimizer.StaffAssignment> merged = new ArrayList<>();
 
-        // ★修正: ディープコピーを使用
+        // ディープコピーを使用
         for (AdaptiveRoomOptimizer.StaffAssignment sa : bathStaffAssignments.values()) {
             merged.add(sa.deepCopy());
         }
@@ -1477,10 +1582,6 @@ public class RoomAssignmentCPSATOptimizer {
 
         return merged;
     }
-
-    // ================================================================
-    // ツインパターン生成
-    // ================================================================
 
     /**
      * ツインパターン生成
@@ -1526,15 +1627,11 @@ public class RoomAssignmentCPSATOptimizer {
 
         LOGGER.info("合計: 本館ツイン=" + totalMainTwin + ", 別館ツイン=" + totalAnnexTwin);
         patterns.add(basePattern);
-        // ★修正: ユーザー設定のツイン数配分をそのまま使用（スタッフ間の移動パターンは廃止）
+        // ユーザー設定のツイン数配分をそのまま使用（スタッフ間の移動パターンは廃止）
         // ツインのフロア配置はCP-SATソルバーが最適化する
 
         return patterns;
     }
-
-    // ================================================================
-    // ツイン＋シングル統合割り振り（CP-SAT）
-    // ================================================================
 
     /**
      * ツインとシングルを一括でCP-SATソルバーに解かせる。
@@ -2131,419 +2228,9 @@ public class RoomAssignmentCPSATOptimizer {
 
         return result;
     }
-    // ================================================================
-    // ECO割り振り（CP-SAT）
-    // ================================================================
 
     /**
-     * ECO割り振り（CP-SAT）
-     */
-    private static void assignEcoWithCPSAT(
-            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
-            AdaptiveRoomOptimizer.BuildingData buildingData,
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
-
-        LOGGER.info("=== ECO割り振り（CP-SAT） ===");
-
-        CpModel model = new CpModel();
-
-        List<AdaptiveRoomOptimizer.FloorInfo> allFloors = new ArrayList<>();
-        allFloors.addAll(buildingData.mainFloors);
-        allFloors.addAll(buildingData.annexFloors);
-
-        Map<String, IntVar> ecoVars = new HashMap<>();
-
-        // 変数作成
-        LOGGER.info("--- ECO変数作成 ---");
-        for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-            String staffName = sa.staff.name;
-            NormalRoomDistributionDialog.StaffDistribution dist =
-                    config.roomDistribution != null ?
-                            config.roomDistribution.get(staffName) : null;
-
-            if (dist == null) {
-                LOGGER.info(String.format("  %s: 設定なし（スキップ）", staffName));
-                continue;
-            }
-
-            boolean hasMainEco = dist.mainEcoAssignedRooms > 0;
-            boolean hasAnnexEco = dist.annexEcoAssignedRooms > 0;
-
-            LOGGER.info(String.format("  %s: 本館ECO目標=%d, 別館ECO目標=%d",
-                    staffName, dist.mainEcoAssignedRooms, dist.annexEcoAssignedRooms));
-
-            for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
-                if (floor.ecoRooms <= 0) continue;
-
-                boolean isMain = floor.isMainBuilding;
-                if ((hasMainEco && isMain) || (hasAnnexEco && !isMain)) {
-                    String ecoVarName = String.format("eco_%s_%d_%s", staffName, floor.floorNumber, isMain ? "main" : "annex");
-                    ecoVars.put(ecoVarName, model.newIntVar(0, floor.ecoRooms, ecoVarName));
-                }
-            }
-        }
-
-        // 制約1: 各フロアのECO数を超えない
-        LOGGER.info("--- ECOフロア一覧 ---");
-        for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
-            if (floor.ecoRooms <= 0) continue;
-            LOGGER.info(String.format("  %s %dF: ECO=%d室",
-                    floor.isMainBuilding ? "本館" : "別館", floor.floorNumber, floor.ecoRooms));
-
-            List<IntVar> ecoVarsOnFloor = new ArrayList<>();
-            String suffix = floor.isMainBuilding ? "main" : "annex";
-            for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-                String ecoVarName = String.format("eco_%s_%d_%s", sa.staff.name, floor.floorNumber, suffix);
-                if (ecoVars.containsKey(ecoVarName)) {
-                    ecoVarsOnFloor.add(ecoVars.get(ecoVarName));
-                }
-            }
-            if (!ecoVarsOnFloor.isEmpty()) {
-                model.addLessOrEqual(
-                        LinearExpr.sum(ecoVarsOnFloor.toArray(new IntVar[0])),
-                        floor.ecoRooms);
-            }
-        }
-
-        // 制約2: フロア制限
-        LOGGER.info("--- 通常清掃で使用しているフロア ---");
-        Map<String, Set<Integer>> staffUsedMainFloors = new HashMap<>();
-        Map<String, Set<Integer>> staffUsedAnnexFloors = new HashMap<>();
-        for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-            Set<Integer> mainFloors = new HashSet<>(sa.mainBuildingAssignments.keySet());
-            Set<Integer> annexFloors = new HashSet<>(sa.annexBuildingAssignments.keySet());
-            staffUsedMainFloors.put(sa.staff.name, mainFloors);
-            staffUsedAnnexFloors.put(sa.staff.name, annexFloors);
-            LOGGER.info(String.format("  %s: 本館=%s, 別館=%s",
-                    sa.staff.name, mainFloors, annexFloors));
-        }
-
-        for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-            String staffName = sa.staff.name;
-            Set<Integer> usedMainFloors = staffUsedMainFloors.getOrDefault(staffName, new HashSet<>());
-            Set<Integer> usedAnnexFloors = staffUsedAnnexFloors.getOrDefault(staffName, new HashSet<>());
-
-            // ★修正: 本館・別館それぞれに個別のフロア上限を設定
-            int maxMainFloors = 2;   // 本館の最大フロア数（デフォルト）
-            int maxAnnexFloors = 2;  // 別館の最大フロア数（デフォルト）
-
-            AdaptiveRoomOptimizer.PointConstraint constraint = config.pointConstraints.get(staffName);
-            if (constraint != null) {
-                String type = constraint.constraintType;
-                if (type.contains("業者") || type.contains("リライアンス")) {
-                    maxMainFloors = 99;
-                    maxAnnexFloors = 99;
-                }
-            }
-            if (config.roomDistribution != null) {
-                NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
-                if (dist != null) {
-                    int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms + dist.mainEcoAssignedRooms;
-                    int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms + dist.annexEcoAssignedRooms;
-                    // ★両方割り振りの場合、各建物1フロアずつに制限
-                    if (mainR > 0 && annexR > 0) {
-                        maxMainFloors = 1;
-                        maxAnnexFloors = 1;
-                    }
-                }
-            }
-
-            // 本館の新規フロア制限
-            List<IntVar> newMainEcoVars = new ArrayList<>();
-
-            for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
-                if (floor.ecoRooms <= 0) continue;
-                if (usedMainFloors.contains(floor.floorNumber)) continue;
-
-                String ecoVarName = String.format("eco_%s_%d_main", staffName, floor.floorNumber);
-                if (ecoVars.containsKey(ecoVarName)) {
-                    newMainEcoVars.add(ecoVars.get(ecoVarName));
-                }
-            }
-
-            // 別館の新規フロア制限
-            List<IntVar> newAnnexEcoVars = new ArrayList<>();
-            for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
-                if (floor.ecoRooms <= 0) continue;
-                if (usedAnnexFloors.contains(floor.floorNumber)) continue;
-
-                String ecoVarName = String.format("eco_%s_%d_annex", staffName, floor.floorNumber);
-                if (ecoVars.containsKey(ecoVarName)) {
-                    newAnnexEcoVars.add(ecoVars.get(ecoVarName));
-                }
-            }
-
-            // 本館の新規フロア数制限
-            int remainingMainFloors = Math.max(0, maxMainFloors - usedMainFloors.size());
-            if (!newMainEcoVars.isEmpty() && remainingMainFloors == 0) {
-                for (IntVar v : newMainEcoVars) {
-                    model.addEquality(v, 0);
-                }
-            } else if (!newMainEcoVars.isEmpty()) {
-                List<BoolVar> newFloorUsed = new ArrayList<>();
-                for (IntVar v : newMainEcoVars) {
-                    BoolVar used = model.newBoolVar("used_" + v.getName());
-                    model.addGreaterThan(v, 0).onlyEnforceIf(used);
-                    model.addEquality(v, 0).onlyEnforceIf(used.not());
-                    newFloorUsed.add(used);
-                }
-                model.addLessOrEqual(LinearExpr.sum(newFloorUsed.toArray(new BoolVar[0])), remainingMainFloors);
-            }
-
-            // 別館の新規フロア数制限
-            // 別館の新規フロア数制限
-            int remainingAnnexFloors = Math.max(0, maxAnnexFloors - usedAnnexFloors.size());
-            if (!newAnnexEcoVars.isEmpty() && remainingAnnexFloors == 0) {
-                for (IntVar v : newAnnexEcoVars) {
-                    model.addEquality(v, 0);
-                }
-            } else if (!newAnnexEcoVars.isEmpty()) {
-                List<BoolVar> newFloorUsed = new ArrayList<>();
-                for (IntVar v : newAnnexEcoVars) {
-                    BoolVar used = model.newBoolVar("used_" + v.getName());
-                    model.addGreaterThan(v, 0).onlyEnforceIf(used);
-                    model.addEquality(v, 0).onlyEnforceIf(used.not());
-                    newFloorUsed.add(used);
-                }
-                model.addLessOrEqual(LinearExpr.sum(newFloorUsed.toArray(new BoolVar[0])), remainingAnnexFloors);
-            }
-
-            LOGGER.info(String.format("  %s: 本館フロア=%d（残り%d、上限%d）、別館フロア=%d（残り%d、上限%d）",
-                    staffName, usedMainFloors.size(), remainingMainFloors, maxMainFloors,
-                    usedAnnexFloors.size(), remainingAnnexFloors, maxAnnexFloors));
-        }
-
-        // ソフト制約: スタッフのECO目標値
-        List<IntVar> deviationVars = new ArrayList<>();
-
-        for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-            String staffName = sa.staff.name;
-            NormalRoomDistributionDialog.StaffDistribution dist =
-                    config.roomDistribution != null ?
-                            config.roomDistribution.get(staffName) : null;
-
-            if (dist == null) continue;
-
-            // 本館ECO
-            if (dist.mainEcoAssignedRooms > 0) {
-                List<IntVar> mainEcoVarsList = new ArrayList<>();
-                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
-                    if (floor.ecoRooms > 0) {
-                        String ecoVarName = String.format("eco_%s_%d_main", staffName, floor.floorNumber);
-                        if (ecoVars.containsKey(ecoVarName)) {
-                            mainEcoVarsList.add(ecoVars.get(ecoVarName));
-                        }
-                    }
-                }
-
-                if (!mainEcoVarsList.isEmpty()) {
-                    IntVar ecoSum = model.newIntVar(0, 1000, "sum_main_eco_" + staffName);
-                    model.addEquality(ecoSum, LinearExpr.sum(mainEcoVarsList.toArray(new IntVar[0])));
-
-                    model.addLessOrEqual(ecoSum, dist.mainEcoAssignedRooms);
-
-                    IntVar ecoShortage = model.newIntVar(0, dist.mainEcoAssignedRooms, "short_main_eco_" + staffName);
-                    model.addGreaterOrEqual(
-                            LinearExpr.sum(new IntVar[]{ecoSum, ecoShortage}),
-                            dist.mainEcoAssignedRooms);
-                    deviationVars.add(ecoShortage);
-                }
-            }
-
-            // 別館ECO
-            if (dist.annexEcoAssignedRooms > 0) {
-                List<IntVar> annexEcoVarsList = new ArrayList<>();
-                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
-                    if (floor.ecoRooms > 0) {
-                        String ecoVarName = String.format("eco_%s_%d_annex", staffName, floor.floorNumber);
-                        if (ecoVars.containsKey(ecoVarName)) {
-                            annexEcoVarsList.add(ecoVars.get(ecoVarName));
-                        }
-                    }
-                }
-
-                if (!annexEcoVarsList.isEmpty()) {
-                    IntVar ecoSum = model.newIntVar(0, 1000, "sum_annex_eco_" + staffName);
-                    model.addEquality(ecoSum, LinearExpr.sum(annexEcoVarsList.toArray(new IntVar[0])));
-
-                    model.addLessOrEqual(ecoSum, dist.annexEcoAssignedRooms);
-
-                    IntVar ecoShortage = model.newIntVar(0, dist.annexEcoAssignedRooms, "short_annex_eco_" + staffName);
-                    model.addGreaterOrEqual(
-                            LinearExpr.sum(new IntVar[]{ecoSum, ecoShortage}),
-                            dist.annexEcoAssignedRooms);
-                    deviationVars.add(ecoShortage);
-                }
-            }
-        }
-
-        // 目的関数
-        List<IntVar> existingFloorEcoVars = new ArrayList<>();
-        for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-            String staffName = sa.staff.name;
-            Set<Integer> usedMainFloors = staffUsedMainFloors.getOrDefault(staffName, new HashSet<>());
-            Set<Integer> usedAnnexFloors = staffUsedAnnexFloors.getOrDefault(staffName, new HashSet<>());
-
-            for (Integer floorNum : usedMainFloors) {
-                String ecoVarName = String.format("eco_%s_%d_main", staffName, floorNum);
-                if (ecoVars.containsKey(ecoVarName)) {
-                    existingFloorEcoVars.add(ecoVars.get(ecoVarName));
-                }
-            }
-
-            for (Integer floorNum : usedAnnexFloors) {
-                String ecoVarName = String.format("eco_%s_%d_annex", staffName, floorNum);
-                if (ecoVars.containsKey(ecoVarName)) {
-                    existingFloorEcoVars.add(ecoVars.get(ecoVarName));
-                }
-            }
-        }
-
-        List<IntVar> objectiveVars = new ArrayList<>();
-        List<Long> objectiveCoeffs = new ArrayList<>();
-
-        for (IntVar shortageVar : deviationVars) {
-            objectiveVars.add(shortageVar);
-            objectiveCoeffs.add(1000L);
-        }
-        for (IntVar ecoVar : existingFloorEcoVars) {
-            objectiveVars.add(ecoVar);
-            objectiveCoeffs.add(-1L);
-        }
-
-        if (!objectiveVars.isEmpty()) {
-            long[] coeffArray = objectiveCoeffs.stream().mapToLong(Long::longValue).toArray();
-            model.minimize(LinearExpr.weightedSum(objectiveVars.toArray(new IntVar[0]), coeffArray));
-        }
-
-        // 解を求める
-        CpSolver solver = new CpSolver();
-        solver.getParameters().setMaxTimeInSeconds(10.0);
-        CpSolverStatus status = solver.solve(model);
-
-        if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
-            LOGGER.info("ECO割り振り: 解が見つかりました");
-
-            // 結果をassignmentsに反映
-            for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-                String staffName = sa.staff.name;
-
-                // 本館ECO
-                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
-                    if (floor.ecoRooms <= 0) continue;
-
-                    String ecoVarName = String.format("eco_%s_%d_main", staffName, floor.floorNumber);
-                    if (ecoVars.containsKey(ecoVarName)) {
-                        int ecoCount = (int) solver.value(ecoVars.get(ecoVarName));
-                        if (ecoCount > 0) {
-                            addEcoToStaff(sa, floor.floorNumber, ecoCount, true);
-                        }
-                    }
-                }
-
-                // 別館ECO
-                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
-                    if (floor.ecoRooms <= 0) continue;
-
-                    String ecoVarName = String.format("eco_%s_%d_annex", staffName, floor.floorNumber);
-                    if (ecoVars.containsKey(ecoVarName)) {
-                        int ecoCount = (int) solver.value(ecoVars.get(ecoVarName));
-                        if (ecoCount > 0) {
-                            addEcoToStaff(sa, floor.floorNumber, ecoCount, false);
-                        }
-                    }
-                }
-            }
-
-            // 結果ログ
-            LOGGER.info("=== ECO割り振り結果 ===");
-            for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
-                int mainEco = getMainBuildingEcoRooms(sa);
-                int annexEco = getAnnexBuildingEcoRooms(sa);
-                if (mainEco > 0 || annexEco > 0) {
-                    LOGGER.info(String.format("  %s: 本館ECO=%d, 別館ECO=%d", sa.staff.name, mainEco, annexEco));
-                }
-            }
-        } else {
-            LOGGER.warning("ECO割り振り: 解が見つかりませんでした。status=" + status);
-        }
-    }
-
-    private static void addEcoToStaff(AdaptiveRoomOptimizer.StaffAssignment sa,
-                                      int floorNumber, int ecoCount, boolean isMain) {
-        Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> fm =
-                isMain ? sa.mainBuildingAssignments : sa.annexBuildingAssignments;
-
-        AdaptiveRoomOptimizer.RoomAllocation existing = fm.get(floorNumber);
-        AdaptiveRoomOptimizer.RoomAllocation newAllocation;
-        if (existing != null) {
-            newAllocation = new AdaptiveRoomOptimizer.RoomAllocation(
-                    existing.roomCounts, existing.ecoRooms + ecoCount);
-        } else {
-            newAllocation = new AdaptiveRoomOptimizer.RoomAllocation(new HashMap<>(), ecoCount);
-        }
-        fm.put(floorNumber, newAllocation);
-
-        sa.roomsByFloor.put(floorNumber, newAllocation);
-
-        if (!sa.floors.contains(floorNumber)) {
-            sa.floors.add(floorNumber);
-            Collections.sort(sa.floors);
-        }
-    }
-
-    // ================================================================
-    // 補助メソッド
-    // ================================================================
-
-    private static int getMainBuildingRooms(AdaptiveRoomOptimizer.StaffAssignment sa) {
-        int total = 0;
-        for (AdaptiveRoomOptimizer.RoomAllocation allocation : sa.mainBuildingAssignments.values()) {
-            total += allocation.roomCounts.values().stream().mapToInt(Integer::intValue).sum();
-            total += allocation.ecoRooms;
-        }
-        return total;
-    }
-
-    private static int getAnnexBuildingRooms(AdaptiveRoomOptimizer.StaffAssignment sa) {
-        int total = 0;
-        for (AdaptiveRoomOptimizer.RoomAllocation allocation : sa.annexBuildingAssignments.values()) {
-            total += allocation.roomCounts.values().stream().mapToInt(Integer::intValue).sum();
-            total += allocation.ecoRooms;
-        }
-        return total;
-    }
-
-    private static int getMainBuildingRoomsWithoutEco(AdaptiveRoomOptimizer.StaffAssignment sa) {
-        int total = 0;
-        for (AdaptiveRoomOptimizer.RoomAllocation allocation : sa.mainBuildingAssignments.values()) {
-            total += allocation.roomCounts.values().stream().mapToInt(Integer::intValue).sum();
-        }
-        return total;
-    }
-
-    private static int getAnnexBuildingRoomsWithoutEco(AdaptiveRoomOptimizer.StaffAssignment sa) {
-        int total = 0;
-        for (AdaptiveRoomOptimizer.RoomAllocation allocation : sa.annexBuildingAssignments.values()) {
-            total += allocation.roomCounts.values().stream().mapToInt(Integer::intValue).sum();
-        }
-        return total;
-    }
-
-    private static int getMainBuildingEcoRooms(AdaptiveRoomOptimizer.StaffAssignment sa) {
-        return sa.mainBuildingAssignments.values().stream()
-                .mapToInt(a -> a.ecoRooms)
-                .sum();
-    }
-
-    private static int getAnnexBuildingEcoRooms(AdaptiveRoomOptimizer.StaffAssignment sa) {
-        return sa.annexBuildingAssignments.values().stream()
-                .mapToInt(a -> a.ecoRooms)
-                .sum();
-    }
-
-    /**
-     * ★修正: 本館・別館両方割り振りの場合も2フロア制限を維持
+     * 本館・別館両方割り振りの場合も2フロア制限を維持
      * （各建物1フロアずつ = 合計2フロア）
      */
     private static int getMaxFloors(String staffName, AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
@@ -2564,7 +2251,7 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // ★修正: 本館・別館両方割り振りでも maxFloors = 2 のまま
+        // 本館・別館両方割り振りでも maxFloors = 2 のまま
         // （各建物で個別に1フロア制限がかかるため、合計2フロアとなる）
         // if (mainR > 0 && annexR > 0) maxFloors = 4; は削除
 

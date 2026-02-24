@@ -66,9 +66,10 @@ public class FileProcessor {
         public final boolean isBroken;
         public final int floor;
         public final String building;  // 建物情報
-        public final String roomStatus;  // ★追加: 部屋状態（連泊/チェックアウト）
+        public final String roomStatus;  //  部屋状態（連泊/チェックアウト）
+        public final String ecoStatus;  // エコ清掃ステータス（"×", "エコドア", null）
 
-        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken, String roomStatus) {
+        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken, String roomStatus, String ecoStatus) {
             this.roomNumber = roomNumber;
             this.roomType = roomType;
             this.isEcoClean = isEcoClean;
@@ -76,12 +77,18 @@ public class FileProcessor {
             this.isBroken = isBroken;
             this.floor = extractFloor(roomNumber);
             this.building = isAnnexRoom(roomNumber) ? "別館" : "本館";
-            this.roomStatus = roomStatus;  // ★追加: 部屋状態を保存
+            this.roomStatus = roomStatus;  //  部屋状態を保存
+            this.ecoStatus = ecoStatus;    //  エコ清掃ステータスを保存
+        }
+
+        // 後方互換性のためのコンストラクタ（ecoStatusなし）
+        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken, String roomStatus) {
+            this(roomNumber, roomType, isEcoClean, isBroken, roomStatus, null);
         }
 
         // 後方互換性のためのコンストラクタ
         public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken) {
-            this(roomNumber, roomType, isEcoClean, isBroken, "");
+            this(roomNumber, roomType, isEcoClean, isBroken, "", null);
         }
 
         /**
@@ -100,7 +107,7 @@ public class FileProcessor {
         @Override
         public String toString() {
             return roomNumber + " (" + roomType + ", " + floor + "階" +
-                    (isEcoClean ? ", エコ清掃" : "") +
+                    (isEcoClean ? (("エコドア".equals(ecoStatus)) ? ", エコドア入室禁止" : ", エコ清掃") : "") +
                     (isBroken ? ", 故障" : "") +
                     ", " + building +
                     (!roomStatus.isEmpty() ? ", " + getStatusDisplay() : "") + ")";
@@ -141,7 +148,7 @@ public class FileProcessor {
         }
     }
 
-    // ★修正: ファイルから部屋データを読み込むメソッド（対象日付指定版）
+    //  ファイルから部屋データを読み込むメソッド（対象日付指定版）
     public static CleaningData processRoomFile(File file, LocalDate targetDate) {
         String fileName = file.getName().toLowerCase();
 
@@ -168,7 +175,7 @@ public class FileProcessor {
         // ★追加: 全部屋のマップを作成（部屋番号 → Room オブジェクト）
         Map<String, Room> allRoomsMap = new HashMap<>();
 
-        Map<String, List<String>> ecoRoomMap = loadEcoRoomInfo(targetDate);
+        Map<String, Map<String, String>> ecoRoomMap = loadEcoRoomInfo(targetDate);
 
         // 部屋状態マップをクリア
         ROOM_STATUS_MAP.clear();
@@ -268,19 +275,22 @@ public class FileProcessor {
 
                 // ★修正: エコ清掃かどうかの判定（対象日付を使用）
                 boolean isEcoClean = false;
+                String ecoStatus = null;
                 String targetDateStr = targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
 
                 if (ecoRoomMap.containsKey(targetDateStr)) {
-                    isEcoClean = ecoRoomMap.get(targetDateStr).contains(roomNumber);
-                    if (isEcoClean) {
-                        LOGGER.info("エコ清掃部屋: " + roomNumber + " (日付: " + targetDateStr + ")");
+                    Map<String, String> ecoRoomsForDate = ecoRoomMap.get(targetDateStr);
+                    if (ecoRoomsForDate.containsKey(roomNumber)) {
+                        isEcoClean = true;
+                        ecoStatus = ecoRoomsForDate.get(roomNumber);
+                        LOGGER.info("エコ清掃部屋: " + roomNumber + " (日付: " + targetDateStr + ", ステータス: " + ecoStatus + ")");
                     }
                 }
 
-                // ★修正: 部屋状態情報を含むRoomオブジェクトを作成
-                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus);
+                // 部屋状態情報を含むRoomオブジェクトを作成
+                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus, ecoStatus);
 
-                // ★追加: 全部屋マップに追加
+                // 全部屋マップに追加
                 allRoomsMap.put(roomNumber, room);
 
                 // 別館か本館かを判定して対応するリストに追加
@@ -302,10 +312,11 @@ public class FileProcessor {
                 }
             }
 
-            // ★追加: エコ清掃情報の検証
+            // エコ清掃情報の検証
             String targetDateStr = targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
             if (ecoRoomMap.containsKey(targetDateStr)) {
-                List<String> ecoRoomNumbers = ecoRoomMap.get(targetDateStr);
+                Map<String, String> ecoRoomsForDate = ecoRoomMap.get(targetDateStr);
+                List<String> ecoRoomNumbers = new ArrayList<>(ecoRoomsForDate.keySet());
 
                 LOGGER.info("\n=== エコ清掃情報の検証開始 ===");
                 LOGGER.info("対象日: " + targetDateStr);
@@ -357,7 +368,7 @@ public class FileProcessor {
             LOGGER.info("成功追加: " + successfullyAdded + "室");
             LOGGER.info("合計除外: " + (emptyRoomNumbers + brokenRoomsSkipped + cleaningStatusSkipped) + "室");
 
-            // ★改善版: エコ清掃の本館・別館を分けて表示
+            // エコ清掃の本館・別館を分けて表示
             int ecoMainRooms = 0;
             int ecoAnnexRooms = 0;
             for (Room room : ecoRooms) {
@@ -389,7 +400,7 @@ public class FileProcessor {
             if (!ecoRoomMap.isEmpty()) {
                 LOGGER.info("★エコ清掃データベースから読み込まれた情報:");
                 int totalEcoFromDb = ecoRoomMap.values().stream()
-                        .mapToInt(List::size)
+                        .mapToInt(Map::size)
                         .sum();
                 LOGGER.info("  データベース内エコ部屋総数: " + totalEcoFromDb + "室");
                 LOGGER.info("  対象日のエコ部屋数: " + ecoRooms.size() + "室");
@@ -512,8 +523,8 @@ public class FileProcessor {
     }
 
     // ★エコ清掃情報をデータベースから読み込む（対象日付指定版）
-    private static Map<String, List<String>> loadEcoRoomInfo(LocalDate targetDate) {
-        Map<String, List<String>> ecoRoomsByDate = new HashMap<>();
+    private static Map<String, Map<String, String>> loadEcoRoomInfo(LocalDate targetDate) {
+        Map<String, Map<String, String>> ecoRoomsByDate = new HashMap<>();
 
         String dbPath = System.getProperty("ecoDataFile");
         if (dbPath == null || dbPath.isEmpty()) {
@@ -594,7 +605,7 @@ public class FileProcessor {
                         cleaningStatus.toLowerCase().contains("エコ");
 
                 if (isEco) {
-                    ecoRoomsByDate.computeIfAbsent(cleaningDate, k -> new ArrayList<>()).add(roomNumber);
+                    ecoRoomsByDate.computeIfAbsent(cleaningDate, k -> new HashMap<>()).put(roomNumber, cleaningStatus);
                     totalEcoRecords++;
                     LOGGER.fine(String.format("エコ部屋: %s (%s) - ステータス: %s",
                             roomNumber, cleaningDate, cleaningStatus));
@@ -613,8 +624,9 @@ public class FileProcessor {
             // 各日付のエコ部屋数を表示
             LOGGER.info("日付別エコ部屋数:");
             ecoRoomsByDate.forEach((date, rooms) -> {
+                List<String> roomKeys = new ArrayList<>(rooms.keySet());
                 LOGGER.info(String.format("  %s: %d部屋 (例: %s)", date, rooms.size(),
-                        rooms.size() > 0 ? rooms.get(0) + (rooms.size() > 1 ? ", " + rooms.get(1) + "..." : "") : ""));
+                        rooms.size() > 0 ? roomKeys.get(0) + (rooms.size() > 1 ? ", " + roomKeys.get(1) + "..." : "") : ""));
             });
 
         } catch (ClassNotFoundException e) {

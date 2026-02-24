@@ -2553,7 +2553,7 @@ public class AssignmentEditorGUI extends JFrame {
             sheet.setColumnWidth(0, 12 * 256);  // 担当: 12文字幅
             sheet.setColumnWidth(1, 8 * 256);   // 部屋: 8文字幅
             sheet.setColumnWidth(2, 6 * 256);   // 連泊: 6文字幅
-            sheet.setColumnWidth(3, 8 * 256);   // エコ清掃: 8文字幅
+            sheet.setColumnWidth(3, 12 * 256);  // エコ清掃/エコドア入室禁止: 12文字幅
             sheet.setColumnWidth(4, 10 * 256);  // リネン担当階: 10文字幅
 
             // ファイルに保存
@@ -2607,7 +2607,11 @@ public class AssignmentEditorGUI extends JFrame {
         // D列: エコ
         Cell cellEco = row.createCell(3);
         if (room.isEcoClean) {
-            cellEco.setCellValue("エコ清掃");
+            if ("エコドア".equals(room.ecoStatus)) {
+                cellEco.setCellValue("エコドア入室禁止");
+            } else {
+                cellEco.setCellValue("エコ清掃");
+            }
         }
     }
 

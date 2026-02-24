@@ -796,11 +796,25 @@ public class RoomAssignmentCPSATOptimizer {
 
             LOGGER.info(String.format("  %s: %d室必要", staffName, requiredRooms));
 
+            // ★追加: 指定階の取得（通常清掃のフロア制約用）
+            Set<Integer> preferredFloors = null;
+            if (config.roomDistribution != null && config.roomDistribution.containsKey(staffName)) {
+                NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
+                if (dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
+                    preferredFloors = dist.preferredFloors;
+                    LOGGER.info(String.format("    指定階制約あり: %s", dist.getPreferredFloorsText()));
+                }
+            }
+
             // 目標を満たせる最小フロアを探す
             Integer selectedFloor = null;
             for (Integer floorNumber : sortedMainFloorNumbers) {
                 if (usedMainFloors.contains(floorNumber)) {
                     continue; // 既に使用済み
+                }
+                // ★追加: 指定階制約チェック（本館はfloorNumberそのまま比較）
+                if (preferredFloors != null && !preferredFloors.contains(floorNumber)) {
+                    continue; // 指定階以外はスキップ
                 }
                 int availableRooms = mainFloorRoomCounts.get(floorNumber);
                 if (availableRooms >= requiredRooms) {
@@ -810,8 +824,9 @@ public class RoomAssignmentCPSATOptimizer {
             }
 
             if (selectedFloor == null) {
-                LOGGER.warning(String.format("    → %s: 目標(%d室)を満たせるフロアがありません",
-                        staffName, requiredRooms));
+                LOGGER.warning(String.format("    → %s: 目標(%d室)を満たせるフロアがありません%s",
+                        staffName, requiredRooms,
+                        preferredFloors != null ? "（指定階=" + preferredFloors + "）" : ""));
                 continue;
             }
 
@@ -907,11 +922,28 @@ public class RoomAssignmentCPSATOptimizer {
 
                 LOGGER.info(String.format("  %s: %d室必要", staffName, requiredRooms));
 
+                // ★追加: 指定階の取得（通常清掃のフロア制約用）
+                Set<Integer> preferredFloors = null;
+                if (config.roomDistribution != null && config.roomDistribution.containsKey(staffName)) {
+                    NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(staffName);
+                    if (dist.preferredFloors != null && !dist.preferredFloors.isEmpty()) {
+                        preferredFloors = dist.preferredFloors;
+                        LOGGER.info(String.format("    指定階制約あり: %s", dist.getPreferredFloorsText()));
+                    }
+                }
+
                 // 目標を満たせる最小フロアを探す
                 Integer selectedFloor = null;
                 for (Integer floorNumber : sortedAnnexFloorNumbers) {
                     if (usedAnnexFloors.contains(floorNumber)) {
                         continue; // 既に使用済み
+                    }
+                    // ★追加: 指定階制約チェック（別館は内部+20なので実際の階数に変換して比較）
+                    if (preferredFloors != null) {
+                        int actualFloorNumber = floorNumber > 20 ? floorNumber - 20 : floorNumber;
+                        if (!preferredFloors.contains(actualFloorNumber)) {
+                            continue; // 指定階以外はスキップ
+                        }
                     }
                     int availableRooms = annexFloorRoomCounts.get(floorNumber);
                     if (availableRooms >= requiredRooms) {
@@ -921,8 +953,9 @@ public class RoomAssignmentCPSATOptimizer {
                 }
 
                 if (selectedFloor == null) {
-                    LOGGER.warning(String.format("    → %s: 目標(%d室)を満たせるフロアがありません",
-                            staffName, requiredRooms));
+                    LOGGER.warning(String.format("    → %s: 目標(%d室)を満たせるフロアがありません%s",
+                            staffName, requiredRooms,
+                            preferredFloors != null ? "（指定階=" + preferredFloors + "）" : ""));
                     continue;
                 }
 
@@ -1968,6 +2001,47 @@ public class RoomAssignmentCPSATOptimizer {
                     // e_s_f ≤ ecoRooms * y_s_f（y=0ならECO=0）
                     model.addLessOrEqual(ecoVars.get(eVarName),
                             LinearExpr.term(yVars.get(yVarName), floor.ecoRooms));
+                }
+            }
+        }
+
+        // === 指定階制約: 各指定階で最低1部屋の通常清掃（シングル or ツイン）を取る ===
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+            String staffName = staffInfo.staff.name;
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    config.roomDistribution != null ?
+                            config.roomDistribution.get(staffName) : null;
+            if (dist == null || dist.preferredFloors == null || dist.preferredFloors.isEmpty()) continue;
+
+            LOGGER.info(String.format("指定階制約: %s → 指定階=%s（各階で通常清掃≥1）", staffName, dist.getPreferredFloorsText()));
+
+            for (int preferredFloor : dist.preferredFloors) {
+                // 指定階に対応するフロアを探す
+                for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
+                    int actualFloorNumber = !floor.isMainBuilding && floor.floorNumber > 20
+                            ? floor.floorNumber - 20
+                            : floor.floorNumber;
+
+                    if (actualFloorNumber != preferredFloor) continue;
+
+                    // このフロアの通常清掃変数（シングル＋ツイン）を集める
+                    List<IntVar> normalVars = new ArrayList<>();
+                    for (String roomType : floor.roomCounts.keySet()) {
+                        if ((floor.isMainBuilding && isMainTwin(roomType)) ||
+                                (!floor.isMainBuilding && isAnnexTwin(roomType))) continue;
+                        String vn = String.format("x_%s_%d_%s", staffName, floor.floorNumber, roomType);
+                        if (xVars.containsKey(vn)) normalVars.add(xVars.get(vn));
+                    }
+                    String tVarName = String.format("t_%s_%d", staffName, floor.floorNumber);
+                    if (twinVars.containsKey(tVarName)) normalVars.add(twinVars.get(tVarName));
+
+                    // 通常清掃の合計 ≥ 1 を強制
+                    if (!normalVars.isEmpty()) {
+                        model.addGreaterOrEqual(
+                                LinearExpr.sum(normalVars.toArray(new IntVar[0])), 1);
+                        LOGGER.info(String.format("  → %s: %s%dFで通常清掃≥1を強制",
+                                staffName, floor.isMainBuilding ? "本館" : "別館", actualFloorNumber));
+                    }
                 }
             }
         }

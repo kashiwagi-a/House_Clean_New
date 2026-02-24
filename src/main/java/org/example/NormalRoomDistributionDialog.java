@@ -1,7 +1,6 @@
 package org.example;
 
 import javax.swing.*;
-import javax.swing.table.*;
 import javax.swing.text.*;
 import java.awt.*;
 import java.awt.event.*;
@@ -10,20 +9,7 @@ import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/**
- * 通常清掃部屋割り振りダイアログ - ECO対応版
- *
- * ★★新機能（追加）★★:
- * 1. 別館ツインの換算処理（12部屋超→1.5倍、18部屋超→1.7倍）をStep1のトータル計算前に実施
- * 2. 「本館部屋数」「別館部屋数」を「本館シングル等」「本館ツイン」「別館シングル等」「別館ツイン」に分割
- *    - 本館ツイン：roomTypeCode = 'T' or 'NT'
- *    - 別館ツイン：roomTypeCode = 'ANT' or 'ADT'
- * 3. ツイン合計値換算（2部屋=3換算、3部屋=5換算、以降+1）
- * 4. 換算値合計と実際合計の分離表示
- * 5. ツイン部屋の均等分配ロジック追加
- * 6. ★★ECO部屋の均等配分機能追加（換算係数0.2）
- * 7. ★★「清掃割り当て調整」画面から戻る機能追加（初期パターン指定版コンストラクタ）
- */
+
 public class NormalRoomDistributionDialog extends JDialog {
 
     private JComboBox<String> patternSelector;
@@ -33,11 +19,9 @@ public class NormalRoomDistributionDialog extends JDialog {
     private Map<String, StaffDistribution> twoDiffPattern;
     private Map<String, StaffDistribution> currentPattern;
 
-    // ★既存フィールド（後方互換性のため保持）
     private int totalMainRooms;
     private int totalAnnexRooms;
 
-    // ★★新規フィールド（追加）: 4区分の部屋数
     // ツイン判定：本館ツイン='T'/'NT', 別館ツイン='ANT'/'ADT'
     private int totalMainSingleRooms;    // 本館シングル等（ツイン以外）
     private int totalMainTwinRooms;      // 本館ツイン（'T'/'NT'）
@@ -56,13 +40,12 @@ public class NormalRoomDistributionDialog extends JDialog {
     private JPanel dataPanel;
     private JLabel availableFloorsLabel;  // ★★追加: 売れている階数表示用
 
-    // ★★追加: 利用可能なフロア番号（バリデーション用）
+    // 利用可能なフロア番号（バリデーション用）
     private Set<Integer> availableMainFloors = new HashSet<>();
     private Set<Integer> availableAnnexFloors = new HashSet<>();
     private int totalAvailableFloors = 0;  // ★★追加: 売れている階の総数（リネン庫用）
 
     /**
-     * ★拡張版: スタッフ割り振り情報
      * 本館/別館それぞれにシングル等/ツイン/ECOのフィールドを追加
      */
     public static class StaffDistribution {
@@ -75,21 +58,18 @@ public class NormalRoomDistributionDialog extends JDialog {
         public int annexAssignedRooms;
         public int assignedRooms;
 
-        // ★★新規フィールド（追加）: 4区分
         // 本館ツイン='T'/'NT', 別館ツイン='ANT'/'ADT'で判定
         public int mainSingleAssignedRooms;   // 本館シングル等
         public int mainTwinAssignedRooms;     // 本館ツイン（'T'/'NT'）
         public int annexSingleAssignedRooms;  // 別館シングル等
         public int annexTwinAssignedRooms;    // 別館ツイン（'ANT'/'ADT'）
 
-        // ★★追加: ECO部屋数
         public int mainEcoAssignedRooms;      // 本館ECO
         public int annexEcoAssignedRooms;     // 別館ECO
 
-        // ★★追加: 指定階（空の場合は制限なし）
         public Set<Integer> preferredFloors;
 
-        // ★★追加: リネン庫清掃
+        //  リネン庫清掃
         public boolean isLinenClosetCleaning;
         public int linenClosetFloorCount;
 
@@ -108,36 +88,6 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.isBathCleaning = isBathCleaning;
 
             // ★★初期値: 後で正しく設定される
-            this.mainSingleAssignedRooms = 0;
-            this.mainTwinAssignedRooms = 0;
-            this.annexSingleAssignedRooms = 0;
-            this.annexTwinAssignedRooms = 0;
-            this.mainEcoAssignedRooms = 0;
-            this.annexEcoAssignedRooms = 0;
-            this.preferredFloors = new HashSet<>();
-            this.isLinenClosetCleaning = false;
-            this.linenClosetFloorCount = 0;
-        }
-
-        public StaffDistribution(String staffId, String staffName, String buildingAssignment,
-                                 int totalRooms, String constraintType, boolean isBathCleaning) {
-            this.staffId = staffId;
-            this.staffName = staffName;
-            this.buildingAssignment = buildingAssignment;
-            this.constraintType = constraintType;
-            this.isBathCleaning = isBathCleaning;
-
-            if ("本館のみ".equals(buildingAssignment)) {
-                this.mainAssignedRooms = totalRooms;
-                this.annexAssignedRooms = 0;
-            } else if ("別館のみ".equals(buildingAssignment)) {
-                this.mainAssignedRooms = 0;
-                this.annexAssignedRooms = totalRooms;
-            } else {
-                this.mainAssignedRooms = totalRooms / 2;
-                this.annexAssignedRooms = totalRooms - this.mainAssignedRooms;
-            }
-            this.assignedRooms = this.mainAssignedRooms + this.annexAssignedRooms;
             this.mainSingleAssignedRooms = 0;
             this.mainTwinAssignedRooms = 0;
             this.annexSingleAssignedRooms = 0;
@@ -175,7 +125,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.assignedRooms = this.mainAssignedRooms + this.annexAssignedRooms;
         }
 
-        // ★★追加: 指定階の文字列表現を取得（"2,3,5" 形式）
+        //  指定階の文字列表現を取得（"2,3,5" 形式）
         public String getPreferredFloorsText() {
             if (preferredFloors == null || preferredFloors.isEmpty()) {
                 return "";
@@ -186,7 +136,7 @@ public class NormalRoomDistributionDialog extends JDialog {
                     .collect(Collectors.joining(","));
         }
 
-        // ★★追加: 指定階をテキストから設定（"2,3,5" 形式）
+        //  指定階をテキストから設定（"2,3,5" 形式）
         public void setPreferredFloorsFromText(String text) {
             if (preferredFloors == null) {
                 preferredFloors = new HashSet<>();
@@ -208,7 +158,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             }
         }
 
-        // ★★新規メソッド: 換算値合計を計算（通常清掃のみ）
+        // 換算値合計を計算（通常清掃のみ）
         // 本館ツイン('T'/'NT')と別館ツイン('ANT'/'ADT')を換算値で計算
         public double getConvertedTotal() {
             double mainTwinConverted = calculateTwinConversion(this.mainTwinAssignedRooms);
@@ -217,7 +167,7 @@ public class NormalRoomDistributionDialog extends JDialog {
                     this.annexSingleAssignedRooms + annexTwinConverted;
         }
 
-        // ★★追加: ECOとリネン庫を含めた換算値合計を計算
+        // ECOとリネン庫を含めた換算値合計を計算
         // ECOは軽作業なので0.2換算、リネン庫は1フロアあたり0.4換算
         public double getConvertedTotalWithEco() {
             double baseConverted = getConvertedTotal();
@@ -226,17 +176,17 @@ public class NormalRoomDistributionDialog extends JDialog {
             return baseConverted + ecoConverted + linenConverted;
         }
 
-        // ★★追加: ECOを含めた総部屋数
+        //  ECOを含めた総部屋数
         public int getTotalRoomsWithEco() {
             return this.assignedRooms + this.mainEcoAssignedRooms + this.annexEcoAssignedRooms;
         }
 
-        // ★★追加: ECO部屋数のみ
+        // ECO部屋数のみ
         public int getTotalEcoRooms() {
             return this.mainEcoAssignedRooms + this.annexEcoAssignedRooms;
         }
 
-        // ★★新規メソッド: ツイン換算計算（2部屋=3換算、3部屋=5換算、それ以降+1）
+        // ツイン換算計算（2部屋=3換算、3部屋=5換算、それ以降+1）
         public static double calculateTwinConversion(int twinRooms) {
             if (twinRooms == 0) return 0.0;
             if (twinRooms == 1) return 1.0;
@@ -278,7 +228,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★新規コンストラクタ（ECO対応・推奨）: 6区分の部屋数を受け取る
+     * ★★コンストラクタ（ECO対応・推奨）: 6区分の部屋数を受け取る
      *
      * @param totalMainSingleRooms 本館シングル等の部屋数
      * @param totalMainTwinRooms 本館ツイン（'T'/'NT'）の部屋数
@@ -326,7 +276,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★新規コンストラクタ（初期パターン指定版）
+     * ★★コンストラクタ（初期パターン指定版）
      * 「清掃割り当て調整」画面から戻る際に使用
      *
      * @param initialPattern 初期表示するパターン（元の設定値）
@@ -376,22 +326,6 @@ public class NormalRoomDistributionDialog extends JDialog {
         initializeGUI();
         setSize(1850, 750);
         setLocationRelativeTo(parent);
-    }
-
-    /**
-     * ★★4区分コンストラクタ（ECOなし・後方互換）
-     */
-    public NormalRoomDistributionDialog(JFrame parent,
-                                        int totalMainSingleRooms,
-                                        int totalMainTwinRooms,
-                                        int totalAnnexSingleRooms,
-                                        int totalAnnexTwinRooms,
-                                        List<RoomAssignmentApplication.StaffPointConstraint> staffConstraints,
-                                        List<String> staffNames,
-                                        AdaptiveRoomOptimizer.BathCleaningType bathCleaningType) {
-        this(parent, totalMainSingleRooms, totalMainTwinRooms, 0,
-                totalAnnexSingleRooms, totalAnnexTwinRooms, 0,
-                staffConstraints, staffNames, bathCleaningType);
     }
 
     /**
@@ -457,7 +391,7 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JPanel infoPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
-        // ★★変更: 6区分の内訳表示（ECO含む）
+        //  6区分の内訳表示（ECO含む）
         infoPanel.add(new JLabel(String.format(
                 "本館: S%d+T%d+E%d=%d室, 別館: S%d+T%d+E%d=%d室, 合計: %d室",
                 totalMainSingleRooms, totalMainTwinRooms, totalMainEcoRooms,
@@ -467,7 +401,7 @@ public class NormalRoomDistributionDialog extends JDialog {
                 totalMainRooms + totalAnnexRooms + totalMainEcoRooms + totalAnnexEcoRooms
         )));
 
-        // ★★追加: 別館ツイン('ANT'/'ADT')の換算情報表示
+        //  別館ツイン('ANT'/'ADT')の換算情報表示
         if (totalAnnexTwinRooms > 0) {
             double multiplier = getAnnexTwinMultiplier(totalAnnexTwinRooms);
             if (multiplier > 1.0) {
@@ -477,7 +411,7 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         infoPanel.add(new JLabel(" | 大浴場清掃: " + bathCleaningType.displayName + " (-" + bathCleaningType.reduction + "部屋)"));
 
-        // ★★追加: 売れている階数表示（リネン庫用）- setAvailableFloors後に更新
+        //  売れている階数表示（リネン庫用）- setAvailableFloors後に更新
         availableFloorsLabel = new JLabel("");
         infoPanel.add(availableFloorsLabel);
 
@@ -747,7 +681,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             rowPanel.add(annexEcoPanel);
 
             // 通常合計（シングル+ツイン）
-            JLabel actualTotalLabel = new JLabel(String.valueOf(staff.assignedRooms), JLabel.CENTER);
+            JLabel actualTotalLabel = new JLabel(String.valueOf((int) staff.getConvertedTotal()), JLabel.CENTER);
             actualTotalLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
             rowPanel.add(actualTotalLabel);
 
@@ -770,7 +704,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         Component[] components = rowPanel.getComponents();
         // 通常合計更新（index 12）
         if (components.length > 12) {
-            ((JLabel)components[12]).setText(String.valueOf(staff.assignedRooms));
+            ((JLabel)components[12]).setText(String.valueOf((int) staff.getConvertedTotal()));
         }
         // 換算合計更新（index 13）
         if (components.length > 13) {
@@ -1038,7 +972,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★追加: ECO部屋を均等に配分するメソッド
+     * ECO部屋を均等に配分するメソッド
      */
     private void distributeEcoRooms(Map<String, StaffDistribution> pattern,
                                     Map<String, StaffConstraintInfo> staffInfo) {
@@ -1137,10 +1071,8 @@ public class NormalRoomDistributionDialog extends JDialog {
         return 1.7;
     }
 
-    /**
-     * ★★全面書き換え: 建物別独立計算ロジック
-     *
-     * 新アルゴリズム概要:
+    /**建物別独立計算ロジック
+     * 概要:
      * 1. スタッフを分類（大浴場/制約/本館固定/別館固定/自由配置）
      * 2. 自由スタッフの本館・別館配分を最適化（別館base ≈ 本館base + annexDifference）
      * 3. 建物ごとに基本部屋数を独立計算
@@ -1373,7 +1305,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★修正: 建物の合計部屋数を端数調整するユーティリティ
+     *  建物の合計部屋数を端数調整するユーティリティ
      * 制約スタッフも制限範囲内で調整対象にする
      * - 故障者制限: 設定値以下なら減らせる（増やすのは設定値まで）
      * - 業者制限: minRooms〜maxRoomsの範囲内で増減可能
@@ -1470,7 +1402,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★新規: 調整優先度（低い値=優先的に調整）
+     * 調整優先度（低い値=優先的に調整）
      */
     private int getAdjustPriority(String constraintType) {
         if ("制限なし".equals(constraintType)) return 0;  // 最優先
@@ -1637,7 +1569,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★新規メソッド: 値を比較して色付きテキストを生成
+     * ★★メソッド: 値を比較して色付きテキストを生成
      * @param assignedValue 割り当て済みの値
      * @param targetValue ファイルから読み取った目標値
      * @param prefix 接頭辞（"S", "T", "E"）

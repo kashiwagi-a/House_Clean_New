@@ -72,14 +72,6 @@ public class RoomAssignmentApplication extends JFrame {
             this.isBathCleaningStaff = isBathCleaningStaff;
         }
 
-        public StaffPointConstraint(String staffId, String staffName,
-                                    ConstraintType constraintType,
-                                    BuildingAssignment buildingAssignment,
-                                    double upperLimit, double lowerMinLimit, double lowerMaxLimit) {
-            this(staffId, staffName, constraintType, buildingAssignment,
-                    upperLimit, lowerMinLimit, lowerMaxLimit, false);
-        }
-
         public enum ConstraintType {
             NONE("制限なし"),
             UPPER_LIMIT("故障者制限"),
@@ -112,10 +104,6 @@ public class RoomAssignmentApplication extends JFrame {
                     return "制限なし";
             }
         }
-
-        public String getBathCleaningDisplay() {
-            return isBathCleaningStaff ? "担当" : "";
-        }
     }
 
     public static class ProcessingResult {
@@ -127,18 +115,6 @@ public class RoomAssignmentApplication extends JFrame {
         public final AdaptiveRoomOptimizer.MultiOptimizationResult multiOptimizationResult;
         public final int totalSolutionCount;
         private int currentSolutionIndex;
-
-        // 従来のコンストラクタ（単一解用）
-        public ProcessingResult(FileProcessor.CleaningData cleaningData,
-                                AdaptiveRoomOptimizer.OptimizationResult optimizationResult,
-                                Map<String, List<FileProcessor.Room>> detailedAssignments) {
-            this.cleaningDataObj = cleaningData;
-            this.optimizationResult = optimizationResult;
-            this.detailedRoomAssignments = detailedAssignments;
-            this.multiOptimizationResult = null;
-            this.totalSolutionCount = 1;
-            this.currentSolutionIndex = 0;
-        }
 
         // ★追加: 複数解用コンストラクタ
         public ProcessingResult(FileProcessor.CleaningData cleaningData,
@@ -160,13 +136,6 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         /**
-         * ★追加: 現在の解のインデックスを取得
-         */
-        public int getCurrentSolutionIndex() {
-            return currentSolutionIndex;
-        }
-
-        /**
          * ★追加: 現在の解のインデックスを設定
          */
         public void setCurrentSolutionIndex(int index) {
@@ -183,13 +152,6 @@ public class RoomAssignmentApplication extends JFrame {
                 return multiOptimizationResult.toSingleResult(index);
             }
             return optimizationResult;
-        }
-
-        /**
-         * ★追加: 現在選択中の解を取得
-         */
-        public AdaptiveRoomOptimizer.OptimizationResult getCurrentOptimizationResult() {
-            return getOptimizationResult(currentSolutionIndex);
         }
     }
 
@@ -1099,24 +1061,7 @@ public class RoomAssignmentApplication extends JFrame {
         return constraints;
     }
 
-    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createAdaptiveConfigWithPointConstraints(
-            List<FileProcessor.Staff> availableStaff,
-            int totalRooms,
-            int mainBuildingRooms,
-            int annexBuildingRooms,
-            AdaptiveRoomOptimizer.BathCleaningType bathType,
-            List<StaffPointConstraint> pointConstraints) {
-
-        return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithBathSelection(
-                availableStaff,
-                totalRooms,
-                mainBuildingRooms,
-                annexBuildingRooms,
-                bathType,
-                pointConstraints);
-    }
-
-    private AdaptiveRoomOptimizer.BathCleaningType selectBathCleaningType() {
+       private AdaptiveRoomOptimizer.BathCleaningType selectBathCleaningType() {
         String[] options = {
                 AdaptiveRoomOptimizer.BathCleaningType.NONE.displayName,
                 AdaptiveRoomOptimizer.BathCleaningType.NORMAL.displayName,

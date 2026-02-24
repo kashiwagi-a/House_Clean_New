@@ -49,12 +49,6 @@ public class FileProcessor {
             this.totalAnnexRooms = annexRooms.size();
             this.totalBrokenRooms = brokenRooms.size();
         }
-
-        // 後方互換性のためのコンストラクタ
-        public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
-                            List<Room> ecoRooms, List<Room> brokenRooms) {
-            this(mainRooms, annexRooms, ecoRooms, brokenRooms, new ArrayList<>());
-        }
     }
 
     // ★修正版Roomクラス（部屋状態情報追加）

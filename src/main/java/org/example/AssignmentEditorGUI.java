@@ -173,52 +173,26 @@ public class AssignmentEditorGUI extends JFrame {
         }
 
         /**
-         * ★追加: 換算値合計を計算
-         * ツイン換算: 2部屋=3換算、3部屋=5換算、4部屋以降=5+(部屋数-3)
+         * 換算値合計を計算
+         * AdaptiveRoomOptimizer の共通メソッドへ委譲
          */
         private double calculateConvertedTotal() {
-            // ★修正: detailedRoomsByFloorから実際の部屋数を取得
+            // detailedRoomsByFloorから実際の部屋数を取得
             int actualTotalRooms = 0;
             for (List<FileProcessor.Room> rooms : detailedRoomsByFloor.values()) {
                 actualTotalRooms += rooms.size();
             }
-
             // detailedRoomsByFloorが空の場合はtotalRoomsを使用（フォールバック）
             if (actualTotalRooms == 0) {
                 actualTotalRooms = this.totalRooms;
             }
 
-            // ★★★ 換算計算（エコ部屋は0.2換算）★★★
-            // 通常部屋数 = 全部屋数 - ツイン部屋数 - エコ部屋数
             int normalRooms = actualTotalRooms - this.twinRoomCount - this.ecoRoomCount;
+            int linenFloors = (this.linenClosetFloors != null ? this.linenClosetFloors.size() : 0);
 
-            // ツイン換算値
-            double twinConverted = calculateTwinConversion(this.twinRoomCount);
-
-            // ★エコ部屋は0.2換算（1部屋 = 0.2）
-            double ecoConverted = this.ecoRoomCount * 0.2;
-
-            // 合計 = 通常部屋×1.0 + ツイン換算値 + エコ部屋×0.2 + リネン庫負荷
-            double linenConverted = (this.linenClosetFloors != null ? this.linenClosetFloors.size() : 0) * 0.4;
-            return normalRooms + twinConverted + ecoConverted + linenConverted;
-        }
-
-
-        /**
-         * ★追加: ツイン換算計算（NormalRoomDistributionDialogと同じロジック）
-         */
-        private static double calculateTwinConversion(int twinRooms) {
-            if (twinRooms == 0) return 0.0;
-            if (twinRooms == 1) return 1.0;
-            if (twinRooms == 2) return 3.0;
-            if (twinRooms == 3) return 5.0;
-            if (twinRooms == 4) return 6.0;
-            if (twinRooms == 5) return 8.0;
-            if (twinRooms == 6) return 10.0;
-            if (twinRooms == 7) return 11.0;
-            if (twinRooms == 8) return 12.0;
-            // 9部屋以降は+1ずつ増加
-            return 12.0 + (twinRooms - 8);
+            // 共通メソッドへ委譲
+            return AdaptiveRoomOptimizer.calculateConvertedScore(
+                    normalRooms, this.twinRoomCount, this.ecoRoomCount, linenFloors);
         }
 
         String getWorkerTypeDisplay() {

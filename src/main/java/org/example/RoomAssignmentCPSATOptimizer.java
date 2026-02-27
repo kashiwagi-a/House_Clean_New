@@ -340,6 +340,7 @@ public class RoomAssignmentCPSATOptimizer {
             }
             if (!isDuplicate) {
                 UnassignedRooms unassignedRooms = calculateUnassignedRooms(buildingData, assignments);
+                AdaptiveRoomOptimizer.assignLinenClosetFloors(assignments);
                 solutions.add(new OptimizationResultWithUnassigned(assignments, unassignedRooms));
                 LOGGER.info(String.format("解 %d を採用", solutions.size()));
 
@@ -450,21 +451,30 @@ public class RoomAssignmentCPSATOptimizer {
             annexSolutions.add(new ArrayList<>());
         }
 
-        // === 本館解×別館解のクロス積で複数解を生成 ===
-        List<List<AdaptiveRoomOptimizer.StaffAssignment>> combined = new ArrayList<>();
-        outer:
+        // === 本館解×別館解の全組み合わせを生成し、スコアで上位maxSolutions件を選出 ===
+        List<List<AdaptiveRoomOptimizer.StaffAssignment>> allCombinations = new ArrayList<>();
         for (List<AdaptiveRoomOptimizer.StaffAssignment> mainSol : mainSolutions) {
             for (List<AdaptiveRoomOptimizer.StaffAssignment> annexSol : annexSolutions) {
                 List<AdaptiveRoomOptimizer.StaffAssignment> merged =
                         mergeMainAnnexAssignments(mainSol, annexSol, config);
-                combined.add(merged);
-                if (combined.size() >= maxSolutions) break outer;
+                allCombinations.add(merged);
             }
         }
+        LOGGER.info(String.format("本館%d解×別館%d解 = 全%d通りの組み合わせを生成、スコアリング開始",
+                mainSolutions.size(), annexSolutions.size(), allCombinations.size()));
 
-        LOGGER.info(String.format("本館%d解×別館%d解のクロス積から%d個の組み合わせを生成",
-                mainSolutions.size(), annexSolutions.size(), combined.size()));
-        return combined;
+        // 各組み合わせの換算スコアばらつきを計算してソート
+        allCombinations.sort((a, b) -> {
+            double scoreA = calculateCombinationSpread(a, config);
+            double scoreB = calculateCombinationSpread(b, config);
+            return Double.compare(scoreA, scoreB);
+        });
+
+        // 上位maxSolutions件を返す
+        List<List<AdaptiveRoomOptimizer.StaffAssignment>> combined =
+                allCombinations.subList(0, Math.min(maxSolutions, allCombinations.size()));
+        LOGGER.info(String.format("スコアリング完了: 上位%d件を選出", combined.size()));
+        return new ArrayList<>(combined);
     }
     // ================================================================
     // 未割当計算メソッド
@@ -1390,6 +1400,8 @@ public class RoomAssignmentCPSATOptimizer {
         List<IntVar> scoreRangeVars = new ArrayList<>();
 
         // --- 大浴場スタッフ同士のスコア均等化（本館固定） ---
+        // スコア式: 通常室×10 + ツイン換算値×10 + リネン庫×4 + ECO×2
+        // （convertedTotalRoomsと同一ロジック、×10スケールで整数化）
         {
             List<IntVar> bathScoreVars = new ArrayList<>();
             for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
@@ -1407,21 +1419,24 @@ public class RoomAssignmentCPSATOptimizer {
                     if (ecoVars.containsKey(eVarName)) staffMainEcoList.add(ecoVars.get(eVarName));
                 }
 
-                int normalScore = dist.mainSingleAssignedRooms * 5;
+                // baseScore = 通常室×10 + ツイン換算×10 + リネン庫×4
+                int baseScore = dist.mainSingleAssignedRooms * 10
+                        + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.mainTwinAssignedRooms) * 10)
+                        + staffInfo.linenClosetFloorCount * 4;
                 int maxPossibleEco = buildingData.mainFloors.stream().mapToInt(f -> f.ecoRooms).sum();
-                IntVar scoreVar = model.newIntVar(normalScore, normalScore + maxPossibleEco,
+                // ECO×2を動的に加算
+                IntVar scoreVar = model.newIntVar(baseScore, baseScore + maxPossibleEco * 2,
                         "score_bath_" + staffName);
                 if (staffMainEcoList.isEmpty()) {
-                    model.addEquality(scoreVar, normalScore);
+                    model.addEquality(scoreVar, baseScore);
                 } else {
-                    model.addEquality(scoreVar, LinearExpr.newBuilder()
-                            .add(normalScore)
-                            .addSum(staffMainEcoList.toArray(new IntVar[0]))
-                            .build());
+                    LinearExprBuilder eb = LinearExpr.newBuilder().add(baseScore);
+                    for (IntVar ev : staffMainEcoList) eb.addTerm(ev, 2);
+                    model.addEquality(scoreVar, eb.build());
                 }
                 bathScoreVars.add(scoreVar);
-                LOGGER.info(String.format("スコア均等化(大浴場): %s 通常室=%d normalScore=%d",
-                        staffName, dist.mainSingleAssignedRooms, normalScore));
+                LOGGER.info(String.format("スコア均等化(大浴場): %s 通常室=%d ツイン=%d baseScore=%d",
+                        staffName, dist.mainSingleAssignedRooms, dist.mainTwinAssignedRooms, baseScore));
             }
             if (bathScoreVars.size() >= 2) {
                 IntVar minScore = model.newIntVar(0, 10000, "min_score_bath");
@@ -1437,13 +1452,12 @@ public class RoomAssignmentCPSATOptimizer {
         }
 
         // --- 本館スコア均等化（制限なし通常スタッフ） ---
+        // スコア式: 通常室×10 + ツイン換算値×10 + リネン庫×4 + ECO×2
         {
             List<IntVar> mainScoreVars = new ArrayList<>();
             for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
                 String staffName = staffInfo.staff.name;
-                // 大浴場スタッフは対象外（上記ブロックで処理済み）
                 if (staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
-                // 故障者制限・業者制限スタッフは対象外
                 AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(staffName);
                 if (pc != null && !"制限なし".equals(pc.constraintType)) continue;
 
@@ -1458,22 +1472,23 @@ public class RoomAssignmentCPSATOptimizer {
                     if (ecoVars.containsKey(eVarName)) staffMainEcoList.add(ecoVars.get(eVarName));
                 }
 
-                // score = 通常室数 × 5 + ECO室数
-                int normalScore = dist.mainSingleAssignedRooms * 5;
+                // baseScore = 通常室×10 + ツイン換算×10 + リネン庫×4
+                int baseScore = dist.mainSingleAssignedRooms * 10
+                        + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.mainTwinAssignedRooms) * 10)
+                        + staffInfo.linenClosetFloorCount * 4;
                 int maxPossibleEco = buildingData.mainFloors.stream().mapToInt(f -> f.ecoRooms).sum();
-                IntVar scoreVar = model.newIntVar(normalScore, normalScore + maxPossibleEco,
+                IntVar scoreVar = model.newIntVar(baseScore, baseScore + maxPossibleEco * 2,
                         "score_main_" + staffName);
                 if (staffMainEcoList.isEmpty()) {
-                    model.addEquality(scoreVar, normalScore);
+                    model.addEquality(scoreVar, baseScore);
                 } else {
-                    model.addEquality(scoreVar, LinearExpr.newBuilder()
-                            .add(normalScore)
-                            .addSum(staffMainEcoList.toArray(new IntVar[0]))
-                            .build());
+                    LinearExprBuilder eb = LinearExpr.newBuilder().add(baseScore);
+                    for (IntVar ev : staffMainEcoList) eb.addTerm(ev, 2);
+                    model.addEquality(scoreVar, eb.build());
                 }
                 mainScoreVars.add(scoreVar);
-                LOGGER.info(String.format("スコア均等化(本館): %s 通常室=%d normalScore=%d",
-                        staffName, dist.mainSingleAssignedRooms, normalScore));
+                LOGGER.info(String.format("スコア均等化(本館): %s 通常室=%d ツイン=%d baseScore=%d",
+                        staffName, dist.mainSingleAssignedRooms, dist.mainTwinAssignedRooms, baseScore));
             }
             if (mainScoreVars.size() >= 2) {
                 IntVar minScore = model.newIntVar(0, 10000, "min_score_main");
@@ -1488,7 +1503,8 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // --- 別館スコア均等化 ---
+        // --- 別館スコア均等化（制限なし通常スタッフ） ---
+        // スコア式: 通常室×10 + ツイン換算値×10 + ECO×2
         {
             List<IntVar> annexScoreVars = new ArrayList<>();
             for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
@@ -1507,21 +1523,22 @@ public class RoomAssignmentCPSATOptimizer {
                     if (ecoVars.containsKey(eVarName)) staffAnnexEcoList.add(ecoVars.get(eVarName));
                 }
 
-                int normalScore = dist.annexSingleAssignedRooms * 5;
+                // baseScore = 通常室×10 + ツイン換算×10
+                int baseScore = dist.annexSingleAssignedRooms * 10
+                        + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.annexTwinAssignedRooms) * 10);
                 int maxPossibleEco = buildingData.annexFloors.stream().mapToInt(f -> f.ecoRooms).sum();
-                IntVar scoreVar = model.newIntVar(normalScore, normalScore + maxPossibleEco,
+                IntVar scoreVar = model.newIntVar(baseScore, baseScore + maxPossibleEco * 2,
                         "score_annex_" + staffName);
                 if (staffAnnexEcoList.isEmpty()) {
-                    model.addEquality(scoreVar, normalScore);
+                    model.addEquality(scoreVar, baseScore);
                 } else {
-                    model.addEquality(scoreVar, LinearExpr.newBuilder()
-                            .add(normalScore)
-                            .addSum(staffAnnexEcoList.toArray(new IntVar[0]))
-                            .build());
+                    LinearExprBuilder eb = LinearExpr.newBuilder().add(baseScore);
+                    for (IntVar ev : staffAnnexEcoList) eb.addTerm(ev, 2);
+                    model.addEquality(scoreVar, eb.build());
                 }
                 annexScoreVars.add(scoreVar);
-                LOGGER.info(String.format("スコア均等化(別館): %s 通常室=%d normalScore=%d",
-                        staffName, dist.annexSingleAssignedRooms, normalScore));
+                LOGGER.info(String.format("スコア均等化(別館): %s 通常室=%d ツイン=%d baseScore=%d",
+                        staffName, dist.annexSingleAssignedRooms, dist.annexTwinAssignedRooms, baseScore));
             }
             if (annexScoreVars.size() >= 2) {
                 IntVar minScore = model.newIntVar(0, 10000, "min_score_annex");
@@ -1855,6 +1872,49 @@ public class RoomAssignmentCPSATOptimizer {
      * 本館結果と別館結果をマージ
      * 両建物に部屋があるスタッフは mainBuildingAssignments と annexBuildingAssignments を結合する
      */
+    /**
+     * 組み合わせのスコアばらつきを計算
+     * 大浴清掃・本館通常清掃・別館通常清掃の3グループ内で
+     * convertedTotalRooms の max-min を合計した値を返す（小さいほど均等）
+     * 故障者制限・業者制限スタッフは評価対象外
+     */
+    private static double calculateCombinationSpread(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
+
+        List<Double> bathScores   = new ArrayList<>();
+        List<Double> mainScores   = new ArrayList<>();
+        List<Double> annexScores  = new ArrayList<>();
+
+        for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
+            String name = sa.staff.name;
+
+            // 故障者制限・業者制限は除外
+            AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(name);
+            if (pc != null && !"制限なし".equals(pc.constraintType)) continue;
+
+            double score = AdaptiveRoomOptimizer.calculateConvertedScore(sa);
+
+            if (sa.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                bathScores.add(score);
+            } else if (!sa.mainBuildingAssignments.isEmpty()) {
+                mainScores.add(score);
+            } else if (!sa.annexBuildingAssignments.isEmpty()) {
+                annexScores.add(score);
+            }
+        }
+
+        return groupSpread(bathScores) + groupSpread(mainScores) + groupSpread(annexScores);
+    }
+
+    /** グループ内のmax-min（1人以下なら0） */
+    private static double groupSpread(List<Double> scores) {
+        if (scores.size() < 2) return 0.0;
+        double min = scores.stream().mapToDouble(Double::doubleValue).min().orElse(0);
+        double max = scores.stream().mapToDouble(Double::doubleValue).max().orElse(0);
+        return max - min;
+    }
+
     private static List<AdaptiveRoomOptimizer.StaffAssignment> mergeMainAnnexAssignments(
             List<AdaptiveRoomOptimizer.StaffAssignment> mainList,
             List<AdaptiveRoomOptimizer.StaffAssignment> annexList,

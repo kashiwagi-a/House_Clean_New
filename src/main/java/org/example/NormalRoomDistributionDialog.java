@@ -1,7 +1,6 @@
 package org.example;
 
 import javax.swing.*;
-import javax.swing.table.*;
 import javax.swing.text.*;
 import java.awt.*;
 import java.awt.event.*;
@@ -12,7 +11,6 @@ import java.util.stream.Collectors;
 
 /**
  * 通常清掃部屋割り振りダイアログ - ECO対応版
- *
  * ★★新機能（追加）★★:
  * 1. 別館ツインの換算処理（12部屋超→1.5倍、18部屋超→1.7倍）をStep1のトータル計算前に実施
  * 2. 「本館部屋数」「別館部屋数」を「本館シングル等」「本館ツイン」「別館シングル等」「別館ツイン」に分割
@@ -108,34 +106,6 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.linenClosetFloorCount = 0;
         }
 
-        public StaffDistribution(String staffId, String staffName, String buildingAssignment,
-                                 int totalRooms, String constraintType, boolean isBathCleaning) {
-            this.staffId = staffId;
-            this.staffName = staffName;
-            this.buildingAssignment = buildingAssignment;
-            this.constraintType = constraintType;
-            this.isBathCleaning = isBathCleaning;
-
-            if ("本館のみ".equals(buildingAssignment)) {
-                this.mainAssignedRooms = totalRooms;
-                this.annexAssignedRooms = 0;
-            } else if ("別館のみ".equals(buildingAssignment)) {
-                this.mainAssignedRooms = 0;
-                this.annexAssignedRooms = totalRooms;
-            } else {
-                this.mainAssignedRooms = totalRooms / 2;
-                this.annexAssignedRooms = totalRooms - this.mainAssignedRooms;
-            }
-            this.assignedRooms = this.mainAssignedRooms + this.annexAssignedRooms;
-            this.mainSingleAssignedRooms = 0;
-            this.mainTwinAssignedRooms = 0;
-            this.annexSingleAssignedRooms = 0;
-            this.annexTwinAssignedRooms = 0;
-            this.preferredFloors = new HashSet<>();
-            this.isLinenClosetCleaning = false;
-            this.linenClosetFloorCount = 0;
-        }
-
         public StaffDistribution(StaffDistribution other) {
             this.staffId = other.staffId;
             this.staffName = other.staffName;
@@ -202,19 +172,9 @@ public class NormalRoomDistributionDialog extends JDialog {
                     this.annexSingleAssignedRooms + annexTwinConverted;
         }
 
-        // ECOはCP-SATが自動配分するため、換算はリネン庫のみ考慮
-        public double getConvertedTotalWithEco() {
-            return getConvertedTotal() + this.linenClosetFloorCount * 0.4;
-        }
-
         // 後方互換: ECOは常に0なのでassignedRoomsと同じ
         public int getTotalRoomsWithEco() {
             return this.assignedRooms;
-        }
-
-        // 後方互換: ECOは常に0
-        public int getTotalEcoRooms() {
-            return 0;
         }
 
         // ★★新規メソッド: ツイン換算計算（2部屋=3換算、3部屋=5換算、それ以降+1）
@@ -419,16 +379,16 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JPanel tablePanel = new JPanel(new BorderLayout());
 
-        JPanel headerPanel = new JPanel(new GridLayout(1, 12));
+        JPanel headerPanel = new JPanel(new GridLayout(1, 11));
         headerPanel.setBackground(UIManager.getColor("TableHeader.background"));
         headerPanel.setBorder(BorderFactory.createMatteBorder(1, 1, 1, 1, Color.GRAY));
 
-        // ECO列を削除（ECOはCP-SATが自動配分）
+        // ECO列・通常合計列を削除（ECOはCP-SATが自動配分）
         String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "指定階",
                 "本館S", "本館T",
                 "別館S", "別館T",
-                "通常合計", "換算合計"};
-        int[] widths = {100, 100, 50, 55, 70, 100, 80, 80, 80, 80, 80, 100};
+                "換算合計"};
+        int[] widths = {100, 100, 50, 55, 70, 100, 80, 80, 80, 80, 100};
 
         for (int i = 0; i < headers.length; i++) {
             JLabel headerLabel = new JLabel(headers[i], JLabel.CENTER);
@@ -482,7 +442,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         });
 
         for (StaffDistribution staff : sortedStaff) {
-            JPanel rowPanel = new JPanel(new GridLayout(1, 12));
+            JPanel rowPanel = new JPanel(new GridLayout(1, 11));
             rowPanel.setBorder(BorderFactory.createMatteBorder(0, 1, 1, 1, Color.GRAY));
             rowPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 35));
             rowPanel.setPreferredSize(new Dimension(0, 35));
@@ -632,14 +592,9 @@ public class NormalRoomDistributionDialog extends JDialog {
             annexTwinPanel.add(annexTwinSpinner);
             rowPanel.add(annexTwinPanel);
 
-            // 通常合計（シングル+ツイン）
-            JLabel actualTotalLabel = new JLabel(String.valueOf(staff.assignedRooms), JLabel.CENTER);
-            actualTotalLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
-            rowPanel.add(actualTotalLabel);
-
             // 換算合計（通常室のみ、ECOはCP-SATが自動配分）
             double convertedTotal = staff.getConvertedTotal();
-            JLabel convertedLabel = new JLabel(String.format("%.1f", convertedTotal), JLabel.CENTER);
+            JLabel convertedLabel = new JLabel(String.valueOf((int) convertedTotal), JLabel.CENTER);
             convertedLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
             convertedLabel.setFont(new Font("MS Gothic", Font.BOLD, 11));
             rowPanel.add(convertedLabel);
@@ -654,13 +609,9 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private void updateRowDisplay(JPanel rowPanel, StaffDistribution staff) {
         Component[] components = rowPanel.getComponents();
-        // 通常合計更新（index 10: ECO列削除により12→10）
+        // 換算合計更新（index 10: 通常合計列削除により11→10）
         if (components.length > 10) {
-            ((JLabel)components[10]).setText(String.valueOf(staff.assignedRooms));
-        }
-        // 換算合計更新（index 11）
-        if (components.length > 11) {
-            ((JLabel)components[11]).setText(String.format("%.1f", staff.getConvertedTotal()));
+            ((JLabel)components[10]).setText(String.valueOf((int) staff.getConvertedTotal()));
         }
     }
 
@@ -918,8 +869,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★全面書き換え: 建物別独立計算ロジック
-     *
+     * ★★全面書き換え: 建物別独立計算ロジッ
      * 新アルゴリズム概要:
      * 1. スタッフを分類（大浴場/制約/本館固定/別館固定/自由配置）
      * 2. 自由スタッフの本館・別館配分を最適化（別館base ≈ 本館base + annexDifference）
@@ -1378,9 +1328,6 @@ public class NormalRoomDistributionDialog extends JDialog {
         double totalConvertedRooms = currentPattern.values().stream()
                 .mapToDouble(StaffDistribution::getConvertedTotal).sum();
 
-        int totalActual = totalAssignedMainSingle + totalAssignedMainTwin +
-                totalAssignedAnnexSingle + totalAssignedAnnexTwin;
-
         // リネン庫情報
         int totalLinenFloorCount = 0;
         for (StaffDistribution dist : currentPattern.values()) {
@@ -1400,10 +1347,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         String annexTwinText = formatWithColor(totalAssignedAnnexTwin, totalAnnexTwinRooms, "T");
 
         String summaryText = String.format(
-                "<html>割当: 本館%s+%s, 別館%s+%s | 通常合計: %d室 | 換算合計: %.1f%s</html>",
+                "<html>割当: 本館%s+%s, 別館%s+%s | 換算合計: %d%s</html>",
                 mainSingleText, mainTwinText,
                 annexSingleText, annexTwinText,
-                totalActual, totalConvertedRooms, linenInfo
+                (int) totalConvertedRooms, linenInfo
         );
 
         summaryLabel.setText(summaryText);
@@ -1447,10 +1394,6 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     public boolean getDialogResult() {
         return dialogResult;
-    }
-
-    public Map<String, StaffDistribution> getSelectedPattern() {
-        return currentPattern;
     }
 
     public Map<String, StaffDistribution> getCurrentDistribution() {

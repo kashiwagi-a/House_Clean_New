@@ -11,8 +11,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.apache.poi.xssf.usermodel.XSSFCellStyle;
-import org.apache.poi.xssf.usermodel.XSSFColor;
 import java.util.OptionalInt;
 
 /**
@@ -1184,41 +1182,31 @@ public class AssignmentEditorGUI extends JFrame {
             return;
         }
 
-        // 部屋タイプ別の集計
+        // 部屋タイプ別の集計（ECOはCP-SATが自動配分するため通常室のみ）
         int totalMainSingleRooms = 0;
         int totalMainTwinRooms = 0;
-        int totalMainEcoRooms = 0;
         int totalAnnexSingleRooms = 0;
         int totalAnnexTwinRooms = 0;
-        int totalAnnexEcoRooms = 0;
 
         FileProcessor.CleaningData cleaningData = processingResult.cleaningDataObj;
 
         // 本館の部屋タイプ集計
         for (FileProcessor.Room room : cleaningData.mainRooms) {
-            if (room.isEcoClean) {
-                totalMainEcoRooms++;
+            if (room.isEcoClean) continue; // ECOはスキップ
+            if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
+                totalMainTwinRooms++;
             } else {
-                if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
-                    totalMainTwinRooms++;
-                } else {
-                    totalMainSingleRooms++;
-                }
+                totalMainSingleRooms++;
             }
         }
 
         // 別館の部屋タイプ集計
-        // ★注意: FileProcessor.determineRoomType()により
-        //   ANT/ADT → "T", ANS/ABF/AKS → "S" 等に正規化済み
         for (FileProcessor.Room room : cleaningData.annexRooms) {
-            if (room.isEcoClean) {
-                totalAnnexEcoRooms++;
+            if (room.isEcoClean) continue; // ECOはスキップ
+            if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
+                totalAnnexTwinRooms++;
             } else {
-                if ("T".equals(room.roomType) || "NT".equals(room.roomType)) {
-                    totalAnnexTwinRooms++;
-                } else {
-                    totalAnnexSingleRooms++;
-                }
+                totalAnnexSingleRooms++;
             }
         }
 
@@ -1245,15 +1233,13 @@ public class AssignmentEditorGUI extends JFrame {
             }
         }
 
-        // ダイアログを表示（★元の設定値を渡す）
+        // ダイアログを表示（ECOはCP-SATが自動配分するため渡さない）
         NormalRoomDistributionDialog dialog = new NormalRoomDistributionDialog(
                 this,
                 totalMainSingleRooms,
                 totalMainTwinRooms,
-                totalMainEcoRooms,
                 totalAnnexSingleRooms,
                 totalAnnexTwinRooms,
-                totalAnnexEcoRooms,
                 pointConstraints,
                 staffNamesList,
                 bathType,
@@ -2473,19 +2459,6 @@ public class AssignmentEditorGUI extends JFrame {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet(SHEET_NAME);
 
-            // ===== セルスタイル定義 =====
-            // エコ列（F〜I）: 水色背景
-            XSSFCellStyle ecoStyle = workbook.createCellStyle();
-            ecoStyle.setFillForegroundColor(new XSSFColor(new byte[]{(byte)173, (byte)216, (byte)230}, null)); // ライトブルー
-            ecoStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-            ecoStyle.setAlignment(HorizontalAlignment.CENTER);
-
-            // 通常清掃列（J〜M）: 薄緑背景
-            XSSFCellStyle normalStyle = workbook.createCellStyle();
-            normalStyle.setFillForegroundColor(new XSSFColor(new byte[]{(byte)198, (byte)239, (byte)206}, null)); // ライトグリーン
-            normalStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-            normalStyle.setAlignment(HorizontalAlignment.CENTER);
-
             // ソート済みスタッフリストを取得
             List<StaffData> sortedStaff = getSortedStaffList();
 
@@ -2517,7 +2490,7 @@ public class AssignmentEditorGUI extends JFrame {
                 normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
                 ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
 
-                // スタッフの最初の行を記録
+                // スタッフの最初の行を記録（リネン担当階を書き込むため）
                 int staffFirstRow = currentRow;
 
                 // 通常清掃部屋を出力
@@ -2543,77 +2516,33 @@ public class AssignmentEditorGUI extends JFrame {
                 if (staff.isLinenClosetCleaning && staff.linenClosetFloors != null
                         && !staff.linenClosetFloors.isEmpty()) {
                     Row firstRow = sheet.getRow(staffFirstRow);
-                    if (firstRow == null) firstRow = sheet.createRow(staffFirstRow);
-                    Cell cellLinen = firstRow.createCell(4);
-                    List<Integer> sortedFloors = new ArrayList<>(staff.linenClosetFloors);
-                    Collections.sort(sortedFloors);
-                    StringBuilder floorSb = new StringBuilder();
-                    for (int i = 0; i < sortedFloors.size(); i++) {
-                        if (i > 0) floorSb.append(",");
-                        int f = sortedFloors.get(i);
-                        if (f > 20) {
-                            floorSb.append("別").append(f - 20);
-                        } else {
-                            floorSb.append(f);
+                    if (firstRow != null) {
+                        Cell cellLinen = firstRow.createCell(4);
+                        // 階番号をソートして "2,8F" 形式で出力
+                        List<Integer> sortedFloors = new ArrayList<>(staff.linenClosetFloors);
+                        Collections.sort(sortedFloors);
+                        StringBuilder floorSb = new StringBuilder();
+                        for (int i = 0; i < sortedFloors.size(); i++) {
+                            if (i > 0) floorSb.append(",");
+                            int f = sortedFloors.get(i);
+                            if (f > 20) {
+                                floorSb.append("別").append(f - 20);
+                            } else {
+                                floorSb.append(f);
+                            }
                         }
+                        floorSb.append("F");
+                        cellLinen.setCellValue(floorSb.toString());
                     }
-                    floorSb.append("F");
-                    cellLinen.setCellValue(floorSb.toString());
-                }
-
-                // スタッフ最初の行を取得（集計出力用）
-                Row firstRow = sheet.getRow(staffFirstRow);
-                if (firstRow == null) firstRow = sheet.createRow(staffFirstRow);
-
-                // F〜I列: エコ部屋タイプ別カウント（水色）
-                {
-                    int ecoS = 0, ecoT = 0, ecoD = 0, ecoFD = 0;
-                    for (FileProcessor.Room room : ecoRooms) {
-                        switch (room.roomType) {
-                            case "S": case "NS": case "ANS": case "ABF": case "AKS": ecoS++; break;
-                            case "T": case "NT": case "ANT": case "ADT": ecoT++; break;
-                            case "D": case "ND": case "AND": ecoD++; break;
-                            case "FD": ecoFD++; break;
-                        }
-                    }
-                    if (ecoS > 0)  { Cell c = firstRow.createCell(5); c.setCellValue(ecoS);  c.setCellStyle(ecoStyle); }
-                    if (ecoT > 0)  { Cell c = firstRow.createCell(6); c.setCellValue(ecoT);  c.setCellStyle(ecoStyle); }
-                    if (ecoD > 0)  { Cell c = firstRow.createCell(7); c.setCellValue(ecoD);  c.setCellStyle(ecoStyle); }
-                    if (ecoFD > 0) { Cell c = firstRow.createCell(8); c.setCellValue(ecoFD); c.setCellStyle(ecoStyle); }
-                }
-
-                // J〜M列: 通常清掃部屋タイプ別カウント（薄緑）
-                {
-                    int normS = 0, normT = 0, normD = 0, normFD = 0;
-                    for (FileProcessor.Room room : normalRooms) {
-                        switch (room.roomType) {
-                            case "S": case "NS": case "ANS": case "ABF": case "AKS": normS++; break;
-                            case "T": case "NT": case "ANT": case "ADT": normT++; break;
-                            case "D": case "ND": case "AND": normD++; break;
-                            case "FD": normFD++; break;
-                        }
-                    }
-                    if (normS > 0)  { Cell c = firstRow.createCell(9);  c.setCellValue(normS);  c.setCellStyle(normalStyle); }
-                    if (normT > 0)  { Cell c = firstRow.createCell(10); c.setCellValue(normT);  c.setCellStyle(normalStyle); }
-                    if (normD > 0)  { Cell c = firstRow.createCell(11); c.setCellValue(normD);  c.setCellStyle(normalStyle); }
-                    if (normFD > 0) { Cell c = firstRow.createCell(12); c.setCellValue(normFD); c.setCellStyle(normalStyle); }
                 }
             }
 
             // 列幅を調整
-            sheet.setColumnWidth(0, 12 * 256);  // A: 担当
-            sheet.setColumnWidth(1, 8 * 256);   // B: 部屋番号
-            sheet.setColumnWidth(2, 6 * 256);   // C: 連泊
-            sheet.setColumnWidth(3, 12 * 256);  // D: エコ清掃/エコドア入室禁止
-            sheet.setColumnWidth(4, 10 * 256);  // E: リネン担当階
-            sheet.setColumnWidth(5, 5 * 256);   // F: エコS
-            sheet.setColumnWidth(6, 5 * 256);   // G: エコT
-            sheet.setColumnWidth(7, 5 * 256);   // H: エコD
-            sheet.setColumnWidth(8, 5 * 256);   // I: エコFD
-            sheet.setColumnWidth(9, 5 * 256);   // J: 通S
-            sheet.setColumnWidth(10, 5 * 256);  // K: 通T
-            sheet.setColumnWidth(11, 5 * 256);  // L: 通D
-            sheet.setColumnWidth(12, 5 * 256);  // M: 通FD
+            sheet.setColumnWidth(0, 12 * 256);  // 担当: 12文字幅
+            sheet.setColumnWidth(1, 8 * 256);   // 部屋: 8文字幅
+            sheet.setColumnWidth(2, 6 * 256);   // 連泊: 6文字幅
+            sheet.setColumnWidth(3, 12 * 256);  // エコ清掃/エコドア入室禁止: 12文字幅
+            sheet.setColumnWidth(4, 10 * 256);  // リネン担当階: 10文字幅
 
             // ファイルに保存
             try (FileOutputStream fos = new FileOutputStream(filePath)) {

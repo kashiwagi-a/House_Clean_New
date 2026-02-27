@@ -72,6 +72,14 @@ public class RoomAssignmentApplication extends JFrame {
             this.isBathCleaningStaff = isBathCleaningStaff;
         }
 
+        public StaffPointConstraint(String staffId, String staffName,
+                                    ConstraintType constraintType,
+                                    BuildingAssignment buildingAssignment,
+                                    double upperLimit, double lowerMinLimit, double lowerMaxLimit) {
+            this(staffId, staffName, constraintType, buildingAssignment,
+                    upperLimit, lowerMinLimit, lowerMaxLimit, false);
+        }
+
         public enum ConstraintType {
             NONE("制限なし"),
             UPPER_LIMIT("故障者制限"),
@@ -104,6 +112,10 @@ public class RoomAssignmentApplication extends JFrame {
                     return "制限なし";
             }
         }
+
+        public String getBathCleaningDisplay() {
+            return isBathCleaningStaff ? "担当" : "";
+        }
     }
 
     public static class ProcessingResult {
@@ -115,6 +127,18 @@ public class RoomAssignmentApplication extends JFrame {
         public final AdaptiveRoomOptimizer.MultiOptimizationResult multiOptimizationResult;
         public final int totalSolutionCount;
         private int currentSolutionIndex;
+
+        // 従来のコンストラクタ（単一解用）
+        public ProcessingResult(FileProcessor.CleaningData cleaningData,
+                                AdaptiveRoomOptimizer.OptimizationResult optimizationResult,
+                                Map<String, List<FileProcessor.Room>> detailedAssignments) {
+            this.cleaningDataObj = cleaningData;
+            this.optimizationResult = optimizationResult;
+            this.detailedRoomAssignments = detailedAssignments;
+            this.multiOptimizationResult = null;
+            this.totalSolutionCount = 1;
+            this.currentSolutionIndex = 0;
+        }
 
         // ★追加: 複数解用コンストラクタ
         public ProcessingResult(FileProcessor.CleaningData cleaningData,
@@ -136,6 +160,13 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         /**
+         * ★追加: 現在の解のインデックスを取得
+         */
+        public int getCurrentSolutionIndex() {
+            return currentSolutionIndex;
+        }
+
+        /**
          * ★追加: 現在の解のインデックスを設定
          */
         public void setCurrentSolutionIndex(int index) {
@@ -152,6 +183,13 @@ public class RoomAssignmentApplication extends JFrame {
                 return multiOptimizationResult.toSingleResult(index);
             }
             return optimizationResult;
+        }
+
+        /**
+         * ★追加: 現在選択中の解を取得
+         */
+        public AdaptiveRoomOptimizer.OptimizationResult getCurrentOptimizationResult() {
+            return getOptimizationResult(currentSolutionIndex);
         }
     }
 
@@ -721,55 +759,38 @@ public class RoomAssignmentApplication extends JFrame {
             AdaptiveRoomOptimizer.BathCleaningType bathType,
             List<AdaptiveRoomOptimizer.FloorInfo> floors) {
 
-        // ★★修正: FileProcessorから部屋データを読み込んで6区分に集計（ECO対応）
+        // ★修正: ECO部屋はCP-SATが自動配分するため、通常室（シングル等・ツイン）のみ集計
         int totalMainSingleRooms = 0;
         int totalMainTwinRooms = 0;
         int totalAnnexSingleRooms = 0;
         int totalAnnexTwinRooms = 0;
-        int ecoMainRooms = 0;      // ★★修正: メソッドスコープに移動（try-catchの外）
-        int ecoAnnexRooms = 0;     // ★★修正: メソッドスコープに移動（try-catchの外）
 
         try {
-            // selectedRoomFileから部屋データを読み込み
             FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
 
-            // ★★修正: ECO部屋数カウント用の変数は上部で宣言済み
-
-            // 本館の部屋タイプ集計（エコ清掃の部屋を分離カウント）
             for (FileProcessor.Room room : cleaningData.mainRooms) {
-                if (room.isEcoClean) {
-                    ecoMainRooms++;  // エコ清掃の部屋数をカウント
+                if (room.isEcoClean) continue; // ECOはスキップ（CP-SATが担当）
+                if ("T".equals(room.roomType)) {
+                    totalMainTwinRooms++;
                 } else {
-                    // 通常清掃の部屋のみカウント
-                    if ("T".equals(room.roomType)) {
-                        totalMainTwinRooms++;
-                    } else {
-                        totalMainSingleRooms++;
-                    }
+                    totalMainSingleRooms++;
                 }
             }
 
-            // 別館の部屋タイプ集計（エコ清掃の部屋を分離カウント）
             for (FileProcessor.Room room : cleaningData.annexRooms) {
-                if (room.isEcoClean) {
-                    ecoAnnexRooms++;  // エコ清掃の部屋数をカウント
+                if (room.isEcoClean) continue; // ECOはスキップ（CP-SATが担当）
+                if ("T".equals(room.roomType)) {
+                    totalAnnexTwinRooms++;
                 } else {
-                    // 通常清掃の部屋のみカウント
-                    if ("T".equals(room.roomType)) {
-                        totalAnnexTwinRooms++;
-                    } else {
-                        totalAnnexSingleRooms++;
-                    }
+                    totalAnnexSingleRooms++;
                 }
             }
 
-            // ★★修正: ログにECO部屋数も出力
-            appendLog(String.format("部屋タイプ集計: 本館(S:%d, T:%d, E:%d), 別館(S:%d, T:%d, E:%d)",
-                    totalMainSingleRooms, totalMainTwinRooms, ecoMainRooms,
-                    totalAnnexSingleRooms, totalAnnexTwinRooms, ecoAnnexRooms));
+            appendLog(String.format("部屋タイプ集計: 本館(S:%d, T:%d), 別館(S:%d, T:%d) ※ECOはCP-SAT自動配分",
+                    totalMainSingleRooms, totalMainTwinRooms,
+                    totalAnnexSingleRooms, totalAnnexTwinRooms));
 
         } catch (Exception e) {
-            // エラー時は全てシングル等として扱う（ECOは0のまま）
             totalMainSingleRooms = mainRooms;
             totalAnnexSingleRooms = annexRooms;
             appendLog("警告: 部屋タイプ集計中にエラーが発生しました。全てシングル等として扱います。");
@@ -780,15 +801,13 @@ public class RoomAssignmentApplication extends JFrame {
                 .map(s -> s.name)
                 .collect(Collectors.toList());
 
-        // ★★修正: ECO対応の6区分コンストラクタを使用
+        // ECO配分はCP-SATが自動実施するため、通常室のみを渡す
         NormalRoomDistributionDialog dialog = new NormalRoomDistributionDialog(
                 parentFrame,
                 totalMainSingleRooms,
                 totalMainTwinRooms,
-                ecoMainRooms,          // ★★追加: 本館ECO部屋数
                 totalAnnexSingleRooms,
                 totalAnnexTwinRooms,
-                ecoAnnexRooms,         // ★★追加: 別館ECO部屋数
                 pointConstraints,
                 staffNamesList,
                 bathType);
@@ -1061,7 +1080,25 @@ public class RoomAssignmentApplication extends JFrame {
         return constraints;
     }
 
-       private AdaptiveRoomOptimizer.BathCleaningType selectBathCleaningType() {
+    private AdaptiveRoomOptimizer.AdaptiveLoadConfig createAdaptiveConfigWithPointConstraints(
+            List<FileProcessor.Staff> availableStaff,
+            int totalRooms,
+            int mainBuildingRooms,
+            int annexBuildingRooms,
+            AdaptiveRoomOptimizer.BathCleaningType bathType,
+            List<StaffPointConstraint> pointConstraints) {
+
+        return AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithBathSelection(
+                availableStaff,
+                totalRooms,
+                mainBuildingRooms,
+                annexBuildingRooms,
+                bathType,
+                pointConstraints,
+                null);  // roomDistributionなし（ECOはCP-SATが自動配分）
+    }
+
+    private AdaptiveRoomOptimizer.BathCleaningType selectBathCleaningType() {
         String[] options = {
                 AdaptiveRoomOptimizer.BathCleaningType.NONE.displayName,
                 AdaptiveRoomOptimizer.BathCleaningType.NORMAL.displayName,

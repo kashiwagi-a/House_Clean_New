@@ -56,7 +56,43 @@ public class RoomAssignmentCPSATOptimizer {
 
     // フロアあたりの最大スタッフ数（初期値と上限）
     private static final int INITIAL_MAX_STAFF_PER_FLOOR = 2;
-    private static final int MAX_STAFF_PER_FLOOR_LIMIT = 5;
+    private static final int MAX_STAFF_PER_FLOOR_LIMIT   = 3;
+
+    /**
+     * 段階的緩和設定クラス
+     * 完全解が見つからない場合に段階的に制約を緩和するための設定を保持する。
+     * 本館の緩和ステップ:
+     *   Step1: 制約なし（1フロア3人制限のみ）
+     *   Step2: 大浴清掃スタッフの1フロア制限を解除（→2フロアまで許可）
+     *   Step3: 通常スタッフのうち1人だけ3フロアまで許可（最終手段）
+     * 別館の緩和ステップ:
+     *   Step1: 制約なし（1フロア3人制限のみ）
+     *   Step2: 通常スタッフのうち1人だけ3フロアまで許可（最終手段）
+     */
+    private static class RelaxationConfig {
+        /** 大浴清掃スタッフの1フロア制限を解除するか（本館Step2以降） */
+        final boolean releaseBathFloorLimit;
+        /** 通常スタッフのうち1人だけ3フロアまで許可するか（最終手段） */
+        final boolean allowOneStaffThreeFloors;
+
+        static final RelaxationConfig STEP1        = new RelaxationConfig(false, false);
+        static final RelaxationConfig STEP2_MAIN   = new RelaxationConfig(true,  false);
+        static final RelaxationConfig STEP3_MAIN   = new RelaxationConfig(true,  true);
+        static final RelaxationConfig STEP2_ANNEX  = new RelaxationConfig(false, true);
+
+        RelaxationConfig(boolean releaseBathFloorLimit, boolean allowOneStaffThreeFloors) {
+            this.releaseBathFloorLimit    = releaseBathFloorLimit;
+            this.allowOneStaffThreeFloors = allowOneStaffThreeFloors;
+        }
+
+        @Override
+        public String toString() {
+            if (!releaseBathFloorLimit && !allowOneStaffThreeFloors) return "Step1(制約なし)";
+            if (releaseBathFloorLimit  && !allowOneStaffThreeFloors) return "Step2(大浴制限解除)";
+            if (releaseBathFloorLimit  &&  allowOneStaffThreeFloors) return "Step3(1人3フロア許可+大浴制限解除)";
+            return "Step2別館(1人3フロア許可)";
+        }
+    }
 
     static {
         com.google.ortools.Loader.loadNativeLibraries();
@@ -395,23 +431,38 @@ public class RoomAssignmentCPSATOptimizer {
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> mainSolutions = new ArrayList<>();
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> annexSolutions = new ArrayList<>();
 
-        // 本館複数解最適化
+        // 本館複数解最適化（2人→3人→緩和ステップ）
         if (!mainConfig.extendedStaffInfo.isEmpty() && mainOnlyData.mainRoomCount > 0) {
             LOGGER.info("=== 本館独立CPSAT複数解最適化を開始 ===");
+            // Step1: 1フロア2人→3人で試行
             for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
-                        optimizeWithStaffPerFloorLimitMultiple(mainOnlyData, mainConfig,
-                                existingAssignments, maxStaffPerFloor, originalConfig, maxSolutions);
+                        optimizeWithRelaxationMultiple(mainOnlyData, mainConfig,
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor);
                 if (results != null && !results.isEmpty()) {
-                    LOGGER.info(String.format("本館: フロアあたり最大%d人制限で%d個の解が見つかりました。",
-                            maxStaffPerFloor, results.size()));
+                    LOGGER.info(String.format("本館: 1フロア最大%d人制限で%d個の解が見つかりました。", maxStaffPerFloor, results.size()));
                     mainSolutions = results;
                     break;
                 }
-                if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
-                    LOGGER.warning(String.format("本館: フロアあたり%d人制限では解なし、%d人制限で再試行",
-                            maxStaffPerFloor, maxStaffPerFloor + 1));
+                LOGGER.warning(String.format("本館: 1フロア%d人制限では完全解なし。", maxStaffPerFloor));
+            }
+            // Step2以降の緩和（3人でも解なしの場合）
+            if (mainSolutions.isEmpty()) {
+                RelaxationConfig[] relaxSteps = {
+                        RelaxationConfig.STEP2_MAIN,
+                        RelaxationConfig.STEP3_MAIN
+                };
+                for (RelaxationConfig step : relaxSteps) {
+                    List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
+                            optimizeWithRelaxationMultiple(mainOnlyData, mainConfig,
+                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT);
+                    if (results != null && !results.isEmpty()) {
+                        LOGGER.info(String.format("本館: %s で%d個の解が見つかりました。", step, results.size()));
+                        mainSolutions = results;
+                        break;
+                    }
+                    LOGGER.warning("本館: " + step + " では完全解なし。次のステップへ。");
                 }
             }
             if (mainSolutions.isEmpty()) {
@@ -423,23 +474,30 @@ public class RoomAssignmentCPSATOptimizer {
             mainSolutions.add(new ArrayList<>());
         }
 
-        // 別館複数解最適化
+        // 別館複数解最適化（2人→3人→緩和ステップ）
         if (!annexConfig.extendedStaffInfo.isEmpty() && annexOnlyData.annexRoomCount > 0) {
             LOGGER.info("=== 別館独立CPSAT複数解最適化を開始 ===");
+            // Step1: 1フロア2人→3人で試行
             for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
-                        optimizeWithStaffPerFloorLimitMultiple(annexOnlyData, annexConfig,
-                                existingAssignments, maxStaffPerFloor, originalConfig, maxSolutions);
+                        optimizeWithRelaxationMultiple(annexOnlyData, annexConfig,
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor);
                 if (results != null && !results.isEmpty()) {
-                    LOGGER.info(String.format("別館: フロアあたり最大%d人制限で%d個の解が見つかりました。",
-                            maxStaffPerFloor, results.size()));
+                    LOGGER.info(String.format("別館: 1フロア最大%d人制限で%d個の解が見つかりました。", maxStaffPerFloor, results.size()));
                     annexSolutions = results;
                     break;
                 }
-                if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
-                    LOGGER.warning(String.format("別館: フロアあたり%d人制限では解なし、%d人制限で再試行",
-                            maxStaffPerFloor, maxStaffPerFloor + 1));
+                LOGGER.warning(String.format("別館: 1フロア%d人制限では完全解なし。", maxStaffPerFloor));
+            }
+            // Step2（最終手段）の緩和（3人でも解なしの場合）
+            if (annexSolutions.isEmpty()) {
+                List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
+                        optimizeWithRelaxationMultiple(annexOnlyData, annexConfig,
+                                existingAssignments, RelaxationConfig.STEP2_ANNEX, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT);
+                if (results != null && !results.isEmpty()) {
+                    LOGGER.info(String.format("別館: %s で%d個の解が見つかりました。", RelaxationConfig.STEP2_ANNEX, results.size()));
+                    annexSolutions = results;
                 }
             }
             if (annexSolutions.isEmpty()) {
@@ -599,51 +657,75 @@ public class RoomAssignmentCPSATOptimizer {
         List<AdaptiveRoomOptimizer.StaffAssignment> mainResult = new ArrayList<>();
         List<AdaptiveRoomOptimizer.StaffAssignment> annexResult = new ArrayList<>();
 
-        // 本館最適化
+        // 本館最適化（2人→3人→緩和ステップ）
         if (!mainConfig.extendedStaffInfo.isEmpty() && mainOnlyData.mainRoomCount > 0) {
             LOGGER.info("=== 本館独立CPSAT最適化を開始 ===");
+            // Step1: 1フロア2人→3人で試行
             for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<AdaptiveRoomOptimizer.StaffAssignment> result =
-                        optimizeWithStaffPerFloorLimit(mainOnlyData, mainConfig,
-                                existingAssignments, maxStaffPerFloor, originalConfig);
+                        optimizeWithRelaxation(mainOnlyData, mainConfig,
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor);
                 if (result != null && !result.isEmpty()) {
-                    LOGGER.info(String.format("本館: フロアあたり最大%d人制限で解が見つかりました。", maxStaffPerFloor));
+                    LOGGER.info(String.format("本館: 1フロア最大%d人制限で完全解が見つかりました。", maxStaffPerFloor));
                     mainResult = result;
                     break;
                 }
-                if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
-                    LOGGER.warning(String.format("本館: フロアあたり%d人制限では解なし、%d人制限で再試行",
-                            maxStaffPerFloor, maxStaffPerFloor + 1));
+                LOGGER.warning(String.format("本館: 1フロア%d人制限では完全解なし。", maxStaffPerFloor));
+            }
+            // Step2以降の緩和（3人でも解なしの場合）
+            if (mainResult.isEmpty()) {
+                RelaxationConfig[] relaxSteps = {
+                        RelaxationConfig.STEP2_MAIN,
+                        RelaxationConfig.STEP3_MAIN
+                };
+                for (RelaxationConfig step : relaxSteps) {
+                    List<AdaptiveRoomOptimizer.StaffAssignment> result =
+                            optimizeWithRelaxation(mainOnlyData, mainConfig,
+                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT);
+                    if (result != null && !result.isEmpty()) {
+                        LOGGER.info("本館: " + step + " で完全解が見つかりました。");
+                        mainResult = result;
+                        break;
+                    }
+                    LOGGER.warning("本館: " + step + " では完全解なし。次のステップへ。");
                 }
             }
             if (mainResult.isEmpty()) {
-                LOGGER.warning("本館: 完全解が見つかりませんでした。未割当が発生します。");
+                LOGGER.warning("本館: 全ステップで完全解が見つかりませんでした。未割当が発生します。");
             }
         } else {
             LOGGER.info("本館: 対象スタッフまたは部屋なし、スキップ");
         }
 
-        // 別館最適化
+        // 別館最適化（2人→3人→緩和ステップ）
         if (!annexConfig.extendedStaffInfo.isEmpty() && annexOnlyData.annexRoomCount > 0) {
             LOGGER.info("=== 別館独立CPSAT最適化を開始 ===");
+            // Step1: 1フロア2人→3人で試行
             for (int maxStaffPerFloor = INITIAL_MAX_STAFF_PER_FLOOR;
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<AdaptiveRoomOptimizer.StaffAssignment> result =
-                        optimizeWithStaffPerFloorLimit(annexOnlyData, annexConfig,
-                                existingAssignments, maxStaffPerFloor, originalConfig);
+                        optimizeWithRelaxation(annexOnlyData, annexConfig,
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor);
                 if (result != null && !result.isEmpty()) {
-                    LOGGER.info(String.format("別館: フロアあたり最大%d人制限で解が見つかりました。", maxStaffPerFloor));
+                    LOGGER.info(String.format("別館: 1フロア最大%d人制限で完全解が見つかりました。", maxStaffPerFloor));
                     annexResult = result;
                     break;
                 }
-                if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
-                    LOGGER.warning(String.format("別館: フロアあたり%d人制限では解なし、%d人制限で再試行",
-                            maxStaffPerFloor, maxStaffPerFloor + 1));
+                LOGGER.warning(String.format("別館: 1フロア%d人制限では完全解なし。", maxStaffPerFloor));
+            }
+            // Step2（最終手段）の緩和（3人でも解なしの場合）
+            if (annexResult.isEmpty()) {
+                List<AdaptiveRoomOptimizer.StaffAssignment> result =
+                        optimizeWithRelaxation(annexOnlyData, annexConfig,
+                                existingAssignments, RelaxationConfig.STEP2_ANNEX, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT);
+                if (result != null && !result.isEmpty()) {
+                    LOGGER.info("別館: " + RelaxationConfig.STEP2_ANNEX + " で完全解が見つかりました。");
+                    annexResult = result;
                 }
             }
             if (annexResult.isEmpty()) {
-                LOGGER.warning("別館: 完全解が見つかりませんでした。未割当が発生します。");
+                LOGGER.warning("別館: 全ステップで完全解が見つかりませんでした。未割当が発生します。");
             }
         } else {
             LOGGER.info("別館: 対象スタッフまたは部屋なし、スキップ");
@@ -653,30 +735,29 @@ public class RoomAssignmentCPSATOptimizer {
     }
 
     /**
-     * フロアあたりのスタッフ数制限付きCPSAT最適化
-     * ★修正: ツイン＋シングル統合CP-SAT（ラウンドロビン廃止）
+     * 緩和設定付きCPSAT最適化（単一解）
+     * 完全解が見つかった場合のみ返す。見つからない場合はnullを返し呼び出し側が次のステップへ進む。
+     * 全ステップで完全解なしの場合は最終ステップで部分解を使用する。
      */
-    private static List<AdaptiveRoomOptimizer.StaffAssignment> optimizeWithStaffPerFloorLimit(
+    private static List<AdaptiveRoomOptimizer.StaffAssignment> optimizeWithRelaxation(
             AdaptiveRoomOptimizer.BuildingData buildingData,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
             Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
-            int maxStaffPerFloor,
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig) {
+            RelaxationConfig relaxConfig,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
+            int maxStaffPerFloor) {
 
-        LOGGER.info(String.format("=== 残りスタッフのCPSAT最適化（フロアあたり最大%d人）===", maxStaffPerFloor));
+        LOGGER.info(String.format("=== CPSAT最適化（%s, 1フロア最大%d人）===", relaxConfig, maxStaffPerFloor));
 
         List<Map<String, TwinAssignment>> twinPatterns = generateTwinPatterns(buildingData, config);
-
         if (twinPatterns.isEmpty()) {
             LOGGER.warning("ツインパターンが生成されませんでした。空の結果を返します。");
             return new ArrayList<>();
         }
 
         Map<String, TwinAssignment> twinPattern = twinPatterns.get(0);
-
-        // ★統合CP-SAT: ツインのフロア配置もソルバーが決定
         List<PartialSolutionResult> results =
-                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, 1);
+                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, 1);
 
         for (PartialSolutionResult result : results) {
             if (result.shortage == 0) {
@@ -685,38 +766,36 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // 完全解がない場合：最大制限に達していなければnullを返して次の制限で再試行
-        if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
-            return null;
-        }
-
-        // 最大制限でも完全解がない場合は部分解を使用
-        if (!results.isEmpty()) {
+        // 最終手段ステップ（allowOneStaffThreeFloors=true）でも解なしの場合は部分解を返す
+        if (relaxConfig.allowOneStaffThreeFloors && !results.isEmpty()) {
             results.sort((a, b) -> Integer.compare(a.shortage, b.shortage));
             PartialSolutionResult best = results.get(0);
-            LOGGER.warning("=== 完全な解が見つかりませんでした ===");
+            LOGGER.warning("=== 完全な解が見つかりませんでした（最終手段まで試行済み）===");
             LOGGER.warning(String.format("最良の部分解を使用: 割り振り済み=%d室 / 目標=%d室（未割当=%d室）",
                     best.totalAssignedRooms, best.totalTargetRooms, best.shortage));
             return best.assignments;
         }
 
+        // 完全解なし → 次のステップへ
         return null;
     }
 
     /**
-     * ★修正: 複数解を返すフロアあたりのスタッフ数制限付きCPSAT最適化
-     * ツイン＋シングル統合CP-SAT（ラウンドロビン廃止）
+     * 緩和設定付きCPSAT最適化（複数解）
+     * 完全解が見つかった場合のみリストを返す。見つからない場合はnullを返し呼び出し側が次のステップへ進む。
+     * 最終手段ステップでも完全解なしの場合は部分解リストを返す。
      */
-    private static List<List<AdaptiveRoomOptimizer.StaffAssignment>> optimizeWithStaffPerFloorLimitMultiple(
+    private static List<List<AdaptiveRoomOptimizer.StaffAssignment>> optimizeWithRelaxationMultiple(
             AdaptiveRoomOptimizer.BuildingData buildingData,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
             Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
-            int maxStaffPerFloor,
+            RelaxationConfig relaxConfig,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
-            int maxSolutions) {
+            int maxSolutions,
+            int maxStaffPerFloor) {
 
-        LOGGER.info(String.format("=== 残りスタッフのCPSAT複数解最適化（フロアあたり最大%d人、最大%d解）===",
-                maxStaffPerFloor, maxSolutions));
+        LOGGER.info(String.format("=== CPSAT複数解最適化（%s, 1フロア最大%d人, 最大%d解）===",
+                relaxConfig, maxStaffPerFloor, maxSolutions));
 
         // === 各建物・各階の部屋数をログ出力 ===
         LOGGER.info("=== 建物フロア別 部屋数一覧 ===");
@@ -724,9 +803,7 @@ public class RoomAssignmentCPSATOptimizer {
             StringBuilder sb = new StringBuilder();
             sb.append(String.format("  本館 %dF: ", floor.floorNumber));
             for (Map.Entry<String, Integer> e : floor.roomCounts.entrySet()) {
-                if (e.getValue() > 0) {
-                    sb.append(String.format("%s=%d ", e.getKey(), e.getValue()));
-                }
+                if (e.getValue() > 0) sb.append(String.format("%s=%d ", e.getKey(), e.getValue()));
             }
             sb.append(String.format("(ECO=%d, 合計=%d)", floor.ecoRooms, floor.getTotalNormalRooms()));
             LOGGER.info(sb.toString());
@@ -735,86 +812,67 @@ public class RoomAssignmentCPSATOptimizer {
             StringBuilder sb = new StringBuilder();
             sb.append(String.format("  別館 %dF: ", floor.floorNumber));
             for (Map.Entry<String, Integer> e : floor.roomCounts.entrySet()) {
-                if (e.getValue() > 0) {
-                    sb.append(String.format("%s=%d ", e.getKey(), e.getValue()));
-                }
+                if (e.getValue() > 0) sb.append(String.format("%s=%d ", e.getKey(), e.getValue()));
             }
             sb.append(String.format("(ECO=%d, 合計=%d)", floor.ecoRooms, floor.getTotalNormalRooms()));
             LOGGER.info(sb.toString());
         }
 
         List<Map<String, TwinAssignment>> twinPatterns = generateTwinPatterns(buildingData, config);
-
         if (twinPatterns.isEmpty()) {
             LOGGER.warning("ツインパターンが生成されませんでした。空の結果を返します。");
             return new ArrayList<>();
         }
 
         Map<String, TwinAssignment> twinPattern = twinPatterns.get(0);
-
-        // ★統合CP-SAT: ツインのフロア配置もソルバーが決定（nogoodループで複数解探索）
         List<PartialSolutionResult> allResults =
-                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, maxSolutions);
+                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, maxSolutions);
 
-        // 完全解と部分解を分離
-        // ★修正: 完全解の条件は shortage==0 AND ecoShortage==0 の両方が必要
-        // （修正前は shortage==0 のみで判定していたため、ECO 1室未割当の部分解を
-        //   「完全解」と誤認し、ECO shortage=0 の真の完全解を探索せずに終了していた）
+        // 完全解・ECO部分解・部分解を分離
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> completeSolutions = new ArrayList<>();
-        List<PartialSolutionResult> ecoPartialResults = new ArrayList<>();  // シングルOK・ECO不足
-        List<PartialSolutionResult> partialResults = new ArrayList<>();      // シングルも不足
+        List<PartialSolutionResult> ecoPartialResults = new ArrayList<>();
+        List<PartialSolutionResult> partialResults    = new ArrayList<>();
 
         for (PartialSolutionResult result : allResults) {
             if (result.shortage == 0 && result.ecoShortage == 0) {
-                // 真の完全解（通常室もECOも全て割り当て済み）
-                if (completeSolutions.size() < maxSolutions) {
-                    if (!isDuplicateSolution(completeSolutions, result.assignments)) {
-                        completeSolutions.add(result.assignments);
-                        LOGGER.info(String.format("完全解 %d を発見（ECO shortage=%d）",
-                                completeSolutions.size(), result.ecoShortage));
-                    }
+                if (completeSolutions.size() < maxSolutions &&
+                        !isDuplicateSolution(completeSolutions, result.assignments)) {
+                    completeSolutions.add(result.assignments);
+                    LOGGER.info(String.format("完全解 %d を発見", completeSolutions.size()));
                 }
             } else if (result.shortage == 0) {
-                // シングルはOKだがECOが不足している部分解
                 ecoPartialResults.add(result);
             } else {
-                // シングルも不足している部分解
                 partialResults.add(result);
             }
         }
 
-        // 真の完全解が見つかった場合はそれを返す
+        // 完全解が見つかった場合はそれを返す
         if (!completeSolutions.isEmpty()) {
             LOGGER.info(String.format("合計 %d 個の完全解を発見", completeSolutions.size()));
             return completeSolutions;
         }
 
-        // 完全解がない場合：最大制限に達していなければnullを返して次の制限で再試行
-        if (maxStaffPerFloor < MAX_STAFF_PER_FLOOR_LIMIT) {
+        // 最終手段ステップ以外は null を返して次のステップへ
+        if (!relaxConfig.allowOneStaffThreeFloors) {
             return null;
         }
 
-        // 最大制限でも完全解がない場合は、ECO部分解（シングルOK）を優先して返す
+        // 最終手段ステップでも完全解なし → ECO部分解、次いで部分解を返す
         if (!ecoPartialResults.isEmpty()) {
             LOGGER.warning("=== ECO完全解が見つかりませんでした。ECO部分解（シングルOK）を使用します ===");
-
             ecoPartialResults.sort((a, b) -> Integer.compare(a.ecoShortage, b.ecoShortage));
-
             List<List<AdaptiveRoomOptimizer.StaffAssignment>> results = new ArrayList<>();
             for (int i = 0; i < Math.min(maxSolutions, ecoPartialResults.size()); i++) {
-                LOGGER.warning(String.format("  ECO部分解 %d: ECO shortage=%d",
-                        i + 1, ecoPartialResults.get(i).ecoShortage));
+                LOGGER.warning(String.format("  ECO部分解 %d: ECO shortage=%d", i + 1, ecoPartialResults.get(i).ecoShortage));
                 results.add(ecoPartialResults.get(i).assignments);
             }
             return results;
         }
 
-        // シングルも不足している部分解を返す
         if (!partialResults.isEmpty()) {
             LOGGER.warning("=== 完全な解が見つかりませんでした。部分解を使用します ===");
-
             partialResults.sort((a, b) -> Integer.compare(a.shortage, b.shortage));
-
             List<List<AdaptiveRoomOptimizer.StaffAssignment>> results = new ArrayList<>();
             for (int i = 0; i < Math.min(maxSolutions, partialResults.size()); i++) {
                 results.add(partialResults.get(i).assignments);
@@ -932,6 +990,7 @@ public class RoomAssignmentCPSATOptimizer {
             AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
             Map<String, TwinAssignment> twinPattern,
             int maxStaffPerFloor,
+            RelaxationConfig relaxConfig,
             int maxSolutions) {
 
         CpModel model = new CpModel();
@@ -1161,59 +1220,104 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // === フロア制限（建物別） ===
+        // === フロア制限（建物別）+ 緩和設定適用 ===
+        // "1人だけ3フロア許可"用のextended変数（本館・別館それぞれ最大1人）
+        List<BoolVar> extendedMainVars  = new ArrayList<>();
+        List<BoolVar> extendedAnnexVars = new ArrayList<>();
+
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
             String staffName = staffInfo.staff.name;
-            int maxMainFloors = 2;
+            int maxMainFloors  = 2;
             int maxAnnexFloors = 2;
 
             // 業者/リライアンスはフロア制限なし
             AdaptiveRoomOptimizer.PointConstraint constraint = config.pointConstraints.get(staffName);
+            boolean isVendor = false;
             if (constraint != null) {
                 String type = constraint.constraintType;
                 if (type.contains("業者") || type.contains("リライアンス")) {
-                    maxMainFloors = 99;
+                    maxMainFloors  = 99;
                     maxAnnexFloors = 99;
+                    isVendor = true;
                 }
             }
 
-            // 大浴清掃スタッフは1フロア制限（業者設定を上書き）
-            if (staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
-                maxMainFloors = 1;
-                maxAnnexFloors = 1;
+            // 大浴清掃スタッフのフロア制限
+            boolean isBathStaff = staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE;
+            if (isBathStaff) {
+                if (relaxConfig.releaseBathFloorLimit) {
+                    // Step2以降: 大浴スタッフも最大2フロアまで許可
+                    maxMainFloors  = Math.min(maxMainFloors, 2);
+                    maxAnnexFloors = Math.min(maxAnnexFloors, 2);
+                    LOGGER.info(String.format("大浴スタッフ %s: フロア制限緩和（最大2フロア）", staffName));
+                } else {
+                    // Step1: 大浴スタッフは1フロアのみ（業者設定を上書き）
+                    maxMainFloors  = 1;
+                    maxAnnexFloors = 1;
+                }
             }
 
             // 本館＋別館の両方担当の場合は各1フロアに制限
-            // ★修正: ECO事前割り当て数ではなく通常室のみで判定
             NormalRoomDistributionDialog.StaffDistribution dist =
-                    config.roomDistribution != null ?
-                            config.roomDistribution.get(staffName) : null;
+                    config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
             if (dist != null) {
-                int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+                int mainR  = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
                 int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
                 if (mainR > 0 && annexR > 0) {
-                    maxMainFloors = Math.min(maxMainFloors, 1);
+                    maxMainFloors  = Math.min(maxMainFloors, 1);
                     maxAnnexFloors = Math.min(maxAnnexFloors, 1);
                 }
             }
 
-            List<BoolVar> mainYVars = new ArrayList<>();
-            List<BoolVar> annexYVars = new ArrayList<>();
+            // yVarsを本館・別館に仕分け
+            List<BoolVar> mainYVarsList  = new ArrayList<>();
+            List<BoolVar> annexYVarsList = new ArrayList<>();
             for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
                 String yVarName = String.format("y_%s_%d", staffName, floor.floorNumber);
                 if (!yVars.containsKey(yVarName)) continue;
-                if (floor.isMainBuilding) {
-                    mainYVars.add(yVars.get(yVarName));
-                } else {
-                    annexYVars.add(yVars.get(yVarName));
-                }
+                if (floor.isMainBuilding) mainYVarsList.add(yVars.get(yVarName));
+                else                      annexYVarsList.add(yVars.get(yVarName));
             }
 
-            if (!mainYVars.isEmpty()) {
-                model.addLessOrEqual(LinearExpr.sum(mainYVars.toArray(new BoolVar[0])), maxMainFloors);
+            // "1人だけ3フロア許可"の適用対象:
+            //   業者・リライアンス以外 かつ 本館のmaxFloors==2（両方担当の1フロア制限スタッフは除外）
+            boolean eligibleMain  = !isVendor && !isBathStaff && maxMainFloors  == 2;
+            boolean eligibleAnnex = !isVendor && !isBathStaff && maxAnnexFloors == 2;
+
+            if (relaxConfig.allowOneStaffThreeFloors && eligibleMain && !mainYVarsList.isEmpty()) {
+                // このスタッフが「3フロア担当スタッフ」に選ばれた場合、maxFloors=3を許可
+                BoolVar extMain = model.newBoolVar("ext_main_" + staffName);
+                extendedMainVars.add(extMain);
+                // sum(mainY) ≤ 2 + extMain  （extMain=1なら3フロアOK、0なら2フロアまで）
+                model.addLessOrEqual(
+                        LinearExpr.sum(mainYVarsList.toArray(new BoolVar[0])),
+                        LinearExpr.newBuilder().add(2).addTerm(extMain, 1).build());
+            } else if (!mainYVarsList.isEmpty()) {
+                model.addLessOrEqual(
+                        LinearExpr.sum(mainYVarsList.toArray(new BoolVar[0])), maxMainFloors);
             }
-            if (!annexYVars.isEmpty()) {
-                model.addLessOrEqual(LinearExpr.sum(annexYVars.toArray(new BoolVar[0])), maxAnnexFloors);
+
+            if (relaxConfig.allowOneStaffThreeFloors && eligibleAnnex && !annexYVarsList.isEmpty()) {
+                BoolVar extAnnex = model.newBoolVar("ext_annex_" + staffName);
+                extendedAnnexVars.add(extAnnex);
+                model.addLessOrEqual(
+                        LinearExpr.sum(annexYVarsList.toArray(new BoolVar[0])),
+                        LinearExpr.newBuilder().add(2).addTerm(extAnnex, 1).build());
+            } else if (!annexYVarsList.isEmpty()) {
+                model.addLessOrEqual(
+                        LinearExpr.sum(annexYVarsList.toArray(new BoolVar[0])), maxAnnexFloors);
+            }
+        }
+
+        // 本館・別館それぞれで「3フロア担当スタッフ」は最大1人に限定
+        if (relaxConfig.allowOneStaffThreeFloors) {
+            if (extendedMainVars.size() >= 2) {
+                model.addLessOrEqual(LinearExpr.sum(extendedMainVars.toArray(new BoolVar[0])), 1);
+                LOGGER.info("本館: 3フロア担当スタッフを最大1人に制限");
+            }
+            if (extendedAnnexVars.size() >= 2) {
+                model.addLessOrEqual(LinearExpr.sum(extendedAnnexVars.toArray(new BoolVar[0])), 1);
+                LOGGER.info("別館: 3フロア担当スタッフを最大1人に制限");
             }
         }
 

@@ -49,6 +49,12 @@ public class FileProcessor {
             this.totalAnnexRooms = annexRooms.size();
             this.totalBrokenRooms = brokenRooms.size();
         }
+
+        // 後方互換性のためのコンストラクタ
+        public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
+                            List<Room> ecoRooms, List<Room> brokenRooms) {
+            this(mainRooms, annexRooms, ecoRooms, brokenRooms, new ArrayList<>());
+        }
     }
 
     // ★修正版Roomクラス（部屋状態情報追加）
@@ -177,6 +183,9 @@ public class FileProcessor {
         // 選択された故障部屋を取得
         Set<String> selectedBrokenRooms = getSelectedBrokenRooms();
 
+        // ★追加: 未チェックイン部屋の設定を取得
+        Map<String, String[]> pendingRoomSettings = getPendingRoomSettings();
+
         // ★デバッグ用カウンター
         int totalLinesProcessed = 0;
         int emptyRoomNumbers = 0;
@@ -230,6 +239,26 @@ public class FileProcessor {
 
                 // ★重要: 清掃状態は7列目（インデックス6）
                 String roomStatus = parts.length > 6 ? parts[6].trim() : "";
+
+                // ★追加: 未チェックイン部屋（状態1）に対してダイアログ設定を上書き適用
+                if ("1".equals(roomStatus) && pendingRoomSettings.containsKey(roomNumber)) {
+                    String[] setting = pendingRoomSettings.get(roomNumber);
+                    String overrideStatus = setting[0];
+                    boolean overrideEco   = Boolean.parseBoolean(setting[1]);
+                    LOGGER.info("未チェックイン設定を適用: " + roomNumber
+                            + " 状態:" + roomStatus + "→" + overrideStatus
+                            + (overrideEco ? ", エコ清掃ON" : ""));
+                    roomStatus = overrideStatus;
+                    // エコ上書きフラグを一時保存（後でecoRoomMapの判定に使用）
+                    if (overrideEco) {
+                        // ecoRoomMapに手動エントリとして追加
+                        String targetDateStr2 = targetDate.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE);
+                        ecoRoomMap.computeIfAbsent(targetDateStr2, k -> new HashMap<>())
+                                .putIfAbsent(roomNumber, "手動設定");
+                    }
+                    // 部屋状態マップも更新
+                    ROOM_STATUS_MAP.put(roomNumber, roomStatus);
+                }
 
                 // ★追加: 部屋状態をマップに保存
                 ROOM_STATUS_MAP.put(roomNumber, roomStatus);
@@ -480,6 +509,36 @@ public class FileProcessor {
         }
 
         return selectedRooms;
+    }
+
+    /**
+     * ★追加: 未チェックイン部屋の設定をSystemPropertyから取得する
+     * 形式: roomNumber:status:eco,roomNumber:status:eco,...
+     * 戻り値: Map<部屋番号, [状態コード, エコフラグ文字列]>
+     */
+    private static Map<String, String[]> getPendingRoomSettings() {
+        Map<String, String[]> settings = new HashMap<>();
+
+        String savedSettings = System.getProperty("pendingRoomSettings");
+        if (savedSettings == null || savedSettings.trim().isEmpty()) {
+            LOGGER.info("未チェックイン部屋の設定はありません");
+            return settings;
+        }
+
+        LOGGER.info("システムプロパティから未チェックイン部屋設定を取得: " + savedSettings);
+        for (String entry : savedSettings.split(",")) {
+            String[] tokens = entry.split(":");
+            if (tokens.length < 3) continue;
+            String roomNumber = tokens[0].trim();
+            String status     = tokens[1].trim();
+            String eco        = tokens[2].trim();
+            if (!roomNumber.isEmpty()) {
+                settings.put(roomNumber, new String[]{status, eco});
+            }
+        }
+
+        LOGGER.info("未チェックイン部屋設定: " + settings.size() + "室");
+        return settings;
     }
 
     // パターンからルームタイプを決定するメソッド（更新版）

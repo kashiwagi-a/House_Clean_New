@@ -33,6 +33,7 @@ public class RoomAssignmentApplication extends JFrame {
     private JButton selectEcoDataButton;
     private JButton selectDateButton;
     private JButton brokenRoomSettingsButton;
+    private JButton pendingRoomSettingsButton;
     private JButton processButton;
     private JButton viewResultsButton;
 
@@ -283,6 +284,15 @@ public class RoomAssignmentApplication extends JFrame {
         brokenRoomSettingsButton.setEnabled(false);
         panel.add(brokenRoomSettingsButton);
 
+        pendingRoomSettingsButton = new JButton("未チェックイン設定");
+        pendingRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
+        pendingRoomSettingsButton.setPreferredSize(new Dimension(150, 35));
+        pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
+        pendingRoomSettingsButton.setForeground(Color.BLACK);
+        pendingRoomSettingsButton.addActionListener(this::openPendingRoomSettings);
+        pendingRoomSettingsButton.setEnabled(false);
+        panel.add(pendingRoomSettingsButton);
+
         processButton = new JButton("処理実行");
         processButton.setFont(new Font("MS Gothic", Font.BOLD, 14));
         processButton.setPreferredSize(new Dimension(120, 35));
@@ -419,6 +429,56 @@ public class RoomAssignmentApplication extends JFrame {
             selectedEcoDataFile = fileChooser.getSelectedFile();
             selectEcoDataButton.setText(selectedEcoDataFile.getName());
             appendLog("エコ清掃データベースを選択しました: " + selectedEcoDataFile.getName());
+            updateButtonStates();
+        }
+    }
+
+    private void openPendingRoomSettings(ActionEvent e) {
+        if (selectedRoomFile == null || selectedEcoDataFile == null) {
+            JOptionPane.showMessageDialog(this,
+                    "部屋データファイルとエコデータベースを先に選択してください。",
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        try {
+            PendingRoomSelectionDialog dialog = new PendingRoomSelectionDialog(this, selectedRoomFile);
+            dialog.setVisible(true);
+
+            if (dialog.getDialogResult()) {
+                Map<String, PendingRoomSelectionDialog.PendingRoomInfo> pendingData = dialog.getPendingRoomData();
+
+                long changedCount = pendingData.values().stream()
+                        .filter(info -> !"1".equals(info.newStatus) || info.isEco)
+                        .count();
+
+                appendLog("未チェックイン部屋設定が完了しました:");
+                appendLog("  設定変更された部屋: " + changedCount + "室 / " + pendingData.size() + "室");
+
+                if (changedCount > 0) {
+                    pendingData.values().stream()
+                            .filter(info -> !"1".equals(info.newStatus) || info.isEco)
+                            .forEach(info -> appendLog("    " + info.roomNumber
+                                    + " → " + info.getStatusDisplay()
+                                    + (info.isEco ? ", エコ清掃" : "")));
+                }
+
+                if (changedCount > 0) {
+                    pendingRoomSettingsButton.setBackground(new Color(34, 139, 34));
+                    pendingRoomSettingsButton.setForeground(Color.BLACK);
+                    pendingRoomSettingsButton.setText("未チェックイン設定済み");
+                } else {
+                    pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
+                    pendingRoomSettingsButton.setForeground(Color.BLACK);
+                    pendingRoomSettingsButton.setText("未チェックイン設定");
+                }
+            }
+
+        } catch (Exception ex) {
+            LOGGER.severe("未チェックイン設定ダイアログでエラー: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this,
+                    "未チェックイン設定でエラーが発生しました: " + ex.getMessage(),
+                    "エラー", JOptionPane.ERROR_MESSAGE);
         }
     }
 
@@ -479,6 +539,7 @@ public class RoomAssignmentApplication extends JFrame {
         boolean canProcess = selectedRoomFile != null && selectedShiftFile != null && selectedDate != null;
         processButton.setEnabled(canProcess);
         brokenRoomSettingsButton.setEnabled(selectedRoomFile != null);
+        pendingRoomSettingsButton.setEnabled(selectedRoomFile != null && selectedEcoDataFile != null);
     }
 
     private void processData(ActionEvent e) {

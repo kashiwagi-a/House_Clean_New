@@ -548,20 +548,23 @@ public class FileProcessor {
                 roomTypeCode.equals("NS") ||
                 roomTypeCode.equals("ANS") ||
                 roomTypeCode.equals("ABF") ||
-                roomTypeCode.equals("AKS")) {
+                roomTypeCode.equals("AKS") ||
+                roomTypeCode.equals("ZS")) {
             return "S";
         }
         // ダブルルーム判定
         else if (roomTypeCode.equals("D") ||
                 roomTypeCode.equals("ND") ||
-                roomTypeCode.equals("AND")) {
+                roomTypeCode.equals("AND") ||
+                roomTypeCode.equals("ZD")) {
             return "D";
         }
         // ツインルーム判定
         else if (roomTypeCode.equals("T") ||
                 roomTypeCode.equals("NT") ||
                 roomTypeCode.equals("ANT") ||
-                roomTypeCode.equals("ADT")) {
+                roomTypeCode.equals("ADT") ||
+                roomTypeCode.equals("ZT")) {
             return "T";
         }
         // FDルーム判定

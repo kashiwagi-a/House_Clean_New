@@ -39,8 +39,12 @@ public class AdaptiveRoomOptimizer {
         public final Map<String, Integer> roomCounts;
         public final int ecoRooms;
         public final boolean isMainBuilding;
+        public final int checkoutRooms;   // ★追加: アウト清掃(roomStatus="2")室数
+        public final int stayoverRooms;   // ★追加: 連泊(roomStatus="3")室数
 
-        public FloorInfo(int floorNumber, Map<String, Integer> roomCounts, int ecoRooms, boolean isMainBuilding) {
+        // ★追加: checkout/stayover情報付きコンストラクタ
+        public FloorInfo(int floorNumber, Map<String, Integer> roomCounts, int ecoRooms, boolean isMainBuilding,
+                         int checkoutRooms, int stayoverRooms) {
             this.floorNumber = floorNumber;
             this.roomCounts = new HashMap<>(roomCounts);
             if (!this.roomCounts.containsKey("D")) {
@@ -48,6 +52,13 @@ public class AdaptiveRoomOptimizer {
             }
             this.ecoRooms = ecoRooms;
             this.isMainBuilding = isMainBuilding;
+            this.checkoutRooms = checkoutRooms;
+            this.stayoverRooms = stayoverRooms;
+        }
+
+        // ★後方互換コンストラクタ（checkout/stayover情報なし）
+        public FloorInfo(int floorNumber, Map<String, Integer> roomCounts, int ecoRooms, boolean isMainBuilding) {
+            this(floorNumber, roomCounts, ecoRooms, isMainBuilding, 0, 0);
         }
 
         public int getTotalNormalRooms() {
@@ -231,6 +242,71 @@ public class AdaptiveRoomOptimizer {
             copy.setLinenClosetFloors(this.linenClosetFloors);
             return copy;
         }
+    }
+
+    /**
+     * ★追加: ツイン換算計算（2部屋=3換算、3部屋=5換算、それ以降+1）
+     * NormalRoomDistributionDialog.StaffDistribution.calculateTwinConversion と同一ロジック
+     */
+    public static double calculateTwinConversion(int twinRooms) {
+        if (twinRooms == 0) return 0.0;
+        if (twinRooms == 1) return 1.0;
+        if (twinRooms == 2) return 3.0;
+        if (twinRooms == 3) return 5.0;
+        if (twinRooms == 4) return 6.0;
+        if (twinRooms == 5) return 8.0;
+        if (twinRooms == 6) return 10.0;
+        if (twinRooms == 7) return 11.0;
+        if (twinRooms == 8) return 12.0;
+        return 12.0 + (twinRooms - 8);
+    }
+
+    /**
+     * ★追加: 換算スコア計算（部屋数指定版）
+     * スコア = 通常室×1 + ツイン換算 + ECO室×0.2 + リネン庫フロア×0.4
+     */
+    public static double calculateConvertedScore(
+            int normalRooms, int twinRooms, int ecoRooms, int linenFloors) {
+        return normalRooms
+                + calculateTwinConversion(twinRooms)
+                + ecoRooms * 0.2
+                + linenFloors * 0.4;
+    }
+
+    /**
+     * ★追加: 換算スコア計算（StaffAssignment版）
+     * StaffAssignment から通常室・ツイン・ECO・リネン庫フロア数を集計してスコアを返す
+     */
+    public static double calculateConvertedScore(StaffAssignment sa) {
+        int normalRooms = 0;
+        int twinRooms = 0;
+        int ecoRooms = 0;
+
+        for (RoomAllocation alloc : sa.mainBuildingAssignments.values()) {
+            for (Map.Entry<String, Integer> e : alloc.roomCounts.entrySet()) {
+                String rt = e.getKey();
+                if ("T".equals(rt) || "TW".equals(rt) || "ツイン".equals(rt)) {
+                    twinRooms += e.getValue();
+                } else {
+                    normalRooms += e.getValue();
+                }
+            }
+            ecoRooms += alloc.ecoRooms;
+        }
+        for (RoomAllocation alloc : sa.annexBuildingAssignments.values()) {
+            for (Map.Entry<String, Integer> e : alloc.roomCounts.entrySet()) {
+                String rt = e.getKey();
+                if ("T".equals(rt) || "TW".equals(rt) || "ツイン".equals(rt)) {
+                    twinRooms += e.getValue();
+                } else {
+                    normalRooms += e.getValue();
+                }
+            }
+            ecoRooms += alloc.ecoRooms;
+        }
+
+        int linenFloors = sa.isLinenClosetCleaning ? sa.linenClosetFloorCount : 0;
+        return calculateConvertedScore(normalRooms, twinRooms, ecoRooms, linenFloors);
     }
 
     /**
@@ -1373,80 +1449,5 @@ public class AdaptiveRoomOptimizer {
                 System.out.printf("  未割当: %d室\n", unassigned.getTotalUnassigned());
             }
         }
-    }
-
-    // ================================================================
-    // 換算スコア共通計算メソッド
-    // （RoomAssignmentCPSATOptimizer と AssignmentEditorGUI の両方から使用）
-    // ================================================================
-
-    /** ツイン部屋と判定する部屋タイプ */
-    public static final Set<String> TWIN_ROOM_TYPES =
-            new HashSet<>(Arrays.asList("T", "NT", "ANT", "ADT"));
-
-    /**
-     * ツイン部屋数から換算値を計算（AssignmentEditorGUI と同一ロジック）
-     * 1部屋=1、2部屋=3、3部屋=5、4部屋=6、5部屋=8、6部屋=10、7部屋=11、8部屋=12、9部屋以降+1
-     */
-    public static double calculateTwinConversion(int twinRooms) {
-        if (twinRooms == 0) return 0.0;
-        if (twinRooms == 1) return 1.0;
-        if (twinRooms == 2) return 3.0;
-        if (twinRooms == 3) return 5.0;
-        if (twinRooms == 4) return 6.0;
-        if (twinRooms == 5) return 8.0;
-        if (twinRooms == 6) return 10.0;
-        if (twinRooms == 7) return 11.0;
-        if (twinRooms == 8) return 12.0;
-        return 12.0 + (twinRooms - 8);
-    }
-
-    /**
-     * スタッフ1人分の換算スコアを計算
-     * 計算式: 通常部屋×1.0 + ツイン換算値 + ECO×0.2 + リネン庫×0.4/フロア
-     * RoomAllocation.roomCounts からツイン数・通常数を算出し、ecoRooms をECOとして扱う
-     */
-    public static double calculateConvertedScore(StaffAssignment assignment) {
-        int twinRooms = 0;
-        int ecoRooms  = 0;
-        int totalRooms = 0;
-
-        for (RoomAllocation alloc : assignment.mainBuildingAssignments.values()) {
-            for (Map.Entry<String, Integer> e : alloc.roomCounts.entrySet()) {
-                int cnt = e.getValue();
-                if (TWIN_ROOM_TYPES.contains(e.getKey())) twinRooms += cnt;
-                totalRooms += cnt;
-            }
-            ecoRooms   += alloc.ecoRooms;
-            totalRooms += alloc.ecoRooms;
-        }
-        for (RoomAllocation alloc : assignment.annexBuildingAssignments.values()) {
-            for (Map.Entry<String, Integer> e : alloc.roomCounts.entrySet()) {
-                int cnt = e.getValue();
-                if (TWIN_ROOM_TYPES.contains(e.getKey())) twinRooms += cnt;
-                totalRooms += cnt;
-            }
-            ecoRooms   += alloc.ecoRooms;
-            totalRooms += alloc.ecoRooms;
-        }
-
-        int normalRooms     = totalRooms - twinRooms - ecoRooms;
-        double twinConverted = calculateTwinConversion(twinRooms);
-        double ecoConverted  = ecoRooms * 0.2;
-        double linenConverted = assignment.linenClosetFloorCount * 0.4;
-
-        return normalRooms + twinConverted + ecoConverted + linenConverted;
-    }
-
-    /**
-     * 既知の内訳（twinRooms, ecoRooms, normalRooms, linenFloors）から換算スコアを計算
-     * AssignmentEditorGUI の StaffData.calculateConvertedTotal() から委譲用
-     */
-    public static double calculateConvertedScore(
-            int normalRooms, int twinRooms, int ecoRooms, int linenClosetFloors) {
-        double twinConverted  = calculateTwinConversion(twinRooms);
-        double ecoConverted   = ecoRooms * 0.2;
-        double linenConverted = linenClosetFloors * 0.4;
-        return normalRooms + twinConverted + ecoConverted + linenConverted;
     }
 }

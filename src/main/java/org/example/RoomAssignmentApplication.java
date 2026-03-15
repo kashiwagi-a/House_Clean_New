@@ -287,8 +287,8 @@ public class RoomAssignmentApplication extends JFrame {
         pendingRoomSettingsButton = new JButton("未チェックイン設定");
         pendingRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
         pendingRoomSettingsButton.setPreferredSize(new Dimension(150, 35));
-        pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
-        pendingRoomSettingsButton.setForeground(Color.BLACK);
+        pendingRoomSettingsButton.setBackground(new Color(70, 130, 180));
+        pendingRoomSettingsButton.setForeground(Color.WHITE);
         pendingRoomSettingsButton.addActionListener(this::openPendingRoomSettings);
         pendingRoomSettingsButton.setEnabled(false);
         panel.add(pendingRoomSettingsButton);
@@ -465,11 +465,11 @@ public class RoomAssignmentApplication extends JFrame {
 
                 if (changedCount > 0) {
                     pendingRoomSettingsButton.setBackground(new Color(34, 139, 34));
-                    pendingRoomSettingsButton.setForeground(Color.BLACK);
+                    pendingRoomSettingsButton.setForeground(Color.WHITE);
                     pendingRoomSettingsButton.setText("未チェックイン設定済み");
                 } else {
-                    pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
-                    pendingRoomSettingsButton.setForeground(Color.BLACK);
+                    pendingRoomSettingsButton.setBackground(new Color(70, 130, 180));
+                    pendingRoomSettingsButton.setForeground(Color.WHITE);
                     pendingRoomSettingsButton.setText("未チェックイン設定");
                 }
             }
@@ -1188,11 +1188,20 @@ public class RoomAssignmentApplication extends JFrame {
         Map<Integer, Map<String, Integer>> floorData = new HashMap<>();
         Map<Integer, Integer> ecoData = new HashMap<>();
         Map<Integer, Boolean> buildingData = new HashMap<>();
+        Map<Integer, Integer> checkoutData = new HashMap<>();  // ★追加: アウト清掃(status=2)室数
+        Map<Integer, Integer> stayoverData = new HashMap<>();  // ★追加: 連泊(status=3)室数
 
         // ★修正: 本館（エコ部屋を roomCounts から除外）
         for (FileProcessor.Room room : cleaningData.mainRooms) {
             int floor = room.floor;
             buildingData.put(floor, true);
+
+            // ★追加: アウト/連泊カウント
+            if ("2".equals(room.roomStatus)) {
+                checkoutData.merge(floor, 1, Integer::sum);
+            } else if ("3".equals(room.roomStatus)) {
+                stayoverData.merge(floor, 1, Integer::sum);
+            }
 
             if (room.isEcoClean) {
                 // エコ部屋は ecoData のみにカウント
@@ -1208,6 +1217,13 @@ public class RoomAssignmentApplication extends JFrame {
         for (FileProcessor.Room room : cleaningData.annexRooms) {
             int floor = room.floor;
             buildingData.put(floor, false);
+
+            // ★追加: アウト/連泊カウント
+            if ("2".equals(room.roomStatus)) {
+                checkoutData.merge(floor, 1, Integer::sum);
+            } else if ("3".equals(room.roomStatus)) {
+                stayoverData.merge(floor, 1, Integer::sum);
+            }
 
             if (room.isEcoClean) {
                 // エコ部屋は ecoData のみにカウント
@@ -1225,8 +1241,11 @@ public class RoomAssignmentApplication extends JFrame {
             Map<String, Integer> roomCounts = entry.getValue();
             int ecoRooms = ecoData.getOrDefault(floor, 0);
             boolean isMainBuilding = buildingData.getOrDefault(floor, true);
+            int checkoutRooms = checkoutData.getOrDefault(floor, 0);  // ★追加
+            int stayoverRooms = stayoverData.getOrDefault(floor, 0);  // ★追加
 
-            floors.add(new AdaptiveRoomOptimizer.FloorInfo(floor, roomCounts, ecoRooms, isMainBuilding));
+            floors.add(new AdaptiveRoomOptimizer.FloorInfo(
+                    floor, roomCounts, ecoRooms, isMainBuilding, checkoutRooms, stayoverRooms));
         }
 
         // ★追加: エコ部屋のみのフロアも追加
@@ -1234,8 +1253,10 @@ public class RoomAssignmentApplication extends JFrame {
             int floor = entry.getKey();
             if (!floorData.containsKey(floor)) {
                 boolean isMainBuilding = buildingData.getOrDefault(floor, true);
+                int checkoutRooms = checkoutData.getOrDefault(floor, 0);  // ★追加
+                int stayoverRooms = stayoverData.getOrDefault(floor, 0);  // ★追加
                 floors.add(new AdaptiveRoomOptimizer.FloorInfo(
-                        floor, new HashMap<>(), entry.getValue(), isMainBuilding));
+                        floor, new HashMap<>(), entry.getValue(), isMainBuilding, checkoutRooms, stayoverRooms));
             }
         }
 

@@ -439,6 +439,11 @@ public class RoomAssignmentCPSATOptimizer {
         AdaptiveRoomOptimizer.AdaptiveLoadConfig mainConfig = splitConfigForMain(config);
         AdaptiveRoomOptimizer.AdaptiveLoadConfig annexConfig = splitConfigForAnnex(config);
 
+        // ★追加: 跨ぎスタッフのECO担当建物を事前決定
+        Set<String> noMainEcoStaff = new HashSet<>();
+        Set<String> noAnnexEcoStaff = new HashSet<>();
+        determineCrossBuildingEcoSide(config, originalConfig, buildingData, noMainEcoStaff, noAnnexEcoStaff);
+
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> mainSolutions = new ArrayList<>();
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> annexSolutions = new ArrayList<>();
 
@@ -450,7 +455,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                         optimizeWithRelaxationMultiple(mainOnlyData, mainConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor, noMainEcoStaff);
                 if (results != null && !results.isEmpty()) {
                     LOGGER.info(String.format("本館: 1フロア最大%d人制限で%d個の解が見つかりました。", maxStaffPerFloor, results.size()));
                     mainSolutions = results;
@@ -468,7 +473,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                             optimizeWithRelaxationMultiple(mainOnlyData, mainConfig,
-                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT);
+                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT, noMainEcoStaff);
                     if (results != null && !results.isEmpty()) {
                         LOGGER.info(String.format("本館: %s で%d個の解が見つかりました。", step, results.size()));
                         mainSolutions = results;
@@ -494,7 +499,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                         optimizeWithRelaxationMultiple(annexOnlyData, annexConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor, noAnnexEcoStaff);
                 if (results != null && !results.isEmpty()) {
                     LOGGER.info(String.format("別館: 1フロア最大%d人制限で%d個の解が見つかりました。", maxStaffPerFloor, results.size()));
                     annexSolutions = results;
@@ -511,7 +516,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                             optimizeWithRelaxationMultiple(annexOnlyData, annexConfig,
-                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT);
+                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT, noAnnexEcoStaff);
                     if (results != null && !results.isEmpty()) {
                         LOGGER.info(String.format("別館: %s で%d個の解が見つかりました。", step, results.size()));
                         annexSolutions = results;
@@ -674,6 +679,12 @@ public class RoomAssignmentCPSATOptimizer {
         AdaptiveRoomOptimizer.AdaptiveLoadConfig mainConfig = splitConfigForMain(config);
         AdaptiveRoomOptimizer.AdaptiveLoadConfig annexConfig = splitConfigForAnnex(config);
 
+        // ★追加: 跨ぎスタッフのECO担当建物を事前決定
+        // ECO室数が多い建物をECO担当側とし、少ない建物はECO割り振り禁止
+        Set<String> noMainEcoStaff = new HashSet<>();   // 本館でECO禁止（別館がECO担当）
+        Set<String> noAnnexEcoStaff = new HashSet<>();  // 別館でECO禁止（本館がECO担当）
+        determineCrossBuildingEcoSide(config, originalConfig, buildingData, noMainEcoStaff, noAnnexEcoStaff);
+
         List<AdaptiveRoomOptimizer.StaffAssignment> mainResult = new ArrayList<>();
         List<AdaptiveRoomOptimizer.StaffAssignment> annexResult = new ArrayList<>();
 
@@ -685,7 +696,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<AdaptiveRoomOptimizer.StaffAssignment> result =
                         optimizeWithRelaxation(mainOnlyData, mainConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor, noMainEcoStaff);
                 if (result != null && !result.isEmpty()) {
                     LOGGER.info(String.format("本館: 1フロア最大%d人制限で完全解が見つかりました。", maxStaffPerFloor));
                     mainResult = result;
@@ -703,7 +714,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<AdaptiveRoomOptimizer.StaffAssignment> result =
                             optimizeWithRelaxation(mainOnlyData, mainConfig,
-                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT);
+                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT, noMainEcoStaff);
                     if (result != null && !result.isEmpty()) {
                         LOGGER.info("本館: " + step + " で完全解が見つかりました。");
                         mainResult = result;
@@ -727,7 +738,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<AdaptiveRoomOptimizer.StaffAssignment> result =
                         optimizeWithRelaxation(annexOnlyData, annexConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor, noAnnexEcoStaff);
                 if (result != null && !result.isEmpty()) {
                     LOGGER.info(String.format("別館: 1フロア最大%d人制限で完全解が見つかりました。", maxStaffPerFloor));
                     annexResult = result;
@@ -744,7 +755,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<AdaptiveRoomOptimizer.StaffAssignment> result =
                             optimizeWithRelaxation(annexOnlyData, annexConfig,
-                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT);
+                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT, noAnnexEcoStaff);
                     if (result != null && !result.isEmpty()) {
                         LOGGER.info("別館: " + step + " で完全解が見つかりました。");
                         annexResult = result;
@@ -774,7 +785,8 @@ public class RoomAssignmentCPSATOptimizer {
             Map<String, AdaptiveRoomOptimizer.StaffAssignment> existingAssignments,
             RelaxationConfig relaxConfig,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
-            int maxStaffPerFloor) {
+            int maxStaffPerFloor,
+            Set<String> noEcoStaff) {
 
         LOGGER.info(String.format("=== CPSAT最適化（%s, 1フロア最大%d人）===", relaxConfig, maxStaffPerFloor));
 
@@ -786,7 +798,7 @@ public class RoomAssignmentCPSATOptimizer {
 
         Map<String, TwinAssignment> twinPattern = twinPatterns.get(0);
         List<PartialSolutionResult> results =
-                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, 1, originalConfig);
+                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, 1, originalConfig, noEcoStaff);
 
         for (PartialSolutionResult result : results) {
             if (result.shortage == 0) {
@@ -821,7 +833,8 @@ public class RoomAssignmentCPSATOptimizer {
             RelaxationConfig relaxConfig,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
             int maxSolutions,
-            int maxStaffPerFloor) {
+            int maxStaffPerFloor,
+            Set<String> noEcoStaff) {
 
         LOGGER.info(String.format("=== CPSAT複数解最適化（%s, 1フロア最大%d人, 最大%d解）===",
                 relaxConfig, maxStaffPerFloor, maxSolutions));
@@ -861,7 +874,7 @@ public class RoomAssignmentCPSATOptimizer {
         Map<String, TwinAssignment> twinPattern = twinPatterns.get(0);
 
         List<PartialSolutionResult> allResults =
-                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, maxSolutions, originalConfig);
+                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, maxSolutions, originalConfig, noEcoStaff);
 
         // 完全解・ECO部分解・部分解を分離
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> completeSolutions = new ArrayList<>();
@@ -1027,7 +1040,8 @@ public class RoomAssignmentCPSATOptimizer {
             int maxStaffPerFloor,
             RelaxationConfig relaxConfig,
             int maxSolutions,
-            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig) {
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
+            Set<String> noEcoStaff) {
 
         CpModel model = new CpModel();
 
@@ -1054,17 +1068,20 @@ public class RoomAssignmentCPSATOptimizer {
             boolean hasAnnexSingles = dist.annexSingleAssignedRooms > 0;
             boolean hasMainTwins = (ta != null && ta.mainTwinRooms > 0);
             boolean hasAnnexTwins = (ta != null && ta.annexTwinRooms > 0);
-            // ★修正: ECO変数はスタッフのECO事前割り当て数に関わらず、
-            // そのビルに通常室を持つ全スタッフが対象。CP-SATが自由に配分する。
             boolean hasMainWork = hasMainSingles || hasMainTwins || dist.mainEcoAssignedRooms > 0;
             boolean hasAnnexWork = hasAnnexSingles || hasAnnexTwins || dist.annexEcoAssignedRooms > 0;
+
+            // ★追加: 跨ぎスタッフのECO禁止フラグ（noEcoStaffに含まれる場合はECO変数を作成しない）
+            boolean isNoEco = noEcoStaff != null && noEcoStaff.contains(staffName);
 
             for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
                 boolean isMain = floor.isMainBuilding;
                 boolean needSingle = (hasMainSingles && isMain) || (hasAnnexSingles && !isMain);
                 boolean needTwin = (hasMainTwins && isMain) || (hasAnnexTwins && !isMain);
-                // ★修正: ECO室があるフロアで、そのビルで働くスタッフ全員にECO変数を作成
-                boolean needEco = ((hasMainWork && isMain) || (hasAnnexWork && !isMain)) && floor.ecoRooms > 0;
+                // ★修正: noEcoStaffの場合はECO変数を作成しない
+                boolean needEco = !isNoEco
+                        && ((hasMainWork && isMain) || (hasAnnexWork && !isMain))
+                        && floor.ecoRooms > 0;
 
                 if (!needSingle && !needTwin && !needEco) continue;
 
@@ -2108,6 +2125,59 @@ public class RoomAssignmentCPSATOptimizer {
             LOGGER.info(String.format("  %s: %d室", sa.staff.name, sa.getTotalRooms()));
         }
         return result;
+    }
+
+    /**
+     * ★追加: 跨ぎスタッフのECO担当建物を事前決定する
+     * 本館・別館の合計ECO室数を比較し、ECO室数が多い建物をECO担当側とする。
+     * 同数の場合は本館をECO担当側とする。
+     * noMainEcoStaff: 本館でECO禁止（別館がECO担当）のスタッフ名セット
+     * noAnnexEcoStaff: 別館でECO禁止（本館がECO担当）のスタッフ名セット
+     */
+    private static void determineCrossBuildingEcoSide(
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
+            AdaptiveRoomOptimizer.BuildingData buildingData,
+            Set<String> noMainEcoStaff,
+            Set<String> noAnnexEcoStaff) {
+
+        // 建物全体のECO室数合計
+        int totalMainEco = buildingData.mainFloors.stream()
+                .mapToInt(f -> f.ecoRooms).sum();
+        int totalAnnexEco = buildingData.annexFloors.stream()
+                .mapToInt(f -> f.ecoRooms).sum();
+
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> origDistMap =
+                (originalConfig != null && originalConfig.roomDistribution != null)
+                        ? originalConfig.roomDistribution
+                        : (config.roomDistribution != null ? config.roomDistribution : null);
+        if (origDistMap == null) return;
+
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo info : config.extendedStaffInfo) {
+            String name = info.staff.name;
+            NormalRoomDistributionDialog.StaffDistribution origDist = origDistMap.get(name);
+            if (origDist == null) continue;
+
+            int mainR = origDist.mainSingleAssignedRooms + origDist.mainTwinAssignedRooms;
+            int annexR = origDist.annexSingleAssignedRooms + origDist.annexTwinAssignedRooms;
+
+            // 跨ぎスタッフ（両館に通常清掃あり）のみ対象
+            if (mainR == 0 || annexR == 0) continue;
+
+            if (totalMainEco >= totalAnnexEco) {
+                // 本館のECO室が多い or 同数 → 本館をECO担当、別館はECO禁止
+                noAnnexEcoStaff.add(name);
+                LOGGER.info(String.format(
+                        "跨ぎスタッフ %s: 本館ECO担当（本館ECO合計=%d >= 別館ECO合計=%d）、別館ECO禁止",
+                        name, totalMainEco, totalAnnexEco));
+            } else {
+                // 別館のECO室が多い → 別館をECO担当、本館はECO禁止
+                noMainEcoStaff.add(name);
+                LOGGER.info(String.format(
+                        "跨ぎスタッフ %s: 別館ECO担当（別館ECO合計=%d > 本館ECO合計=%d）、本館ECO禁止",
+                        name, totalAnnexEco, totalMainEco));
+            }
+        }
     }
 
     private static int getMaxFloors(String staffName, AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {

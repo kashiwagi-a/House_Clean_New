@@ -212,25 +212,23 @@ public class AssignmentEditorGUI extends JFrame {
                 sb.append("/").append(constraintType);
             }
 
-            return sb.toString();
-        }
-
-        String getLinenClosetDisplay() {
-            if (!isLinenClosetCleaning || linenClosetFloors == null || linenClosetFloors.isEmpty()) {
-                return "";
-            }
-            List<Integer> sorted = new ArrayList<>(linenClosetFloors);
-            Collections.sort(sorted);
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < sorted.size(); i++) {
-                if (i > 0) sb.append(",");
-                int f = sorted.get(i);
-                if (f > 20) {
-                    sb.append("別").append(f - 20).append("F");
-                } else {
-                    sb.append(f).append("F");
+            // ★★追加: リネン庫清掃担当を表示（具体的なフロア番号）
+            if (isLinenClosetCleaning && linenClosetFloors != null && !linenClosetFloors.isEmpty()) {
+                sb.append("/リネン庫(");
+                List<Integer> sorted = new ArrayList<>(linenClosetFloors);
+                Collections.sort(sorted);
+                for (int i = 0; i < sorted.size(); i++) {
+                    if (i > 0) sb.append(",");
+                    int f = sorted.get(i);
+                    if (f > 20) {
+                        sb.append("別").append(f - 20).append("F");
+                    } else {
+                        sb.append(f).append("F");
+                    }
                 }
+                sb.append(")");
             }
+
             return sb.toString();
         }
 
@@ -637,32 +635,13 @@ public class AssignmentEditorGUI extends JFrame {
         // ★修正: 列名変更（ポイント→内ツイン数、調整後スコア→内エコ部屋数、総部屋数追加）
         // ★修正: 部屋数→通常シングル数に変更
         String[] columnNames = {
-                "スタッフ名", "作業者タイプ", "リネン庫担当階", "通常シングル数", "内ツイン数", "内エコ部屋数", "総部屋数", "担当階・部屋詳細"
+                "スタッフ名", "作業者タイプ", "通常シングル数", "内ツイン数", "内エコ部屋数", "総部屋数", "担当階・部屋詳細"
         };
 
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column == 2; // リネン庫担当階列のみ編集可能
-            }
-
-            @Override
-            public void setValueAt(Object aValue, int row, int column) {
-                super.setValueAt(aValue, row, column);
-                if (column == 2) {
-                    String staffName = (String) getValueAt(row, 0);
-                    StaffData staffData = staffDataMap.get(staffName);
-                    if (staffData == null) return;
-                    String input = aValue != null ? aValue.toString().trim() : "";
-                    List<Integer> parsed = parseLinenClosetInput(input);
-                    staffData.linenClosetFloors = parsed;
-                    staffData.isLinenClosetCleaning = !parsed.isEmpty();
-                    staffData.calculateExtendedMetrics();
-                    recalculateStaffPoints(staffData);
-                    // 全列を再描画（F抜け防止・総部屋数更新・他列も反映）
-                    refreshTable();
-                    updateSummaryPanel();
-                }
+                return false;
             }
         };
 
@@ -680,21 +659,18 @@ public class AssignmentEditorGUI extends JFrame {
 
         // ★修正: 列インデックス調整（各列にカスタムレンダラーを適用）
         assignmentTable.getColumnModel().getColumn(0).setCellRenderer(leftRenderer);   // スタッフ名
-        assignmentTable.getColumnModel().getColumn(1).setCellRenderer(centerRenderer); // 作業者タイプ
-        assignmentTable.getColumnModel().getColumn(2).setCellRenderer(centerRenderer); // リネン庫担当階
-        for (int i = 3; i <= 6; i++) {
+        for (int i = 1; i <= 5; i++) {
             assignmentTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
         }
-        assignmentTable.getColumnModel().getColumn(7).setCellRenderer(htmlRenderer);   // 担当階・部屋詳細
+        assignmentTable.getColumnModel().getColumn(6).setCellRenderer(htmlRenderer);   // 担当階・部屋詳細
 
         assignmentTable.getColumnModel().getColumn(0).setPreferredWidth(100);
-        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(140);  // 作業者タイプ
-        assignmentTable.getColumnModel().getColumn(2).setPreferredWidth(100);  // リネン庫担当階
-        assignmentTable.getColumnModel().getColumn(3).setPreferredWidth(60);
-        assignmentTable.getColumnModel().getColumn(4).setPreferredWidth(80);
-        assignmentTable.getColumnModel().getColumn(5).setPreferredWidth(90);
-        assignmentTable.getColumnModel().getColumn(6).setPreferredWidth(80);
-        assignmentTable.getColumnModel().getColumn(7).setPreferredWidth(500);
+        assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(180);  // 作業者タイプ列を拡張（リネン庫フロア表示対応）
+        assignmentTable.getColumnModel().getColumn(2).setPreferredWidth(60);
+        assignmentTable.getColumnModel().getColumn(3).setPreferredWidth(80);
+        assignmentTable.getColumnModel().getColumn(4).setPreferredWidth(90);
+        assignmentTable.getColumnModel().getColumn(5).setPreferredWidth(80);
+        assignmentTable.getColumnModel().getColumn(6).setPreferredWidth(500);
 
         JScrollPane scrollPane = new JScrollPane(assignmentTable);
         scrollPane.setPreferredSize(new Dimension(1200, 400));
@@ -1580,11 +1556,20 @@ public class AssignmentEditorGUI extends JFrame {
         Map<Integer, Map<String, Integer>> floorData = new HashMap<>();
         Map<Integer, Integer> ecoData = new HashMap<>();
         Map<Integer, Boolean> buildingData = new HashMap<>();
+        Map<Integer, Integer> checkoutData = new HashMap<>();  // ★追加: アウト清掃(status=2)室数
+        Map<Integer, Integer> stayoverData = new HashMap<>();  // ★追加: 連泊(status=3)室数
 
         // 本館
         for (FileProcessor.Room room : cleaningData.mainRooms) {
             int floor = room.floor;
             buildingData.put(floor, true);
+
+            // ★追加: アウト/連泊カウント
+            if ("2".equals(room.roomStatus)) {
+                checkoutData.merge(floor, 1, Integer::sum);
+            } else if ("3".equals(room.roomStatus)) {
+                stayoverData.merge(floor, 1, Integer::sum);
+            }
 
             if (room.isEcoClean) {
                 ecoData.merge(floor, 1, Integer::sum);
@@ -1598,6 +1583,13 @@ public class AssignmentEditorGUI extends JFrame {
         for (FileProcessor.Room room : cleaningData.annexRooms) {
             int floor = room.floor;
             buildingData.put(floor, false);
+
+            // ★追加: アウト/連泊カウント
+            if ("2".equals(room.roomStatus)) {
+                checkoutData.merge(floor, 1, Integer::sum);
+            } else if ("3".equals(room.roomStatus)) {
+                stayoverData.merge(floor, 1, Integer::sum);
+            }
 
             if (room.isEcoClean) {
                 ecoData.merge(floor, 1, Integer::sum);
@@ -1613,8 +1605,11 @@ public class AssignmentEditorGUI extends JFrame {
             Map<String, Integer> roomCounts = entry.getValue();
             int ecoRooms = ecoData.getOrDefault(floor, 0);
             boolean isMainBuilding = buildingData.getOrDefault(floor, true);
+            int checkoutRooms = checkoutData.getOrDefault(floor, 0);  // ★追加
+            int stayoverRooms = stayoverData.getOrDefault(floor, 0);  // ★追加
 
-            floors.add(new AdaptiveRoomOptimizer.FloorInfo(floor, roomCounts, ecoRooms, isMainBuilding));
+            floors.add(new AdaptiveRoomOptimizer.FloorInfo(
+                    floor, roomCounts, ecoRooms, isMainBuilding, checkoutRooms, stayoverRooms));
         }
 
         // エコ部屋のみのフロアも追加
@@ -1622,8 +1617,10 @@ public class AssignmentEditorGUI extends JFrame {
             int floor = entry.getKey();
             if (!floorData.containsKey(floor)) {
                 boolean isMainBuilding = buildingData.getOrDefault(floor, true);
+                int checkoutRooms = checkoutData.getOrDefault(floor, 0);  // ★追加
+                int stayoverRooms = stayoverData.getOrDefault(floor, 0);  // ★追加
                 floors.add(new AdaptiveRoomOptimizer.FloorInfo(
-                        floor, new HashMap<>(), entry.getValue(), isMainBuilding));
+                        floor, new HashMap<>(), entry.getValue(), isMainBuilding, checkoutRooms, stayoverRooms));
             }
         }
 
@@ -1799,21 +1796,37 @@ public class AssignmentEditorGUI extends JFrame {
             return;
         }
 
-        // 名前とIDのみ入れ替え（部屋データはそのまま）
-        String tempName = dataA.name;
-        String tempId   = dataA.id;
-        dataA.name = dataB.name;
-        dataA.id   = dataB.id;
-        dataB.name = tempName;
-        dataB.id   = tempId;
+        // データを完全に入れ替え
+        // floors
+        List<Integer> tempFloors = new ArrayList<>(dataA.floors);
+        dataA.floors.clear();
+        dataA.floors.addAll(dataB.floors);
+        dataB.floors.clear();
+        dataB.floors.addAll(tempFloors);
 
-        // staffDataMapのキーも入れ替え
-        staffDataMap.remove(staffA);
-        staffDataMap.remove(staffB);
-        staffDataMap.put(dataA.name, dataA);
-        staffDataMap.put(dataB.name, dataB);
+        // roomsByFloor
+        Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> tempRoomsByFloor = new HashMap<>(dataA.roomsByFloor);
+        dataA.roomsByFloor.clear();
+        dataA.roomsByFloor.putAll(dataB.roomsByFloor);
+        dataB.roomsByFloor.clear();
+        dataB.roomsByFloor.putAll(tempRoomsByFloor);
 
-        statusLabel.setText(String.format("「%s」と「%s」の名前を入れ替えました", dataA.name, dataB.name));
+        // detailedRoomsByFloor
+        Map<Integer, List<FileProcessor.Room>> tempDetailedRooms = new HashMap<>(dataA.detailedRoomsByFloor);
+        dataA.detailedRoomsByFloor.clear();
+        dataA.detailedRoomsByFloor.putAll(dataB.detailedRoomsByFloor);
+        dataB.detailedRoomsByFloor.clear();
+        dataB.detailedRoomsByFloor.putAll(tempDetailedRooms);
+
+        // 統計情報を再計算
+        recalculateStaffPoints(dataA);
+        recalculateStaffPoints(dataB);
+
+        // 建物情報を更新
+        updateBuildingInfo(dataA);
+        updateBuildingInfo(dataB);
+
+        statusLabel.setText(String.format("「%s」と「%s」の担当を入れ替えました", staffA, staffB));
     }
 
     /**
@@ -1857,37 +1870,6 @@ public class AssignmentEditorGUI extends JFrame {
     /**
      * ポイント再計算メソッド
      */
-    /**
-     * リネン庫担当階の入力文字列をパース
-     * 対応形式: "2F,8F" / "別1F,別2F" / "別館1F" / 空欄（担当なし）
-     */
-    private List<Integer> parseLinenClosetInput(String input) {
-        List<Integer> floors = new ArrayList<>();
-        if (input == null || input.trim().isEmpty()) return floors;
-        String[] parts = input.split("[,、\\s]+");
-        for (String part : parts) {
-            part = part.trim();
-            if (part.isEmpty()) continue;
-            try {
-                if (part.startsWith("別館") || part.startsWith("別")) {
-                    String numStr = part.replaceAll("[^0-9]", "");
-                    if (!numStr.isEmpty()) {
-                        int f = Integer.parseInt(numStr) + 20;
-                        floors.add(f);
-                    }
-                } else {
-                    String numStr = part.replaceAll("[^0-9]", "");
-                    if (!numStr.isEmpty()) {
-                        floors.add(Integer.parseInt(numStr));
-                    }
-                }
-            } catch (NumberFormatException e) {
-                // 無効な入力はスキップ
-            }
-        }
-        return floors;
-    }
-
     private void recalculateStaffPoints(StaffData staff) {
         // まずroomsByFloorを再構築
         rebuildRoomsByFloor(staff);
@@ -1975,8 +1957,7 @@ public class AssignmentEditorGUI extends JFrame {
             Collections.sort(sortedFloors);
 
             for (int floor : sortedFloors) {
-                List<FileProcessor.Room> rooms = new ArrayList<>(staffData.detailedRoomsByFloor.get(floor));
-                rooms.sort(Comparator.comparing(r -> r.roomNumber));
+                List<FileProcessor.Room> rooms = staffData.detailedRoomsByFloor.get(floor);
                 for (FileProcessor.Room room : rooms) {
                     listModel.addElement(new RoomListItem(room, floor));
                 }
@@ -2246,7 +2227,6 @@ public class AssignmentEditorGUI extends JFrame {
             Object[] row = {
                     staff.name,
                     staff.getWorkerTypeDisplay(),
-                    staff.getLinenClosetDisplay(),             // リネン庫担当階
                     staff.normalSingleRoomCount,  // ★修正: 通常シングル数を表示
                     staff.twinRoomCount,
                     staff.ecoRoomCount,

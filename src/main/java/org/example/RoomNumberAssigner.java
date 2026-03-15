@@ -203,15 +203,18 @@ public class RoomNumberAssigner {
             case "ANS":
             case "ABF":
             case "AKS":
+            case "ZS":
                 return "S";
             case "D":
             case "ND":
             case "AND":
+            case "ZD":
                 return "D";
             case "T":
             case "NT":
             case "ANT":
             case "ADT":
+            case "ZT":
                 return "T";
             case "FD":
             case "NFD":

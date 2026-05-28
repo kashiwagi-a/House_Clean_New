@@ -55,6 +55,10 @@ public class NormalRoomDistributionDialog extends JDialog {
     private Set<Integer> availableAnnexFloors = new HashSet<>();
     private int totalAvailableFloors = 0;  // ★★追加: 売れている階の総数（リネン庫用）
 
+    // ★★追加: 階別の手動割り当て（任意機能）
+    private Map<Integer, ManualFloorAssignmentDialog.FloorInv> manualInventory = new HashMap<>();
+    private Map<String, ManualFloorAssignmentDialog.StaffManual> manualLayout = null;
+
     /**
      * ★拡張版: スタッフ割り振り情報
      * 本館/別館それぞれにシングル等/ツイン/ECOのフィールドを追加
@@ -89,6 +93,8 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         public String constraintType;
         public boolean isBathCleaning;
+        // ★追加: 備品発注担当フラグ（通常清掃から-6室。大浴場清掃とは排他）
+        public boolean isSuppliesOrder = false;
 
         public StaffDistribution(String staffId, String staffName, String buildingAssignment,
                                  int mainRooms, int annexRooms, String constraintType, boolean isBathCleaning) {
@@ -115,6 +121,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.assignedRooms = other.assignedRooms;
             this.constraintType = other.constraintType;
             this.isBathCleaning = other.isBathCleaning;
+            this.isSuppliesOrder = other.isSuppliesOrder;
             this.mainSingleAssignedRooms = other.mainSingleAssignedRooms;
             this.mainTwinAssignedRooms = other.mainTwinAssignedRooms;
             this.annexSingleAssignedRooms = other.annexSingleAssignedRooms;
@@ -197,14 +204,22 @@ public class NormalRoomDistributionDialog extends JDialog {
         String constraintType;
         String buildingAssignment;
         boolean isBathCleaning;
+        boolean isSuppliesOrder;   // ★追加: 備品発注担当
         int minRooms;
         int maxRooms;
 
         StaffConstraintInfo(String constraintType, String buildingAssignment,
                             boolean isBathCleaning, int minRooms, int maxRooms) {
+            this(constraintType, buildingAssignment, isBathCleaning, false, minRooms, maxRooms);
+        }
+
+        // ★追加: 備品発注フラグ付きコンストラクタ
+        StaffConstraintInfo(String constraintType, String buildingAssignment,
+                            boolean isBathCleaning, boolean isSuppliesOrder, int minRooms, int maxRooms) {
             this.constraintType = constraintType;
             this.buildingAssignment = buildingAssignment;
             this.isBathCleaning = isBathCleaning;
+            this.isSuppliesOrder = isSuppliesOrder;
             this.minRooms = minRooms;
             this.maxRooms = maxRooms;
         }
@@ -213,6 +228,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.constraintType = "制限なし";
             this.buildingAssignment = "制限なし";
             this.isBathCleaning = false;
+            this.isSuppliesOrder = false;
             this.minRooms = 0;
             this.maxRooms = 99;
         }
@@ -423,6 +439,10 @@ public class NormalRoomDistributionDialog extends JDialog {
             if (s1.isBathCleaning != s2.isBathCleaning) {
                 return s1.isBathCleaning ? -1 : 1;
             }
+            // ★追加: 備品発注担当を大浴場清掃の次に並べる
+            if (s1.isSuppliesOrder != s2.isSuppliesOrder) {
+                return s1.isSuppliesOrder ? -1 : 1;
+            }
             boolean s1IsBroken = "故障者制限".equals(s1.constraintType);
             boolean s2IsBroken = "故障者制限".equals(s2.constraintType);
             if (s1IsBroken != s2IsBroken) {
@@ -459,7 +479,9 @@ public class NormalRoomDistributionDialog extends JDialog {
             rowPanel.add(constraintLabel);
 
             // お風呂清掃
-            JLabel bathLabel = new JLabel(staff.isBathCleaning ? "○" : "", JLabel.CENTER);
+            // お風呂清掃 / 備品発注（排他のためどちらか一方を表示）
+            String dutyMark = staff.isBathCleaning ? "○" : (staff.isSuppliesOrder ? "備" : "");
+            JLabel bathLabel = new JLabel(dutyMark, JLabel.CENTER);
             bathLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
             rowPanel.add(bathLabel);
 
@@ -680,7 +702,25 @@ public class NormalRoomDistributionDialog extends JDialog {
         cancelButton.addActionListener(e -> dispose());
         panel.add(cancelButton);
 
+        // ★★追加: 階別の手動割り当てボタン（任意機能）
+        JButton manualButton = new JButton("階別の手動割り当て");
+        manualButton.addActionListener(e -> openManualAssignment());
+        panel.add(manualButton);
+
         return panel;
+    }
+
+    /** ★★追加: 階別の手動割り当てダイアログを開く（「割り当て済み数」ウィンドウも同時に開く） */
+    private void openManualAssignment() {
+        ManualFloorAssignmentDialog mdlg = new ManualFloorAssignmentDialog(
+                this, currentPattern, manualInventory, manualLayout);
+        mdlg.setVisible(true);   // 表示と同時に「割り当て済み数」ウィンドウが開く
+        if (mdlg.isConfirmed()) {
+            manualLayout = mdlg.getResultLayout();
+            JOptionPane.showMessageDialog(this,
+                    "手動割り当てを保存しました。\nこのままOKで確定すると、この割り当てが使用されます（CP-SATは使いません）。",
+                    "階別の手動割り当て", JOptionPane.INFORMATION_MESSAGE);
+        }
     }
 
     private boolean validateBeforeOk() {
@@ -883,6 +923,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         Map<String, StaffDistribution> pattern = new HashMap<>();
         Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
         int bathReduction = bathCleaningType.reduction;
+        // ★追加: 備品発注担当の削減数（通常清掃から-6室）
+        int suppliesReduction = AdaptiveRoomOptimizer.SUPPLIES_ORDER_REDUCTION;
+        // ★追加: 備品発注担当の名前集合（建物バケツに入れた上で-6を適用するため）
+        Set<String> suppliesSet = new HashSet<>();
 
         // ===== Step 1: スタッフを分類 =====
         List<String> bathStaffNames = new ArrayList<>();
@@ -900,6 +944,14 @@ public class NormalRoomDistributionDialog extends JDialog {
 
             if (info.isBathCleaning) {
                 bathStaffNames.add(name);
+            } else if (info.isSuppliesOrder) {
+                // ★備品発注担当: 建物設定に従って本館/別館バケツへ。「両方」は本館側に置く（既定方針）
+                suppliesSet.add(name);
+                if ("別館のみ".equals(info.buildingAssignment)) {
+                    normalAnnexOnlyNames.add(name);
+                } else {
+                    normalMainOnlyNames.add(name);
+                }
             } else if (!"制限なし".equals(info.constraintType)) {
                 constraintStaffNames.add(name);
                 int rooms = "故障者制限".equals(info.constraintType) ? info.maxRooms : info.minRooms;
@@ -925,6 +977,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         int fixedAnnexCount = normalAnnexOnlyNames.size();
         int freeCount = normalFreeNames.size();
 
+        // ★追加: 備品発注担当の建物別人数（-6の足し戻しに使用）
+        int mainSuppliesCount = (int) normalMainOnlyNames.stream().filter(suppliesSet::contains).count();
+        int annexSuppliesCount = (int) normalAnnexOnlyNames.stream().filter(suppliesSet::contains).count();
+
         // 制約で確定した部屋を除いた有効部屋数
         int effectiveMainRooms = totalMainRooms - constraintMainRooms;
         int effectiveAnnexRooms = totalAnnexRooms - constraintAnnexRooms;
@@ -949,9 +1005,9 @@ public class NormalRoomDistributionDialog extends JDialog {
             if (annexWorkers <= 0 && effectiveAnnexRooms > 0) continue;
 
             double mainBase = mainWorkers > 0 ?
-                    (double) (effectiveMainRooms + bathCount * bathReduction) / mainWorkers : 0;
+                    (double) (effectiveMainRooms + bathCount * bathReduction + mainSuppliesCount * suppliesReduction) / mainWorkers : 0;
             double annexBase = annexWorkers > 0 ?
-                    (double) effectiveAnnexRooms / annexWorkers : 0;
+                    (double) (effectiveAnnexRooms + annexSuppliesCount * suppliesReduction) / annexWorkers : 0;
 
             double diff = Math.abs(annexBase - (mainBase + annexDifference));
             if (diff < bestDiff) {
@@ -966,13 +1022,19 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         // ===== Step 3: 建物ごとの基本部屋数を計算 =====
         int mainNormalBase = totalMainWorkers > 0 ?
-                (int) Math.ceil((double) (effectiveMainRooms + bathCount * bathReduction) / totalMainWorkers) : 0;
+                (int) Math.ceil((double) (effectiveMainRooms + bathCount * bathReduction + mainSuppliesCount * suppliesReduction) / totalMainWorkers) : 0;
         int bathBaseRooms = Math.max(0, mainNormalBase - bathReduction);
+        // ★追加: 備品発注担当（本館側）の部屋数 = 通常本館base - 6
+        int mainSuppliesBaseRooms = Math.max(0, mainNormalBase - suppliesReduction);
         int annexBaseRooms = totalAnnexWorkers > 0 ?
-                (int) Math.ceil((double) effectiveAnnexRooms / totalAnnexWorkers) : 0;
+                (int) Math.ceil((double) (effectiveAnnexRooms + annexSuppliesCount * suppliesReduction) / totalAnnexWorkers) : 0;
+        // ★追加: 備品発注担当（別館側）の部屋数 = 通常別館base - 6
+        int annexSuppliesBaseRooms = Math.max(0, annexBaseRooms - suppliesReduction);
 
         System.out.println("Step 2-3: 本館" + totalMainWorkers + "名(normalBase=" + mainNormalBase +
-                ", bathBase=" + bathBaseRooms + "), 別館" + totalAnnexWorkers + "名(annexBase=" + annexBaseRooms + ")");
+                ", bathBase=" + bathBaseRooms + ", 備品発注base=" + mainSuppliesBaseRooms +
+                "), 別館" + totalAnnexWorkers + "名(annexBase=" + annexBaseRooms +
+                ", 備品発注base=" + annexSuppliesBaseRooms + ")");
 
         // ===== Step 4: 各スタッフに部屋を割り当て =====
 
@@ -999,18 +1061,34 @@ public class NormalRoomDistributionDialog extends JDialog {
             System.out.println("Step 4: " + name + " (" + info.constraintType + ") → " + rooms + "室");
         }
 
-        // 本館固定スタッフ（制限なし + 本館のみ）
+        // 本館固定スタッフ（制限なし + 本館のみ）＋ 備品発注担当（本館側）
         for (String name : normalMainOnlyNames) {
-            pattern.put(name, new StaffDistribution("", name, "本館のみ",
-                    mainNormalBase, 0, "制限なし", false));
-            System.out.println("Step 4: " + name + " (本館固定) → 本館" + mainNormalBase + "室");
+            if (suppliesSet.contains(name)) {
+                StaffDistribution sd = new StaffDistribution("", name, "本館のみ",
+                        mainSuppliesBaseRooms, 0, "制限なし", false);
+                sd.isSuppliesOrder = true;
+                pattern.put(name, sd);
+                System.out.println("Step 4: " + name + " (備品発注/本館) → 本館" + mainSuppliesBaseRooms + "室");
+            } else {
+                pattern.put(name, new StaffDistribution("", name, "本館のみ",
+                        mainNormalBase, 0, "制限なし", false));
+                System.out.println("Step 4: " + name + " (本館固定) → 本館" + mainNormalBase + "室");
+            }
         }
 
-        // 別館固定スタッフ（制限なし + 別館のみ）
+        // 別館固定スタッフ（制限なし + 別館のみ）＋ 備品発注担当（別館側）
         for (String name : normalAnnexOnlyNames) {
-            pattern.put(name, new StaffDistribution("", name, "別館のみ",
-                    0, annexBaseRooms, "制限なし", false));
-            System.out.println("Step 4: " + name + " (別館固定) → 別館" + annexBaseRooms + "室");
+            if (suppliesSet.contains(name)) {
+                StaffDistribution sd = new StaffDistribution("", name, "別館のみ",
+                        0, annexSuppliesBaseRooms, "制限なし", false);
+                sd.isSuppliesOrder = true;
+                pattern.put(name, sd);
+                System.out.println("Step 4: " + name + " (備品発注/別館) → 別館" + annexSuppliesBaseRooms + "室");
+            } else {
+                pattern.put(name, new StaffDistribution("", name, "別館のみ",
+                        0, annexBaseRooms, "制限なし", false));
+                System.out.println("Step 4: " + name + " (別館固定) → 別館" + annexBaseRooms + "室");
+            }
         }
 
         // 自由スタッフ: 先頭から本館、残りを別館
@@ -1121,10 +1199,10 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         int excess = actual - targetTotal; // 正=超過, 負=不足
 
-        // 調整対象: この建物に部屋がある非大浴場スタッフ
+        // 調整対象: この建物に部屋がある非大浴場・非備品発注スタッフ
         List<StaffDistribution> adjustable = pattern.values().stream()
                 .filter(d -> (isMain ? d.mainAssignedRooms : d.annexAssignedRooms) > 0)
-                .filter(d -> !d.isBathCleaning)
+                .filter(d -> !d.isBathCleaning && !d.isSuppliesOrder)
                 .sorted(excess > 0 ?
                         // 超過: 部屋数が多い順（多い人から減らす）
                         (a, b) -> Integer.compare(
@@ -1270,6 +1348,7 @@ public class NormalRoomDistributionDialog extends JDialog {
                         constraint.constraintType.displayName,
                         constraint.buildingAssignment.displayName,
                         constraint.isBathCleaningStaff,
+                        constraint.isSuppliesOrderStaff,
                         minRooms,
                         maxRooms
                 ));
@@ -1398,6 +1477,16 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     public Map<String, StaffDistribution> getCurrentDistribution() {
         return new HashMap<>(currentPattern);
+    }
+
+    /** ★★追加: 階別在庫を受け取る（手動割り当ての検証・選択肢用） */
+    public void setManualInventory(Map<Integer, ManualFloorAssignmentDialog.FloorInv> inv) {
+        this.manualInventory = (inv != null) ? inv : new HashMap<>();
+    }
+
+    /** ★★追加: 手動レイアウトを取得（未使用時は null） */
+    public Map<String, ManualFloorAssignmentDialog.StaffManual> getManualLayout() {
+        return manualLayout;
     }
 
     /**

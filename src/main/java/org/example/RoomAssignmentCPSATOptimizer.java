@@ -1998,7 +1998,7 @@ public class RoomAssignmentCPSATOptimizer {
             }
 
             result.add(new AdaptiveRoomOptimizer.StaffAssignment(
-                    staffInfo.staff, mainAssignments, annexAssignments, staffInfo.bathCleaningType, staffInfo.isLinenClosetCleaning, staffInfo.linenClosetFloorCount));
+                    staffInfo.staff, mainAssignments, annexAssignments, staffInfo.bathCleaningType, staffInfo.isLinenClosetCleaning, staffInfo.linenClosetFloorCount, staffInfo.isSuppliesOrder));
         }
 
         return result;
@@ -2184,7 +2184,8 @@ public class RoomAssignmentCPSATOptimizer {
                         new HashMap<>(annexSa.annexBuildingAssignments);
                 result.add(new AdaptiveRoomOptimizer.StaffAssignment(
                         info.staff, mergedMain, mergedAnnex,
-                        info.bathCleaningType, info.isLinenClosetCleaning, info.linenClosetFloorCount));
+                        info.bathCleaningType, info.isLinenClosetCleaning, info.linenClosetFloorCount,
+                        info.isSuppliesOrder));
             } else if (mainSa != null) {
                 result.add(mainSa);
             } else if (annexSa != null) {
@@ -2193,7 +2194,8 @@ public class RoomAssignmentCPSATOptimizer {
                 // 割当なし（空）
                 result.add(new AdaptiveRoomOptimizer.StaffAssignment(
                         info.staff, new HashMap<>(), new HashMap<>(),
-                        info.bathCleaningType, info.isLinenClosetCleaning, info.linenClosetFloorCount));
+                        info.bathCleaningType, info.isLinenClosetCleaning, info.linenClosetFloorCount,
+                        info.isSuppliesOrder));
             }
         }
 

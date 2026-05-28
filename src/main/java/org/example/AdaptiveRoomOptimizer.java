@@ -32,6 +32,13 @@ public class AdaptiveRoomOptimizer {
     }
 
     /**
+     * ★追加: 備品発注担当の部屋数削減数（通常清掃スタッフの基本室数からの減算量）
+     * 大浴場清掃（BathCleaningType.reduction）と同じ「削減」の仕組みで使用する。
+     * 大浴場清掃とは排他（同一スタッフが両方になることはない）。
+     */
+    public static final int SUPPLIES_ORDER_REDUCTION = 6;
+
+    /**
      * フロア情報クラス
      */
     public static class FloorInfo {
@@ -74,20 +81,32 @@ public class AdaptiveRoomOptimizer {
         public final BathCleaningType bathCleaningType;
         public final boolean isLinenClosetCleaning;
         public final int linenClosetFloorCount;
+        // ★追加: 備品発注担当フラグ
+        public final boolean isSuppliesOrder;
 
         public ExtendedStaffInfo(FileProcessor.Staff staff,
                                  BathCleaningType bathType) {
-            this(staff, bathType, false, 0);
+            this(staff, bathType, false, 0, false);
         }
 
         public ExtendedStaffInfo(FileProcessor.Staff staff,
                                  BathCleaningType bathType,
                                  boolean isLinenClosetCleaning,
                                  int linenClosetFloorCount) {
+            this(staff, bathType, isLinenClosetCleaning, linenClosetFloorCount, false);
+        }
+
+        // ★追加: 備品発注担当フラグ付きコンストラクタ
+        public ExtendedStaffInfo(FileProcessor.Staff staff,
+                                 BathCleaningType bathType,
+                                 boolean isLinenClosetCleaning,
+                                 int linenClosetFloorCount,
+                                 boolean isSuppliesOrder) {
             this.staff = staff;
             this.bathCleaningType = bathType;
             this.isLinenClosetCleaning = isLinenClosetCleaning;
             this.linenClosetFloorCount = linenClosetFloorCount;
+            this.isSuppliesOrder = isSuppliesOrder;
         }
     }
 
@@ -136,6 +155,8 @@ public class AdaptiveRoomOptimizer {
         public final BathCleaningType bathCleaningType;
         public final boolean isLinenClosetCleaning;
         public final int linenClosetFloorCount;
+        // ★追加: 備品発注担当フラグ
+        public final boolean isSuppliesOrder;
         // ★★追加: 具体的なリネン庫担当フロア（後処理で割り当て）
         private List<Integer> linenClosetFloors;
 
@@ -160,12 +181,25 @@ public class AdaptiveRoomOptimizer {
                                BathCleaningType bathType,
                                boolean isLinenClosetCleaning,
                                int linenClosetFloorCount) {
+            this(staff, mainAssignments, annexAssignments, bathType,
+                    isLinenClosetCleaning, linenClosetFloorCount, false);
+        }
+
+        // ★追加: 備品発注担当フラグ付きコンストラクタ（マスター）
+        public StaffAssignment(FileProcessor.Staff staff,
+                               Map<Integer, RoomAllocation> mainAssignments,
+                               Map<Integer, RoomAllocation> annexAssignments,
+                               BathCleaningType bathType,
+                               boolean isLinenClosetCleaning,
+                               int linenClosetFloorCount,
+                               boolean isSuppliesOrder) {
             this.staff = staff;
             this.mainBuildingAssignments = new HashMap<>(mainAssignments);
             this.annexBuildingAssignments = new HashMap<>(annexAssignments);
             this.bathCleaningType = bathType;
             this.isLinenClosetCleaning = isLinenClosetCleaning;
             this.linenClosetFloorCount = linenClosetFloorCount;
+            this.isSuppliesOrder = isSuppliesOrder;
             this.linenClosetFloors = new ArrayList<>();
 
             Set<Integer> allFloors = new HashSet<>();
@@ -238,7 +272,7 @@ public class AdaptiveRoomOptimizer {
                 ));
             }
 
-            StaffAssignment copy = new StaffAssignment(this.staff, mainCopy, annexCopy, this.bathCleaningType, this.isLinenClosetCleaning, this.linenClosetFloorCount);
+            StaffAssignment copy = new StaffAssignment(this.staff, mainCopy, annexCopy, this.bathCleaningType, this.isLinenClosetCleaning, this.linenClosetFloorCount, this.isSuppliesOrder);
             copy.setLinenClosetFloors(this.linenClosetFloors);
             return copy;
         }
@@ -463,12 +497,18 @@ public class AdaptiveRoomOptimizer {
 
             for (FileProcessor.Staff staff : availableStaff) {
                 BathCleaningType staffBathType = BathCleaningType.NONE;
+                // ★追加: 備品発注担当フラグ（StaffPointConstraintから取得）
+                boolean isSuppliesOrder = false;
 
                 for (RoomAssignmentApplication.StaffPointConstraint constraint : staffConstraints) {
                     if (!constraint.staffName.equals(staff.name)) continue;
 
                     if (constraint.isBathCleaningStaff) {
                         staffBathType = bathType;
+                    }
+                    // ★追加: 備品発注担当
+                    if (constraint.isSuppliesOrderStaff) {
+                        isSuppliesOrder = true;
                     }
 
                     if (constraint.lowerMinLimit > 0 || constraint.lowerMaxLimit > 0 || constraint.upperLimit > 0) {
@@ -486,9 +526,13 @@ public class AdaptiveRoomOptimizer {
                         isLinenCleaning = true;
                         linenFloorCount = dist.linenClosetFloorCount;
                     }
+                    // ★追加: roomDistribution側にも備品発注フラグがあれば反映（再最適化時の保持用）
+                    if (dist != null && dist.isSuppliesOrder) {
+                        isSuppliesOrder = true;
+                    }
                 }
 
-                extendedInfo.add(new ExtendedStaffInfo(staff, staffBathType, isLinenCleaning, linenFloorCount));
+                extendedInfo.add(new ExtendedStaffInfo(staff, staffBathType, isLinenCleaning, linenFloorCount, isSuppliesOrder));
                 bathAssignments.put(staff.name, staffBathType);
             }
 
@@ -1281,7 +1325,8 @@ public class AdaptiveRoomOptimizer {
             }
 
             return new StaffAssignment(staffInfo.staff, mainAssignments, annexAssignments,
-                    staffInfo.bathCleaningType, staffInfo.isLinenClosetCleaning, staffInfo.linenClosetFloorCount);
+                    staffInfo.bathCleaningType, staffInfo.isLinenClosetCleaning, staffInfo.linenClosetFloorCount,
+                    staffInfo.isSuppliesOrder);
         }
     }
 

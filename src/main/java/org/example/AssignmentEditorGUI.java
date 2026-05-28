@@ -66,6 +66,7 @@ public class AssignmentEditorGUI extends JFrame {
     static class StaffData {
         String id;
         String name;
+        String originalName;  // ★追加: ソート位置安定化用（初期値で固定、入れ替え時も不変）
         List<Integer> floors;
         Map<Integer, AdaptiveRoomOptimizer.RoomAllocation> roomsByFloor;
         Map<Integer, List<FileProcessor.Room>> detailedRoomsByFloor;
@@ -85,12 +86,14 @@ public class AssignmentEditorGUI extends JFrame {
         String constraintType;       // 制約タイプ
         boolean isLinenClosetCleaning;      // ★★追加: リネン庫清掃担当
         List<Integer> linenClosetFloors;    // ★★追加: リネン庫担当フロア（具体的なフロア番号）
+        boolean isSuppliesOrder;            // ★追加: 備品発注担当（通常清掃から-6室）
 
         StaffData(AdaptiveRoomOptimizer.StaffAssignment assignment,
                   AdaptiveRoomOptimizer.BathCleaningType bathType,
                   String constraintType) {
             this.id = assignment.staff.id;
             this.name = assignment.staff.name;
+            this.originalName = assignment.staff.name;  // ★追加: ソート位置安定化用に初期名を保持
             this.floors = new ArrayList<>(assignment.floors);
             this.roomsByFloor = new HashMap<>(assignment.roomsByFloor);
             this.detailedRoomsByFloor = new HashMap<>();
@@ -99,6 +102,7 @@ public class AssignmentEditorGUI extends JFrame {
             this.constraintType = constraintType != null ? constraintType : "制限なし";
             this.isLinenClosetCleaning = assignment.isLinenClosetCleaning;
             this.linenClosetFloors = assignment.getLinenClosetFloors();
+            this.isSuppliesOrder = assignment.isSuppliesOrder;
             this.hasMainBuilding = assignment.floors.stream().anyMatch(f -> f <= 10);
             this.hasAnnexBuilding = assignment.floors.stream().anyMatch(f -> f > 10);
 
@@ -126,6 +130,9 @@ public class AssignmentEditorGUI extends JFrame {
             // 大浴場清掃のポイント調整
             if (bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
                 totalPoints += bathCleaningType.reduction;
+            } else if (isSuppliesOrder) {
+                // ★追加: 備品発注担当のポイント調整（-6室分を補正）
+                totalPoints += AdaptiveRoomOptimizer.SUPPLIES_ORDER_REDUCTION;
             }
 
             this.totalPoints = totalPoints;
@@ -203,6 +210,9 @@ public class AssignmentEditorGUI extends JFrame {
             // 大浴場清掃タイプを表示
             if (bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
                 sb.append(bathCleaningType.displayName);
+            } else if (isSuppliesOrder) {
+                // ★追加: 備品発注担当
+                sb.append("備品発注");
             } else {
                 sb.append("通常");
             }
@@ -1340,6 +1350,9 @@ public class AssignmentEditorGUI extends JFrame {
             dist.annexEcoAssignedRooms = annexEco;
             dist.updateTotal();
 
+            // ★追加: 備品発注担当フラグを引き継ぐ（再最適化時に-6を再適用するため）
+            dist.isSuppliesOrder = staffData.isSuppliesOrder;
+
             distribution.put(staffName, dist);
         }
 
@@ -1414,9 +1427,10 @@ public class AssignmentEditorGUI extends JFrame {
                         bType = RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.ANNEX_ONLY;
                     }
 
+                    boolean isSupplies = staffData.isSuppliesOrder;
                     constraints.add(new RoomAssignmentApplication.StaffPointConstraint(
                             staffData.id, staffName, cType, bType,
-                            upperLimit, lowerMin, lowerMax, isBathCleaning));
+                            upperLimit, lowerMin, lowerMax, isBathCleaning, isSupplies));
                     processedStaff.add(staffName);
                 }
             }
@@ -1457,6 +1471,35 @@ public class AssignmentEditorGUI extends JFrame {
                     processedStaff.add(staffName);
                 }
             }
+        }
+
+        // ★追加: 3. 備品発注担当スタッフで、まだ処理されていないスタッフを追加
+        //   pointConstraintsに含まれない「制限なし」の備品発注担当が漏れないようにする
+        for (Map.Entry<String, StaffData> entry : staffDataMap.entrySet()) {
+            String staffName = entry.getKey();
+            StaffData staffData = entry.getValue();
+
+            if (processedStaff.contains(staffName) || !staffData.isSuppliesOrder) {
+                continue;
+            }
+
+            RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment bType =
+                    RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.BOTH;
+
+            if (staffData.hasMainBuilding && !staffData.hasAnnexBuilding) {
+                bType = RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.MAIN_ONLY;
+            } else if (!staffData.hasMainBuilding && staffData.hasAnnexBuilding) {
+                bType = RoomAssignmentApplication.StaffPointConstraint.BuildingAssignment.ANNEX_ONLY;
+            }
+
+            constraints.add(new RoomAssignmentApplication.StaffPointConstraint(
+                    staffData.id, staffName,
+                    RoomAssignmentApplication.StaffPointConstraint.ConstraintType.NONE,
+                    bType,
+                    0, 0, 0,
+                    false,   // 大浴場清掃ではない
+                    true));  // ★備品発注担当
+            processedStaff.add(staffName);
         }
 
         return constraints;
@@ -1938,6 +1981,9 @@ public class AssignmentEditorGUI extends JFrame {
         double adjustment = 0;
         if (staff.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
             adjustment = staff.bathCleaningType.reduction;
+        } else if (staff.isSuppliesOrder) {
+            // ★追加: 備品発注担当の調整（-6室分を補正）
+            adjustment = AdaptiveRoomOptimizer.SUPPLIES_ORDER_REDUCTION;
         }
 
         staff.totalRooms = totalRooms;
@@ -2372,6 +2418,10 @@ public class AssignmentEditorGUI extends JFrame {
         if (staff.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
             return 0; // 大浴場清掃グループ
         }
+        // ★追加: 備品発注担当グループ（大浴場清掃の次）
+        if (staff.isSuppliesOrder) {
+            return 5;
+        }
         // 通常スタッフは制約優先度でグループ分け（10以上）
         return 10 + getConstraintPriority(staff);
     }
@@ -2392,6 +2442,11 @@ public class AssignmentEditorGUI extends JFrame {
             if (s1.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE &&
                     s2.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
                 return 1;
+            }
+
+            // ★追加: 1.5 備品発注担当を大浴場清掃の次に並べる
+            if (s1.isSuppliesOrder != s2.isSuppliesOrder) {
+                return s1.isSuppliesOrder ? -1 : 1;
             }
 
             // 2. 制約タイプによる優先度
@@ -2418,8 +2473,8 @@ public class AssignmentEditorGUI extends JFrame {
                 return Integer.compare(minFloor1, minFloor2);
             }
 
-            // 5. 階数も同じ場合はスタッフ名で比較
-            return s1.name.compareTo(s2.name);
+            // 5. 階数も同じ場合はスタッフ名で比較（★修正: 入れ替え後も位置が変わらないようoriginalNameを使用）
+            return s1.originalName.compareTo(s2.originalName);
         });
 
         return sortedStaff;

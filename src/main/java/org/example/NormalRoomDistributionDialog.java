@@ -58,6 +58,8 @@ public class NormalRoomDistributionDialog extends JDialog {
     // ★★追加: 階別の手動割り当て（任意機能）
     private Map<Integer, ManualFloorAssignmentDialog.FloorInv> manualInventory = new HashMap<>();
     private Map<String, ManualFloorAssignmentDialog.StaffManual> manualLayout = null;
+    // ★★追加: 「階別の手動割り当て」を実際に確定したか（初期レイアウト反映と区別するため）
+    private boolean manualLayoutUsed = false;
 
     /**
      * ★拡張版: スタッフ割り振り情報
@@ -717,6 +719,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         mdlg.setVisible(true);   // 表示と同時に「割り当て済み数」ウィンドウが開く
         if (mdlg.isConfirmed()) {
             manualLayout = mdlg.getResultLayout();
+            manualLayoutUsed = true;   // ★★追加: 実際に手動割り当てを確定した
             JOptionPane.showMessageDialog(this,
                     "手動割り当てを保存しました。\nこのままOKで確定すると、この割り当てが使用されます（CP-SATは使いません）。",
                     "階別の手動割り当て", JOptionPane.INFORMATION_MESSAGE);
@@ -1487,6 +1490,24 @@ public class NormalRoomDistributionDialog extends JDialog {
     /** ★★追加: 手動レイアウトを取得（未使用時は null） */
     public Map<String, ManualFloorAssignmentDialog.StaffManual> getManualLayout() {
         return manualLayout;
+    }
+
+    /**
+     * ★★追加: 「階別の手動割り当て」ダイアログを実際に開いて確定したかどうか。
+     * setInitialManualLayout による初期反映だけでは true にならない。
+     */
+    public boolean isManualLayoutUsed() {
+        return manualLayoutUsed;
+    }
+
+    /**
+     * ★★追加: 初期の手動レイアウトを設定
+     * 「清掃割り当て調整」画面から戻る際に、既存の割り当て状態を
+     * 「階別の手動割り当て」ダイアログの初期表示として使用する。
+     * 最初のフロー（CP-SAT自動配分）からはこのメソッドを呼ばないため影響なし。
+     */
+    public void setInitialManualLayout(Map<String, ManualFloorAssignmentDialog.StaffManual> layout) {
+        this.manualLayout = layout;
     }
 
     /**

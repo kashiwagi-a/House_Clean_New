@@ -797,6 +797,39 @@ public class FileProcessor {
         }
     }
 
+    // ★新規追加: 在籍スタッフ全員を取得するメソッド（シフト値を問わない）
+    // 担当者変更（手動選択）ダイアログ用。既存のgetAvailableStaffは変更せず温存。
+    public static List<Staff> getAllEnrolledStaff(File file) {
+        try (FileInputStream fis = new FileInputStream(file);
+             Workbook workbook = new XSSFWorkbook(fis)) {
+
+            Sheet sheet = workbook.getSheetAt(0);
+            List<Staff> enrolledStaff = new ArrayList<>();
+
+            // スタッフ名はF列(インデックス5)、6行目(インデックス5)以降に記載
+            // getAvailableStaffと同じ走査範囲を使用
+            for (int i = 5; i <= 999; i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                Cell nameCell = row.getCell(5);
+                String staffName = getCellValueAsString(nameCell).trim();
+
+                // シフト値は判定に使わない。名前があれば全員追加。
+                if (!staffName.isEmpty()) {
+                    enrolledStaff.add(new Staff(staffName, staffName));
+                }
+            }
+
+            LOGGER.info("在籍スタッフ読み込み完了: " + enrolledStaff.size() + "名");
+            return enrolledStaff;
+
+        } catch (Exception e) {
+            LOGGER.log(Level.SEVERE, "在籍スタッフ読み込み中にエラーが発生しました", e);
+            return new ArrayList<>();
+        }
+    }
+
     // スタッフシフトファイルで日付列を検索
     private static int findDateColumnInShiftFile(Row dateRow, LocalDate targetDate) {
         if (dateRow == null) return -1;

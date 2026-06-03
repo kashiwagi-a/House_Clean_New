@@ -976,6 +976,108 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     /**
+     * ★新規追加: 担当者変更ダイアログ
+     * 在籍スタッフ全員をチェックボックス一覧で表示し、選択されたスタッフのリストを返す。
+     * 初期状態は全て未チェック。キャンセル時はnullを返す。
+     * 0人でOK押下時は警告を表示し、ダイアログは閉じない。
+     */
+    private List<FileProcessor.Staff> showStaffSelectionDialog(java.awt.Window parent) {
+        if (selectedShiftFile == null) {
+            JOptionPane.showMessageDialog(parent,
+                    "シフトファイルが選択されていません。",
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
+
+        // 在籍スタッフ全員を読み込み（シフト値は問わない）
+        final List<FileProcessor.Staff> enrolledStaff =
+                FileProcessor.getAllEnrolledStaff(selectedShiftFile);
+
+        if (enrolledStaff.isEmpty()) {
+            JOptionPane.showMessageDialog(parent,
+                    "在籍スタッフが見つかりませんでした。",
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
+
+        // 親ウィンドウに応じてJDialogを生成
+        final JDialog dialog;
+        if (parent instanceof Frame) {
+            dialog = new JDialog((Frame) parent, "担当者変更", true);
+        } else if (parent instanceof Dialog) {
+            dialog = new JDialog((Dialog) parent, "担当者変更", true);
+        } else {
+            dialog = new JDialog((Frame) null, "担当者変更", true);
+        }
+        dialog.setLayout(new BorderLayout());
+        dialog.setSize(380, 520);
+        dialog.setLocationRelativeTo(parent);
+
+        // 説明パネル
+        JPanel infoPanel = new JPanel(new GridLayout(2, 1));
+        infoPanel.setBorder(BorderFactory.createTitledBorder("担当者選択"));
+        infoPanel.add(new JLabel(" 担当するスタッフにチェックを入れてください"));
+        infoPanel.add(new JLabel(" 在籍スタッフ: " + enrolledStaff.size() + "名"));
+
+        // チェックボックス一覧（初期は全て未チェック）
+        JPanel checkPanel = new JPanel();
+        checkPanel.setLayout(new BoxLayout(checkPanel, BoxLayout.Y_AXIS));
+        checkPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+
+        final List<JCheckBox> checkBoxes = new ArrayList<>();
+        for (FileProcessor.Staff staff : enrolledStaff) {
+            JCheckBox cb = new JCheckBox(staff.name);
+            cb.setSelected(false); // 仕様: 初期は全て未チェック
+            checkBoxes.add(cb);
+            checkPanel.add(cb);
+        }
+
+        JScrollPane scrollPane = new JScrollPane(checkPanel);
+        scrollPane.getVerticalScrollBar().setUnitIncrement(16);
+
+        // ボタンパネル
+        JPanel buttonPanel = new JPanel(new FlowLayout());
+
+        // OK結果の格納用（キャンセル時は空のまま、OK時に選択分が入る）
+        final List<FileProcessor.Staff> result = new ArrayList<>();
+
+        JButton okButton = new JButton("OK");
+        okButton.addActionListener(e -> {
+            List<FileProcessor.Staff> selected = new ArrayList<>();
+            for (int i = 0; i < checkBoxes.size(); i++) {
+                if (checkBoxes.get(i).isSelected()) {
+                    selected.add(enrolledStaff.get(i));
+                }
+            }
+            if (selected.isEmpty()) {
+                // 仕様: 0人で警告を出してダイアログは閉じない
+                JOptionPane.showMessageDialog(dialog,
+                        "1人以上選択してください。",
+                        "警告", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            result.clear();
+            result.addAll(selected);
+            dialog.dispose();
+        });
+
+        JButton cancelButton = new JButton("キャンセル");
+        cancelButton.addActionListener(e -> dialog.dispose());
+
+        buttonPanel.add(okButton);
+        buttonPanel.add(cancelButton);
+
+        dialog.add(infoPanel, BorderLayout.NORTH);
+        dialog.add(scrollPane, BorderLayout.CENTER);
+        dialog.add(buttonPanel, BorderLayout.SOUTH);
+
+        dialog.setVisible(true);
+
+        // resultが空 = キャンセル、それ以外 = OK確定
+        return result.isEmpty() ? null : result;
+    }
+
+    /**
      * ★修正: ポイント制限・大浴場清掃スタッフ選択(制限値入力エラー修正版)
      */
     private List<StaffPointConstraint> selectStaffPointConstraintsWithBathCleaning(
@@ -1184,6 +1286,34 @@ public class RoomAssignmentApplication extends JFrame {
 
         AtomicBoolean confirmed = new AtomicBoolean(false);
 
+        // ★新規追加: 担当者変更ボタン（在籍スタッフから手動で選び直し）
+        JButton staffChangeButton = new JButton("担当者変更");
+        staffChangeButton.addActionListener(e -> {
+            List<FileProcessor.Staff> newStaff = showStaffSelectionDialog(dialog);
+            if (newStaff == null) {
+                // キャンセルされた、またはエラー時は何もしない（既存のスタッフリストを維持）
+                return;
+            }
+
+            // availableStaffをインプレース更新（参照は維持したまま中身を入れ替える）
+            availableStaff.clear();
+            availableStaff.addAll(newStaff);
+
+            // テーブルを再構築（全行クリア → 新スタッフで再構築、設定はすべてリセット）
+            tableModel.setRowCount(0);
+            for (FileProcessor.Staff staff : availableStaff) {
+                Object[] row = {staff.name, "制限なし", "", "両方", false, false, "未設定"};
+                tableModel.addRow(row);
+            }
+
+            // タイトルバーの人数表示を更新
+            staffPanel.setBorder(BorderFactory.createTitledBorder(
+                    "当日スタッフ数 : (" + availableStaff.size() + "名)"));
+            staffPanel.repaint();
+
+            appendLog("担当者を変更しました: " + availableStaff.size() + "名");
+        });
+
         JButton okButton = new JButton("設定完了");
         okButton.addActionListener(e -> {
             confirmed.set(true);
@@ -1193,6 +1323,7 @@ public class RoomAssignmentApplication extends JFrame {
         JButton cancelButton = new JButton("キャンセル");
         cancelButton.addActionListener(e -> dialog.dispose());
 
+        buttonPanel.add(staffChangeButton);
         buttonPanel.add(okButton);
         buttonPanel.add(cancelButton);
 

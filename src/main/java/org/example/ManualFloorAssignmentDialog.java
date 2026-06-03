@@ -3,9 +3,12 @@ package org.example;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
+import javax.swing.text.DefaultFormatterFactory;
+import javax.swing.text.NumberFormatter;
 import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.text.ParseException;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -93,7 +96,6 @@ public class ManualFloorAssignmentDialog extends JDialog {
     /** 各スタッフUIの参照（再計算・再描画用） */
     private static class StaffPanelRefs {
         JPanel rowsPanel;
-        JSpinner ecoTotalSpinner;
         JLabel totalsLabel;
         List<RowRefs> rows = new ArrayList<>();
     }
@@ -140,7 +142,7 @@ public class ManualFloorAssignmentDialog extends JDialog {
         }
 
         buildUI();
-        setSize(720, 760);
+        setSize(980, 760);   // ★横幅のみ拡大（引き伸ばさずに見えるように）。縦は従来どおり
         setLocationRelativeTo(parent);
 
         // 表示と同時に「割り当て済み数」ウィンドウを開く（このダイアログの子として）
@@ -207,19 +209,7 @@ public class ManualFloorAssignmentDialog extends JDialog {
         body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
         body.setBorder(new EmptyBorder(0, 8, 8, 8));
 
-        // ---- Eco総数 ----
-        JPanel ecoPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
-        ecoPanel.add(new JLabel("Eco総数（上限）:"));
-        JSpinner ecoTotalSpinner = new JSpinner(new SpinnerNumberModel(sm.ecoTotal, 0, 999, 1));
-        ecoTotalSpinner.setPreferredSize(new Dimension(64, 26));
-        ecoTotalSpinner.addChangeListener(e -> {
-            sm.ecoTotal = (int) ecoTotalSpinner.getValue();
-            recalc(name);
-        });
-        refs.ecoTotalSpinner = ecoTotalSpinner;
-        ecoPanel.add(ecoTotalSpinner);
-        ecoPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
-        body.add(ecoPanel);
+        // ---- Eco総数（上限）の設定UIは撤廃。Ecoは各行で入力し、階の実在庫のみで検証する ----
 
         // ---- 行ヘッダ ----
         JPanel rowHeader = new JPanel(new GridLayout(1, 6, 4, 0));
@@ -454,7 +444,7 @@ public class ManualFloorAssignmentDialog extends JDialog {
             sb.append(chip("別館S", annexS, capAnnexS));
             sb.append(chip("別館T", annexT, capAnnexT));
         }
-        sb.append(chip("Eco", ecoSum, sm.ecoTotal));
+        sb.append(chipCount("Eco", ecoSum));   // ★Eco上限撤廃：入力数のみ表示（階の実在庫超過は別途検証）
         sb.append("</html>");
         refs.totalsLabel.setText(sb.toString());
 
@@ -498,7 +488,7 @@ public class ManualFloorAssignmentDialog extends JDialog {
             if (mainT != capMainT) errors.add(String.format("%s: 本館T 合計%d ≠ 上限%d", name, mainT, capMainT));
             if (annexS != capAnnexS) errors.add(String.format("%s: 別館S 合計%d ≠ 上限%d", name, annexS, capAnnexS));
             if (annexT != capAnnexT) errors.add(String.format("%s: 別館T 合計%d ≠ 上限%d", name, annexT, capAnnexT));
-            if (ecoSum != sm.ecoTotal) errors.add(String.format("%s: Eco 合計%d ≠ Eco総数%d", name, ecoSum, sm.ecoTotal));
+            // ★Eco上限の一致チェックは撤廃（Ecoは各階の実在庫超過のみ下で検証）
         }
 
         // 在庫超過
@@ -575,14 +565,30 @@ public class ManualFloorAssignmentDialog extends JDialog {
 
     private String capText(NormalRoomDistributionDialog.StaffDistribution d) {
         if (d == null) return "";
-        return String.format("上限：本館 S%d / T%d　別館 S%d / T%d",
-                d.mainSingleAssignedRooms, d.mainTwinAssignedRooms,
-                d.annexSingleAssignedRooms, d.annexTwinAssignedRooms);
+        boolean hasMain = (d.mainSingleAssignedRooms + d.mainTwinAssignedRooms) > 0;
+        boolean hasAnnex = (d.annexSingleAssignedRooms + d.annexTwinAssignedRooms) > 0;
+
+        List<String> parts = new ArrayList<>();
+        if (hasMain) {
+            parts.add(String.format("本館 S%d / T%d",
+                    d.mainSingleAssignedRooms, d.mainTwinAssignedRooms));
+        }
+        if (hasAnnex) {
+            parts.add(String.format("別館 S%d / T%d",
+                    d.annexSingleAssignedRooms, d.annexTwinAssignedRooms));
+        }
+        if (parts.isEmpty()) return "";   // どちらも0なら上限表示なし（対象外スタッフ）
+        return "上限：" + String.join("　", parts);
     }
 
     private String chip(String label, int actual, int cap) {
         String color = (actual == cap) ? "#1B7F4B" : "#B3261E"; // 一致=緑 / 不一致=赤
         return String.format("<span style='color:%s'>&nbsp;%s %d/%d&nbsp;</span>", color, label, actual, cap);
+    }
+
+    /** 上限を持たない項目（Eco等）の入力数のみを表示するチップ */
+    private String chipCount(String label, int actual) {
+        return String.format("<span style='color:#333333'>&nbsp;%s %d&nbsp;</span>", label, actual);
     }
 
     private JLabel makeBadge(String text, Color fg, Color bg) {
@@ -611,8 +617,39 @@ public class ManualFloorAssignmentDialog extends JDialog {
     private JSpinner makeCountSpinner(int value, java.util.function.IntConsumer onChange) {
         JSpinner sp = new JSpinner(new SpinnerNumberModel(value, 0, 999, 1));
         sp.setPreferredSize(new Dimension(56, 26));
+        applyZeroAsBlankFormatter(sp);
         sp.addChangeListener(e -> onChange.accept((int) sp.getValue()));
         return sp;
+    }
+
+    /** 0を空白で表示するフォーマッタをスピナーに適用（見やすさ向上のため） */
+    private void applyZeroAsBlankFormatter(JSpinner spinner) {
+        JSpinner.NumberEditor editor = (JSpinner.NumberEditor) spinner.getEditor();
+        JFormattedTextField textField = editor.getTextField();
+
+        NumberFormatter formatter = new NumberFormatter() {
+            @Override
+            public String valueToString(Object value) throws ParseException {
+                if (value == null || (value instanceof Number && ((Number) value).intValue() == 0)) {
+                    return "";
+                }
+                return super.valueToString(value);
+            }
+
+            @Override
+            public Object stringToValue(String text) throws ParseException {
+                if (text == null || text.trim().isEmpty()) {
+                    return 0;
+                }
+                return super.stringToValue(text);
+            }
+        };
+        formatter.setValueClass(Integer.class);
+        formatter.setMinimum(0);
+        formatter.setMaximum(999);
+
+        textField.setFormatterFactory(new DefaultFormatterFactory(formatter));
+        textField.setHorizontalAlignment(JTextField.CENTER);
     }
 
     // ---- 並び順（割り振り設定画面と同一ロジック）----
@@ -761,6 +798,7 @@ public class ManualFloorAssignmentDialog extends JDialog {
                         if (take > 0) {
                             roomCounts.merge(t, take, Integer::sum);
                             remaining -= take;
+                            avail.put(t, avail.get(t) - take);  // ★追加: 取ったぶんを共有在庫から減算（次のスタッフ/行へ持ち越す）
                         }
                     }
                 }

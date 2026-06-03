@@ -1255,6 +1255,37 @@ public class AssignmentEditorGUI extends JFrame {
                 bathType,
                 originalDistribution);  // ★元の設定値を使用
 
+        // ★★追加: 「階別の手動割り当て」を使えるようにするため、在庫・利用可能階・既存割当を渡す
+        try {
+            // 在庫（階プルダウンの選択肢・検証用）
+            Map<Integer, ManualFloorAssignmentDialog.FloorInv> manualInv =
+                    ManualFloorAssignmentDialog.buildInventory(cleaningData);
+            dialog.setManualInventory(manualInv);
+
+            // 利用可能フロア（指定階バリデーション用）
+            // ★注意: availableAnnexFloors は「内部キー（実階+20）」を入れる仕様
+            //   （NormalRoomDistributionDialog 内部で f > 20 ? f - 20 : f により実階に変換される）
+            Set<Integer> mainFloors = new HashSet<>();
+            Set<Integer> annexFloors = new HashSet<>();
+            for (Map.Entry<Integer, ManualFloorAssignmentDialog.FloorInv> en : manualInv.entrySet()) {
+                ManualFloorAssignmentDialog.FloorInv fi = en.getValue();
+                if (fi.isMain) {
+                    mainFloors.add(fi.floorKey);
+                } else {
+                    annexFloors.add(fi.floorKey);
+                }
+            }
+            dialog.setAvailableFloors(mainFloors, annexFloors);
+
+            // 既存の割り当て状態を「階別の手動割り当て」の初期表示として構築
+            Map<String, ManualFloorAssignmentDialog.StaffManual> initialLayout =
+                    buildInitialManualLayout(manualInv);
+            dialog.setInitialManualLayout(initialLayout);
+        } catch (Exception ex) {
+            // 失敗時は手動割り当て初期反映なしで続行（ダイアログ自体は使える）
+            System.err.println("手動割り当ての初期化に失敗しました: " + ex.getMessage());
+        }
+
         dialog.setVisible(true);
 
         if (dialog.getDialogResult()) {
@@ -1262,17 +1293,137 @@ public class AssignmentEditorGUI extends JFrame {
             Map<String, NormalRoomDistributionDialog.StaffDistribution> newDistribution =
                     dialog.getCurrentDistribution();
 
-            // 変更確認メッセージ
+            // ★★追加: 「階別の手動割り当て」が実際に確定されたかを判定
+            //   （setInitialManualLayout による初期反映だけでは true にならない）
+            boolean useManual = dialog.isManualLayoutUsed();
+            Map<String, ManualFloorAssignmentDialog.StaffManual> manualLayout =
+                    dialog.getManualLayout();
+            if (useManual && (manualLayout == null || manualLayout.isEmpty())) {
+                useManual = false; // 念のため（手動レイアウトが空なら従来フロー）
+            }
+
+            // 変更確認メッセージ（手動確定時はCP-SATを使わない旨を表示）
             int confirm = JOptionPane.showConfirmDialog(this,
-                    "部屋割り振り設定を変更しました。\n" +
-                            "この設定で再最適化を実行しますか？\n\n" +
-                            "（「いいえ」を選択すると変更は破棄されます）",
+                    (useManual
+                            ? "階別の手動割り当てで確定します（CP-SATは使いません）。\n" +
+                            "この内容で反映しますか？\n\n"
+                            : "部屋割り振り設定を変更しました。\n" +
+                            "この設定で再最適化を実行しますか？\n\n")
+                            + "（「いいえ」を選択すると変更は破棄されます）",
                     "確認", JOptionPane.YES_NO_OPTION);
 
             if (confirm == JOptionPane.YES_OPTION) {
-                applyNewDistribution(newDistribution);
+                if (useManual) {
+                    // ★ CP-SATを通さず、手動レイアウトで確定
+                    applyManualLayout(manualLayout, newDistribution);
+                } else {
+                    // ★ 従来どおりCP-SATで再最適化
+                    applyNewDistribution(newDistribution);
+                }
             }
         }
+    }
+
+    /**
+     * ★★追加: 現在のスタッフ割り当て状態から「階別の手動割り当て」の初期レイアウトを構築。
+     * staffDataMap.detailedRoomsByFloor の各部屋を S(シングル等)/T(ツイン)/Eco に分類し、
+     * 階ごとの FloorAssign を作成する。リネン庫担当階も反映する。
+     *
+     * @param manualInv 階別在庫（本館/別館判定や floorKey の参照に使用）
+     * @return スタッフ名 -> StaffManual のマップ
+     */
+    private Map<String, ManualFloorAssignmentDialog.StaffManual> buildInitialManualLayout(
+            Map<Integer, ManualFloorAssignmentDialog.FloorInv> manualInv) {
+
+        Map<String, ManualFloorAssignmentDialog.StaffManual> result = new HashMap<>();
+
+        for (Map.Entry<String, StaffData> entry : staffDataMap.entrySet()) {
+            String staffName = entry.getKey();
+            StaffData staffData = entry.getValue();
+
+            ManualFloorAssignmentDialog.StaffManual sm =
+                    new ManualFloorAssignmentDialog.StaffManual(staffName);
+
+            // リネン庫担当階セット（floorKey 一致で判定。本館はそのまま、別館は実階+20の floorKey）
+            Set<Integer> linenFloorKeys = new HashSet<>();
+            if (staffData.linenClosetFloors != null) {
+                for (Integer f : staffData.linenClosetFloors) {
+                    linenFloorKeys.add(f);
+                }
+            }
+
+            int ecoTotal = 0;
+
+            if (staffData.detailedRoomsByFloor != null) {
+                // 階番号順に並べる
+                List<Integer> sortedFloors = new ArrayList<>(staffData.detailedRoomsByFloor.keySet());
+                Collections.sort(sortedFloors);
+
+                for (Integer floorKey : sortedFloors) {
+                    List<FileProcessor.Room> rooms = staffData.detailedRoomsByFloor.get(floorKey);
+                    if (rooms == null || rooms.isEmpty()) continue;
+
+                    int singleCount = 0;
+                    int twinCount = 0;
+                    int ecoCount = 0;
+
+                    for (FileProcessor.Room room : rooms) {
+                        if (room.isEcoClean) {
+                            ecoCount++;
+                        } else if ("T".equals(room.roomType)) {
+                            twinCount++;
+                        } else {
+                            singleCount++;
+                        }
+                    }
+
+                    // 本館/別館の判定（在庫から取得。無い場合は floorKey の値で簡易判定）
+                    boolean isMain;
+                    ManualFloorAssignmentDialog.FloorInv fi = manualInv.get(floorKey);
+                    if (fi != null) {
+                        isMain = fi.isMain;
+                    } else {
+                        isMain = (floorKey <= 20);  // フォールバック
+                    }
+
+                    ManualFloorAssignmentDialog.FloorAssign fa =
+                            new ManualFloorAssignmentDialog.FloorAssign(floorKey, isMain);
+                    fa.singleCount = singleCount;
+                    fa.twinCount = twinCount;
+                    fa.ecoCount = ecoCount;
+                    fa.linen = linenFloorKeys.contains(floorKey);
+                    sm.rows.add(fa);
+
+                    ecoTotal += ecoCount;
+                }
+            }
+
+            // 担当外でもリネン庫だけ持っている階があれば、それも行として追加（部屋数0で）
+            for (Integer linenKey : linenFloorKeys) {
+                boolean alreadyAdded = false;
+                for (ManualFloorAssignmentDialog.FloorAssign fa : sm.rows) {
+                    if (fa.floorKey == linenKey) { alreadyAdded = true; break; }
+                }
+                if (!alreadyAdded) {
+                    boolean isMain;
+                    ManualFloorAssignmentDialog.FloorInv fi = manualInv.get(linenKey);
+                    if (fi != null) {
+                        isMain = fi.isMain;
+                    } else {
+                        isMain = (linenKey <= 20);
+                    }
+                    ManualFloorAssignmentDialog.FloorAssign fa =
+                            new ManualFloorAssignmentDialog.FloorAssign(linenKey, isMain);
+                    fa.linen = true;
+                    sm.rows.add(fa);
+                }
+            }
+
+            sm.ecoTotal = ecoTotal;
+            result.put(staffName, sm);
+        }
+
+        return result;
     }
 
     /**
@@ -1610,6 +1761,100 @@ public class AssignmentEditorGUI extends JFrame {
             statusLabel.setText("再最適化に失敗しました");
             JOptionPane.showMessageDialog(this,
                     "再最適化中にエラーが発生しました:\n" + ex.getMessage(),
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            ex.printStackTrace();
+        }
+    }
+
+    /**
+     * ★★追加: 階別の手動割り当てを適用（CP-SATを通さず確定）。
+     * applyNewDistribution と同じ後処理を行うが、optimizeMultiple の代わりに
+     * ManualFloorAssignmentDialog.buildStaffAssignments(...) で割り当てを確定する。
+     * 最初の処理フロー（RoomAssignmentApplication 側）の手動割り当てパスと同等。
+     */
+    private void applyManualLayout(
+            Map<String, ManualFloorAssignmentDialog.StaffManual> manualLayout,
+            Map<String, NormalRoomDistributionDialog.StaffDistribution> newDistribution) {
+        try {
+            setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+            statusLabel.setText("手動割り当てを反映中...");
+
+            FileProcessor.CleaningData cleaningData = processingResult.cleaningDataObj;
+
+            // 1. スタッフリスト（applyNewDistribution と同一の作り方）
+            List<FileProcessor.Staff> staffList = new ArrayList<>();
+            for (StaffData sd : staffDataMap.values()) {
+                staffList.add(new FileProcessor.Staff(sd.id, sd.name));
+            }
+
+            // 2. ポイント制約
+            List<RoomAssignmentApplication.StaffPointConstraint> pointConstraints =
+                    createPointConstraintsList();
+
+            // 3. 大浴場清掃タイプ（applyNewDistribution と同一の推定ロジック）
+            AdaptiveRoomOptimizer.BathCleaningType bathType =
+                    AdaptiveRoomOptimizer.BathCleaningType.NORMAL;  // デフォルト
+            if (processingResult.optimizationResult != null &&
+                    processingResult.optimizationResult.config != null &&
+                    processingResult.optimizationResult.config.bathAssignments != null) {
+                for (AdaptiveRoomOptimizer.BathCleaningType type :
+                        processingResult.optimizationResult.config.bathAssignments.values()) {
+                    if (type != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                        bathType = type;
+                        break;
+                    }
+                }
+            }
+
+            // 4. Config（rebuildStaffDataMap が config.bathAssignments を参照するため必須）
+            int totalRooms = cleaningData.totalMainRooms + cleaningData.totalAnnexRooms;
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig manualConfig =
+                    AdaptiveRoomOptimizer.AdaptiveLoadConfig.createAdaptiveConfigWithBathSelection(
+                            staffList,
+                            totalRooms,
+                            cleaningData.totalMainRooms,
+                            cleaningData.totalAnnexRooms,
+                            bathType,
+                            pointConstraints,
+                            newDistribution);
+
+            // 5. ★ CP-SATを通さず、手動レイアウトで割り当てを確定（最初のフローと同一呼び出し）
+            List<AdaptiveRoomOptimizer.StaffAssignment> manualAssignments =
+                    ManualFloorAssignmentDialog.buildStaffAssignments(
+                            manualLayout, cleaningData, staffList, newDistribution, bathType);
+
+            // 6. 単一解の OptimizationResult / ProcessingResult を作成
+            //    （processingResult を差し替える前に targetDate を取得して使用）
+            AdaptiveRoomOptimizer.OptimizationResult manualResult =
+                    new AdaptiveRoomOptimizer.OptimizationResult(
+                            manualAssignments, manualConfig,
+                            processingResult.optimizationResult.targetDate);
+            RoomAssignmentApplication.ProcessingResult newResult =
+                    new RoomAssignmentApplication.ProcessingResult(
+                            cleaningData, manualResult, new HashMap<>());
+
+            // 7. 後処理（applyNewDistribution の手順8〜12と同一）
+            this.currentAssignments = new ArrayList<>(manualAssignments);
+            this.processingResult = newResult;
+            rebuildStaffDataMap();
+            if (roomAssigner != null) {
+                assignRoomNumbers();
+            }
+            currentSolutionIndex = 0;
+            updateNavigationButtons();
+            refreshTable();
+
+            setCursor(Cursor.getDefaultCursor());
+            statusLabel.setText("階別の手動割り当てを反映しました");
+            JOptionPane.showMessageDialog(this,
+                    "階別の手動割り当てを反映しました。\n（CP-SATは使用していません）",
+                    "完了", JOptionPane.INFORMATION_MESSAGE);
+
+        } catch (Exception ex) {
+            setCursor(Cursor.getDefaultCursor());
+            statusLabel.setText("手動割り当ての反映に失敗しました");
+            JOptionPane.showMessageDialog(this,
+                    "手動割り当ての反映中にエラーが発生しました:\n" + ex.getMessage(),
                     "エラー", JOptionPane.ERROR_MESSAGE);
             ex.printStackTrace();
         }

@@ -49,6 +49,9 @@ public class RoomAssignmentApplication extends JFrame {
 
     private Set<String> selectedBrokenRoomsForCleaning = new HashSet<>();
 
+    // ★★追加: 割り振り画面で「スタッフ選択に戻る」が押されたか
+    private boolean distributionBackRequested = false;
+
     /**
      * ★拡張: ポイント制限管理用データ構造(大浴場清掃フラグ追加)
      */
@@ -677,14 +680,26 @@ public class RoomAssignmentApplication extends JFrame {
         // 4. 大浴場清掃タイプの選択
         final AdaptiveRoomOptimizer.BathCleaningType bathType = selectBathCleaningType();
 
-        // 5. ポイント制限の設定(大浴場清掃スタッフ選択機能付き)
-        final List<StaffPointConstraint> pointConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType);
+        // ★★変更: 5と5.5をループ化（割り振り画面の「スタッフ選択に戻る」でやり直し可能）
+        List<StaffPointConstraint> tmpConstraints;
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> tmpDistribution;
+        while (true) {
+            // 5. ポイント制限の設定(大浴場清掃スタッフ選択機能付き)
+            tmpConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType);
 
-        // 5.5. ★新機能: 通常清掃部屋の事前割り振り設定
-        appendLog("通常清掃部屋の割り振りパターンを設定中...");
-        final Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution =
-                selectNormalRoomDistribution(cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
-                        pointConstraints, availableStaff, bathType, floors);
+            // 5.5. ★新機能: 通常清掃部屋の事前割り振り設定
+            appendLog("通常清掃部屋の割り振りパターンを設定中...");
+            tmpDistribution = selectNormalRoomDistribution(
+                    cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
+                    tmpConstraints, availableStaff, bathType, floors);
+
+            if (!distributionBackRequested) {
+                break;  // OKまたはキャンセル → 従来どおり次へ進む
+            }
+            appendLog("「スタッフ選択に戻る」が選択されました。ポイント制限設定からやり直します。");
+        }
+        final List<StaffPointConstraint> pointConstraints = tmpConstraints;
+        final Map<String, NormalRoomDistributionDialog.StaffDistribution> roomDistribution = tmpDistribution;
 
         // 大浴場清掃スタッフの集計
         final long bathStaffCount = pointConstraints.stream()
@@ -889,6 +904,7 @@ public class RoomAssignmentApplication extends JFrame {
 
         // ★★追加: 手動レイアウトをリセット（今回未使用なら null のまま＝従来フロー）
         this.lastManualLayout = null;
+        this.distributionBackRequested = false;  // ★★追加: 戻るフラグをリセット
 
         // ★修正: ECO部屋はCP-SATが自動配分するため、通常室（シングル等・ツイン）のみ集計
         int totalMainSingleRooms = 0;
@@ -963,14 +979,24 @@ public class RoomAssignmentApplication extends JFrame {
         // ★★追加: 階別在庫を手動割り当てダイアログへ渡す（階プルダウンの選択肢になる）
         dialog.setManualInventory(this.pendingManualInventory);
 
+        // ★★追加: 初回フローでは「スタッフ選択に戻る」ボタンを表示する
+        dialog.showBackToStaffSelectionButton();
+
         dialog.setVisible(true);
+
+        // ★★追加: 「スタッフ選択に戻る」が押されたかを記録
+        this.distributionBackRequested = dialog.isBackToStaffSelection();
 
         if (dialog.getDialogResult()) {
             appendLog("通常清掃部屋の割り振りパターンが設定されました");
             this.lastManualLayout = dialog.getManualLayout();  // ★★追加（未使用なら null）
             return dialog.getCurrentDistribution();
         } else {
-            appendLog("通常清掃部屋の割り振り設定がキャンセルされました");
+            if (distributionBackRequested) {
+                appendLog("通常清掃部屋の割り振り設定からスタッフ選択に戻ります");
+            } else {
+                appendLog("通常清掃部屋の割り振り設定がキャンセルされました");
+            }
             return null;
         }
     }

@@ -8,6 +8,7 @@ import java.text.ParseException;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
+import com.google.ortools.sat.*;
 
 /**
  * 通常清掃部屋割り振りダイアログ - ECO対応版
@@ -26,10 +27,18 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private JComboBox<String> patternSelector;
     private JLabel summaryLabel;
+    private JLabel warningLabel; // ★条件未達（過制約）の警告表示
 
-    private Map<String, StaffDistribution> oneDiffPattern;
-    private Map<String, StaffDistribution> twoDiffPattern;
+    private Map<String, Map<String, StaffDistribution>> patternMap = new java.util.LinkedHashMap<>(); // ラベル→パターン（解なしは値null）
+    private String defaultPatternLabel;
     private Map<String, StaffDistribution> currentPattern;
+
+    // ★A案: 割り振りパターンのラベル（1部屋差/2部屋差 × 大浴場 下段/上段 の4種）
+    static final String PAT_1B = "1部屋差・大浴場下段";
+    static final String PAT_1T = "1部屋差・大浴場上段";
+    static final String PAT_2B = "2部屋差・大浴場下段";
+    static final String PAT_2T = "2部屋差・大浴場上段";
+    private static final String[] PATTERN_LABELS = { PAT_1B, PAT_1T, PAT_2B, PAT_2T };
 
     // ★既存フィールド（後方互換性のため保持）
     private int totalMainRooms;
@@ -47,6 +56,9 @@ public class NormalRoomDistributionDialog extends JDialog {
     private AdaptiveRoomOptimizer.BathCleaningType bathCleaningType;
 
     private boolean dialogResult = false;
+    // ★★追加: 「スタッフ選択に戻る」が押されたか（初回フロー用）
+    private boolean backToStaffSelection = false;
+    private JButton backToStaffButton;  // 既定は非表示（初回フローでのみ表示）
     private JPanel dataPanel;
     private JLabel availableFloorsLabel;  // ★★追加: 売れている階数表示用
 
@@ -261,10 +273,12 @@ public class NormalRoomDistributionDialog extends JDialog {
         this.bathCleaningType = bathCleaningType;
 
         calculateDistributionPatterns();
-        this.currentPattern = deepCopyPattern(oneDiffPattern);
+        this.defaultPatternLabel = firstAvailableLabel();
+        this.currentPattern = (patternMap.get(defaultPatternLabel) != null)
+                ? deepCopyPattern(patternMap.get(defaultPatternLabel)) : null;
 
         initializeGUI();
-        setSize(1690, 750);
+        setSize(1690, Math.min(950, Toolkit.getDefaultToolkit().getScreenSize().height - 60));
         setLocationRelativeTo(parent);
     }
 
@@ -300,15 +314,17 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         if (initialPattern != null && !initialPattern.isEmpty()) {
             this.currentPattern = deepCopyPattern(initialPattern);
-            this.oneDiffPattern = deepCopyPattern(initialPattern);
-            this.twoDiffPattern = deepCopyPattern(initialPattern);
+            for (String label : PATTERN_LABELS) patternMap.put(label, deepCopyPattern(initialPattern));
+            this.defaultPatternLabel = PAT_1B;
         } else {
             calculateDistributionPatterns();
-            this.currentPattern = deepCopyPattern(oneDiffPattern);
+            this.defaultPatternLabel = firstAvailableLabel();
+            this.currentPattern = (patternMap.get(defaultPatternLabel) != null)
+                    ? deepCopyPattern(patternMap.get(defaultPatternLabel)) : null;
         }
 
         initializeGUI();
-        setSize(1690, 750);
+        setSize(1690, Math.min(950, Toolkit.getDefaultToolkit().getScreenSize().height - 60));
         setLocationRelativeTo(parent);
     }
 
@@ -376,7 +392,7 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JPanel selectorPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         selectorPanel.add(new JLabel("割り振りパターン:"));
-        patternSelector = new JComboBox<>(new String[]{"1部屋差パターン", "2部屋差パターン"});
+        patternSelector = new JComboBox<>(PATTERN_LABELS);
         patternSelector.addActionListener(e -> switchPattern());
         selectorPanel.add(patternSelector);
 
@@ -385,7 +401,16 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         summaryLabel = new JLabel();
         summaryLabel.setFont(new Font("MS Gothic", Font.PLAIN, 12));
-        panel.add(summaryLabel, BorderLayout.SOUTH);
+
+        warningLabel = new JLabel();
+        warningLabel.setFont(new Font("MS Gothic", Font.PLAIN, 12));
+        warningLabel.setForeground(new Color(200, 0, 0));
+
+        JPanel southPanel = new JPanel();
+        southPanel.setLayout(new BoxLayout(southPanel, BoxLayout.Y_AXIS));
+        southPanel.add(summaryLabel);
+        southPanel.add(warningLabel);
+        panel.add(southPanel, BorderLayout.SOUTH);
 
         return panel;
     }
@@ -421,6 +446,8 @@ public class NormalRoomDistributionDialog extends JDialog {
         dataPanel = new JPanel();
         dataPanel.setLayout(new BoxLayout(dataPanel, BoxLayout.Y_AXIS));
 
+        // 初期表示パターンをセレクタに反映（解なしを避け、最初に解があるパターンを選ぶ）
+        if (defaultPatternLabel != null) patternSelector.setSelectedItem(defaultPatternLabel);
         updateDataPanel();
 
         JScrollPane scrollPane = new JScrollPane(dataPanel);
@@ -433,6 +460,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     private void updateDataPanel() {
+        if (currentPattern == null) { showNoSolution(); return; }
         dataPanel.removeAll();
 
         List<StaffDistribution> sortedStaff = new ArrayList<>(currentPattern.values());
@@ -454,6 +482,16 @@ public class NormalRoomDistributionDialog extends JDialog {
             int s2BuildingPriority = getBuildingPriority(s2);
             if (s1BuildingPriority != s2BuildingPriority) {
                 return Integer.compare(s1BuildingPriority, s2BuildingPriority);
+            }
+            // ★★追加: 「本館のみ」「別館のみ」グループ内は換算合計の小さい順に並べる
+            //   （大浴場清掃・備品発注・館またぎは対象外＝従来どおりの並び）
+            if (!s1.isBathCleaning && !s1.isSuppliesOrder
+                    && (s1BuildingPriority == 1 || s1BuildingPriority == 3)) {
+                int convCompare = Double.compare(s1.getConvertedTotal(), s2.getConvertedTotal());
+                if (convCompare != 0) {
+                    return convCompare;
+                }
+                return s1.staffName.compareTo(s2.staffName);
             }
             boolean s1IsVendor = "業者制限".equals(s1.constraintType);
             boolean s2IsVendor = "業者制限".equals(s2.constraintType);
@@ -687,6 +725,16 @@ public class NormalRoomDistributionDialog extends JDialog {
     private JPanel createButtonPanel() {
         JPanel panel = new JPanel(new FlowLayout());
 
+        // ★★追加: スタッフ選択（ポイント制限設定）に戻るボタン（初回フローでのみ表示）
+        backToStaffButton = new JButton("スタッフ選択に戻る");
+        backToStaffButton.addActionListener(e -> {
+            backToStaffSelection = true;
+            dialogResult = false;   // OK扱いにはしない
+            dispose();
+        });
+        backToStaffButton.setVisible(false);  // 既定は非表示
+        panel.add(backToStaffButton);
+
         JButton resetButton = new JButton("リセット");
         resetButton.addActionListener(e -> resetPattern());
         panel.add(resetButton);
@@ -727,6 +775,12 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     private boolean validateBeforeOk() {
+        if (currentPattern == null) {
+            JOptionPane.showMessageDialog(this,
+                    "選択中のパターンは解なしのため確定できません。別のパターンを選択してください。",
+                    "確定できません", JOptionPane.WARNING_MESSAGE);
+            return false;
+        }
         List<String> errors = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
 
@@ -889,14 +943,161 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     private void calculateDistributionPatterns() {
-        oneDiffPattern = calculatePatternWithCorrectLogic(-1);
-        twoDiffPattern = calculatePatternWithCorrectLogic(-2);
-        // ECO配分はCP-SATが自動で行うためここでは不要
+        // ★A案: 1部屋差/2部屋差 × 大浴場 下段/上段 の4パターンを、自動切替なしで固定計算する。
+        // ★A案: 1部屋差/2部屋差 × 大浴場 下段/上段 の4パターンを、自動切替なしで固定計算する。
+        patternMap.put(PAT_1B, calculatePatternForcedPeg(-1, true));
+        patternMap.put(PAT_1T, calculatePatternForcedPeg(-1, false));
+        patternMap.put(PAT_2B, calculatePatternForcedPeg(-2, true));
+        patternMap.put(PAT_2T, calculatePatternForcedPeg(-2, false));
 
-        System.out.println("=== 1部屋差パターン ===");
-        printPatternDebug(oneDiffPattern);
-        System.out.println("=== 2部屋差パターン ===");
-        printPatternDebug(twoDiffPattern);
+        for (String label : PATTERN_LABELS) {
+            System.out.println("=== " + label + " ===");
+            Map<String, StaffDistribution> p = patternMap.get(label);
+            if (p == null) {
+                System.out.println("（解なし: この基準では条件を満たす割り振りがありません）");
+            } else {
+                printPatternDebug(p);
+            }
+        }
+    }
+
+    /** 最初に解が存在するパターンのラベルを返す（全て解なしなら先頭ラベル）。 */
+    private String firstAvailableLabel() {
+        for (String label : PATTERN_LABELS) {
+            if (patternMap.get(label) != null) return label;
+        }
+        return PATTERN_LABELS[0];
+    }
+
+    /**
+     * ★A案: 大浴場の下段/上段を固定して割り振りパターンを生成する（差≧3の自動切替は行わない）。
+     * CP-SATがこの基準で実行不能なら null（＝解なし）を返し、呼び出し側はその旨を表示する。
+     * OR-Tools自体が使えない（例外）ときのみ、従来ヒューリスティックにフォールバックする。
+     * @param annexDifference 別館と本館の目標差（-1 または -2）
+     * @param pegToBottom true=大浴場/備品を下段(mainBottom)基準、false=上段(mainTop)基準
+     */
+    private Map<String, StaffDistribution> calculatePatternForcedPeg(int annexDifference, boolean pegToBottom) {
+        Map<String, StaffDistribution> base;
+        try {
+            base = buildBaseAssignmentCPSATForcedPeg(annexDifference, pegToBottom);
+            // base == null は「この基準では解なし」。A案では別pegにすり替えず、そのまま null を返す。
+        } catch (Throwable t) {
+            System.out.println("CP-SAT例外: " + t + " → ヒューリスティックにフォールバック");
+            base = buildBaseAssignmentHeuristic(annexDifference); // OR-Tools不可時の保険
+        }
+        if (base != null) distributeTwins(base);
+        return base;
+    }
+
+    /**
+     * ★固定peg版のCP-SAT求解。換算ベースで最良の配分を探索する。
+     * 通常配分→実行不能なら両建物1人(条件7)で再試行→それでも不能なら null。
+     * @param annexDifference 換算での目標差（-1=1部屋差, -2=2部屋差）
+     */
+    private Map<String, StaffDistribution> buildBaseAssignmentCPSATForcedPeg(int annexDifference, boolean pegToBottom) {
+        int desiredConvDiff = -annexDifference; // 1 または 2（換算での本館-別館差の目標）
+        CPSATSolution s = solveBest(desiredConvDiff, null, pegToBottom);
+        if (s != null) return s.pattern;
+        String splitName = pickSplitCandidate();
+        if (splitName != null) {
+            System.out.println("CP-SAT: 通常配分が実行不能 → 両建物1人(" + splitName + ")で再試行 (peg="
+                    + (pegToBottom ? "下段" : "上段") + ", 換算差=" + desiredConvDiff + ")");
+            s = solveBest(desiredConvDiff, splitName, pegToBottom);
+            if (s != null) return s.pattern;
+        }
+        return null;
+    }
+
+    /** 別館人数の探索窓（ヒューリスティック中心±）。 */
+    private static final int HEADCOUNT_WINDOW = 2;
+    /** 室差の探索窓（別館ツインの換算膨張ぶん、室では少し多めに差をつける必要があるため）。 */
+    private static final int ROOMDIFF_WINDOW = 2;
+    // 換算ベース選択の重み
+    private static final double W_REVERSAL = 12.0; // 換算での本館<別館の逆転
+    private static final double W_VENDOR   = 12.0; // 業者の換算が上限超過
+    private static final double W_CONVDIFF = 10.0; // 換算差が目標からずれる
+
+    /**
+     * ★換算ベース探索: 別館人数(fa)と内部の室差(roomDiff)を振って解き、
+     * 「ツイン配分後の換算」で評価して最良の配分を選ぶ。
+     *  - 換算での本館<別館の逆転を避ける
+     *  - 換算での本館-別館差が目標(desiredConvDiff)に近い
+     *  - 業者の換算が上限を超えない
+     * これらを重み付き合計で最小化し、同点はCP目的関数で決める。
+     * 室差を目標換算差より大きめにも振るのは、別館ツインの換算膨張ぶん、
+     * 室では少し多めに差をつけないと換算で目標差にならないため。
+     */
+    private CPSATSolution solveBest(int desiredConvDiff, String splitName, boolean pegToBottom) {
+        // 中心人数とfreeCountを取得（プローブ）。解なしでもフィールドは設定される。
+        solveDistributionCPSAT(-desiredConvDiff, splitName, pegToBottom, -1);
+        int center = lastHeuristicAnnex;
+        int freeCount = lastFreeCount;
+        int loFa = Math.max(0, center - HEADCOUNT_WINDOW);
+        int hiFa = Math.min(freeCount, center + HEADCOUNT_WINDOW);
+
+        CPSATSolution best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (int roomDiff = desiredConvDiff; roomDiff <= desiredConvDiff + ROOMDIFF_WINDOW; roomDiff++) {
+            for (int fa = loFa; fa <= hiFa; fa++) {
+                CPSATSolution s = solveDistributionCPSAT(-roomDiff, splitName, pegToBottom, fa);
+                if (s == null) continue;
+                double score = conversionScore(s.pattern, desiredConvDiff);
+                if (score < bestScore - 1e-9
+                        || (Math.abs(score - bestScore) < 1e-9 && (best == null || s.objective < best.objective))) {
+                    best = s;
+                    bestScore = score;
+                }
+            }
+        }
+        if (best != null) {
+            System.out.println("換算ベース探索: 目標換算差=" + desiredConvDiff + ", 人数中心=" + center
+                    + ", 採用score=" + String.format("%.2f", bestScore) + ", objective=" + best.objective);
+        }
+        return best;
+    }
+
+    /**
+     * ★ツイン配分後の換算でパターンを評価し、スコア（小さいほど良い）を返す。
+     * 通常スタッフ（制限なし・非大浴場・非備品）で本館・別館の換算レベルを測り、
+     * 逆転・目標差からのズレ・業者の換算上限超過を重み付けで合算する。
+     * 評価はコピーに対して行い、元のパターンには影響しない。
+     */
+    private double conversionScore(Map<String, StaffDistribution> prePattern, int desiredConvDiff) {
+        Map<String, StaffDistribution> copy = deepCopyPattern(prePattern);
+        distributeTwins(copy);
+        Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
+
+        double mainMaxConv = -1, mainMinConv = Double.MAX_VALUE;
+        double annexMaxConv = -1;
+        double vendorOver = 0;
+        for (StaffDistribution d : copy.values()) {
+            double conv = d.getConvertedTotal();
+            boolean isVendor = !"制限なし".equals(d.constraintType)
+                    && !"故障者制限".equals(d.constraintType)
+                    && !d.isBathCleaning && !d.isSuppliesOrder;
+            if (isVendor) {
+                StaffConstraintInfo info = staffInfo.get(d.staffName);
+                if (info != null && info.maxRooms > 0) {
+                    vendorOver += Math.max(0.0, conv - info.maxRooms); // 業者の換算が上限超過
+                }
+                continue;
+            }
+            // 通常スタッフ（制限なし・非大浴場・非備品）のみでレベルを測る
+            if (!"制限なし".equals(d.constraintType)) continue;
+            if (d.isBathCleaning || d.isSuppliesOrder) continue;
+            boolean pureMain = d.mainAssignedRooms > 0 && d.annexAssignedRooms == 0;
+            boolean pureAnnex = d.annexAssignedRooms > 0 && d.mainAssignedRooms == 0;
+            if (pureMain) { mainMaxConv = Math.max(mainMaxConv, conv); mainMinConv = Math.min(mainMinConv, conv); }
+            if (pureAnnex) { annexMaxConv = Math.max(annexMaxConv, conv); }
+        }
+
+        double score = W_VENDOR * vendorOver;
+        if (mainMaxConv >= 0 && annexMaxConv >= 0) {
+            double convDiff = mainMaxConv - annexMaxConv;                  // 換算での本館最大-別館最大
+            double reversal = Math.max(0.0, annexMaxConv - mainMinConv);   // 別館が本館を上回る量
+            score += W_CONVDIFF * Math.abs(convDiff - desiredConvDiff) + W_REVERSAL * reversal;
+        }
+        return score;
     }
 
     /**
@@ -912,17 +1113,11 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     /**
-     * ★★全面書き換え: 建物別独立計算ロジッ
-     * 新アルゴリズム概要:
-     * 1. スタッフを分類（大浴場/制約/本館固定/別館固定/自由配置）
-     * 2. 自由スタッフの本館・別館配分を最適化（別館base ≈ 本館base + annexDifference）
-     * 3. 建物ごとに基本部屋数を独立計算
-     *    - 本館: normalBase = (有効本館室数 + 大浴場人数×削減) / (通常本館人数 + 大浴場人数)
-     *    - 別館: annexBase = 有効別館室数 / 別館人数
-     * 4. 端数調整（ラウンドロビンで均等化）
-     * 5. ツイン均等配分
+     * ★フォールバック用（従来ロジック）: 建物別独立計算＋ラウンドロビン端数調整
+     * CP-SAT（buildBaseAssignmentCPSAT）が解けない/例外/実行不能のときに使用。
+     * 挙動は従来と同一。ツイン配分は呼び出し側（calculatePatternWithCorrectLogic）で行う。
      */
-    private Map<String, StaffDistribution> calculatePatternWithCorrectLogic(int annexDifference) {
+    private Map<String, StaffDistribution> buildBaseAssignmentHeuristic(int annexDifference) {
         Map<String, StaffDistribution> pattern = new HashMap<>();
         Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
         int bathReduction = bathCleaningType.reduction;
@@ -1114,73 +1309,560 @@ public class NormalRoomDistributionDialog extends JDialog {
         // ===== Step 6: 別館の合計を実際の部屋数に端数調整 =====
         adjustBuildingTotal(pattern, staffInfo, false, totalAnnexRooms);
 
-        // ===== Step 7: ツイン均等配分（ラウンドロビン） =====
-
-        // 本館担当スタッフ → まず全てシングルとして初期化
-        List<String> mainStaffList = new ArrayList<>();
-        for (Map.Entry<String, StaffDistribution> entry : pattern.entrySet()) {
-            if (entry.getValue().mainAssignedRooms > 0) {
-                mainStaffList.add(entry.getKey());
-            }
-        }
-        for (String staffName : mainStaffList) {
-            StaffDistribution dist = pattern.get(staffName);
-            dist.mainSingleAssignedRooms = dist.mainAssignedRooms;
-            dist.mainTwinAssignedRooms = 0;
-        }
-
-        // 本館ツインをラウンドロビンで均等配分
-        int mainTwinRemaining = totalMainTwinRooms;
-        int staffIndex = 0;
-        while (mainTwinRemaining > 0 && !mainStaffList.isEmpty()) {
-            String staffName = mainStaffList.get(staffIndex % mainStaffList.size());
-            StaffDistribution dist = pattern.get(staffName);
-            if (dist.mainSingleAssignedRooms > 0) {
-                dist.mainSingleAssignedRooms--;
-                dist.mainTwinAssignedRooms++;
-                mainTwinRemaining--;
-            }
-            staffIndex++;
-            if (staffIndex >= mainStaffList.size() * 100) {
-                System.out.println("警告: 本館ツイン配分で想定外のループ");
-                break;
-            }
-        }
-        System.out.println("本館ツイン配分完了: " + mainStaffList.size() + "名に均等配分");
-
-        // 別館担当スタッフ → まず全てシングルとして初期化
-        List<String> annexStaffList = new ArrayList<>();
-        for (Map.Entry<String, StaffDistribution> entry : pattern.entrySet()) {
-            if (entry.getValue().annexAssignedRooms > 0) {
-                annexStaffList.add(entry.getKey());
-            }
-        }
-        for (String staffName : annexStaffList) {
-            StaffDistribution dist = pattern.get(staffName);
-            dist.annexSingleAssignedRooms = dist.annexAssignedRooms;
-            dist.annexTwinAssignedRooms = 0;
-        }
-
-        // 別館ツインをラウンドロビンで均等配分
-        int annexTwinRemaining = totalAnnexTwinRooms;
-        staffIndex = 0;
-        while (annexTwinRemaining > 0 && !annexStaffList.isEmpty()) {
-            String staffName = annexStaffList.get(staffIndex % annexStaffList.size());
-            StaffDistribution dist = pattern.get(staffName);
-            if (dist.annexSingleAssignedRooms > 0) {
-                dist.annexSingleAssignedRooms--;
-                dist.annexTwinAssignedRooms++;
-                annexTwinRemaining--;
-            }
-            staffIndex++;
-            if (staffIndex >= annexStaffList.size() * 100) {
-                System.out.println("警告: 別館ツイン配分で想定外のループ");
-                break;
-            }
-        }
-        System.out.println("別館ツイン配分完了: " + annexStaffList.size() + "名に均等配分");
-
+        // ツイン配分は呼び出し側（calculatePatternWithCorrectLogic）で一度だけ実施
         return pattern;
+    }
+
+    /**
+     * ★割り振りパターン生成のエントリポイント。
+     * まずCP-SATで目標室数を解き（buildBaseAssignmentCPSAT）、
+     * 解けない/例外/実行不能なら従来ヒューリスティック（buildBaseAssignmentHeuristic）にフォールバック。
+     * 最後にツイン均等配分（distributeTwins）を一度だけ実施する。
+     * @param annexDifference 別館と本館の目標差（-1 または -2）
+     */
+    private Map<String, StaffDistribution> calculatePatternWithCorrectLogic(int annexDifference) {
+        Map<String, StaffDistribution> base = null;
+        try {
+            base = buildBaseAssignmentCPSAT(annexDifference);
+        } catch (Throwable t) {
+            System.out.println("CP-SAT例外: " + t + " → ヒューリスティックにフォールバック");
+            base = null;
+        }
+        if (base == null) {
+            System.out.println("CP-SAT解なし → ヒューリスティックにフォールバック (annexDiff=" + annexDifference + ")");
+            base = buildBaseAssignmentHeuristic(annexDifference);
+        }
+        distributeTwins(base);
+        return base;
+    }
+
+    /**
+     * ★CP-SATで目標室数（ツイン前の本館/別館室数）を確定する。
+     * 1) まず両建物1人なしで求解。
+     * 2) 実行不能なら、両建物1人（条件7）を立てて再求解。
+     * 3) それでも不能なら null を返す（呼び出し側がヒューリスティックにフォールバック）。
+     */
+    private Map<String, StaffDistribution> buildBaseAssignmentCPSAT(int annexDifference) {
+        CPSATSolution s = solveWithPegRule(annexDifference, null);
+        if (s != null) return s.pattern;
+        // 条件7: 両建物に触れる1人を選出して再試行
+        String splitName = pickSplitCandidate();
+        if (splitName != null) {
+            System.out.println("CP-SAT: 通常配分が実行不能 → 両建物1人(" + splitName + ")で再試行");
+            s = solveWithPegRule(annexDifference, splitName);
+            if (s != null) return s.pattern;
+        }
+        return null;
+    }
+
+    /** CP-SATの求解結果ホルダー。spanValid=trueのとき span=本館最大-別館最小 が有効。 */
+    private static class CPSATSolution {
+        final Map<String, StaffDistribution> pattern;
+        final int mainTop;
+        final int annexBottom;
+        final boolean spanValid;
+        final double objective; // 目的関数値（別館人数の探索で最良解の選定に使う）
+        CPSATSolution(Map<String, StaffDistribution> p, int mainTop, int annexBottom, boolean spanValid, double objective) {
+            this.pattern = p; this.mainTop = mainTop; this.annexBottom = annexBottom;
+            this.spanValid = spanValid; this.objective = objective;
+        }
+        int span() { return mainTop - annexBottom; }
+    }
+
+    // ★案B: solveDistributionCPSAT が直近の求解で用いた自由人数情報（別館人数探索の範囲決定に使用）
+    private int lastFreeCount = 0;
+    private int lastHeuristicAnnex = 0;
+
+    /**
+     * ★条件①: 大浴場・備品を「下段(mainBottom)基準」で解き、本館最大-別館最小の差で採否を決める。
+     *  - 差 ≦ 2 … 下段基準を採用
+     *  - 差 ≧ 3 … 不採用。上段(mainTop)基準で解き直す
+     * （レベル集合が空などで差が評価できない場合は下段基準をそのまま採用）
+     */
+    private CPSATSolution solveWithPegRule(int annexDifference, String splitName) {
+        CPSATSolution bottom = solveDistributionCPSAT(annexDifference, splitName, true);
+        if (bottom != null) {
+            if (!bottom.spanValid || bottom.span() <= 2) {
+                return bottom; // 下段基準を採用
+            }
+            System.out.println("CP-SAT: 本館最大-別館最小=" + bottom.span() + "(≧3) → 上段基準で解き直し");
+            CPSATSolution top = solveDistributionCPSAT(annexDifference, splitName, false);
+            return (top != null) ? top : bottom; // 上段が不能なら下段にフォールバック
+        }
+        // 下段が実行不能なら上段で試す
+        return solveDistributionCPSAT(annexDifference, splitName, false);
+    }
+
+    /** ★条件7: 両建物に触れる候補（制限なしスタッフを優先的に1名）。なければ null。 */
+    private String pickSplitCandidate() {
+        Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
+        String fallback = null;
+        for (Map.Entry<String, StaffConstraintInfo> e : staffInfo.entrySet()) {
+            StaffConstraintInfo info = e.getValue();
+            if (info.isBathCleaning || info.isSuppliesOrder) continue;
+            if (!"制限なし".equals(info.constraintType)) continue;
+            String bldg = info.buildingAssignment;
+            if (!"本館のみ".equals(bldg) && !"別館のみ".equals(bldg)) {
+                return e.getKey(); // 建物指定なし（自由）を最優先
+            }
+            if (fallback == null) fallback = e.getKey();
+        }
+        return fallback;
+    }
+
+    /**
+     * ★CP-SAT本体: 目標室数（ツイン前）を求める。解が無ければ null。
+     * splitName != null のとき、そのスタッフを「両建物担当（条件7）」として扱い、
+     * 総室数 = 別館の制限なし最小室数 - 1 とする（内訳はソルバーに委ねる）。
+     * pegToBottom=true のとき大浴場・備品を下段(mainBottom/annexBottom)基準、
+     * false のとき上段(mainTop/annexTop)基準にする（条件①）。
+     *
+     * 制約の割り当て:
+     *  - 大浴場 = 基準レベル - 削減(4/5)、備品発注 = 基準レベル - 6（ハード）
+     *  - 故障者: 1 ≤ r ≤ min(maxRooms, 同建物の制限なし最大)、かつ r ≥ min(maxRooms-2, 同建物の制限なし最大)
+     *           さらに目的関数で設定値(max)へ引き上げる（条件②）
+     *  - 業者: minRooms ≤ r ≤ maxRooms
+     *  - 建物ごとの合計 = 実部屋数（ハード）
+     *  - 目的: 各建物のばらつき最小化（重み大）＋ 故障者の引き上げ＋ |本館レベル-別館レベル-d| 最小化
+     */
+    /** 旧シグネチャ互換: 別館人数はヒューリスティック任せ（forcedFreeAnnex=-1）。 */
+    private CPSATSolution solveDistributionCPSAT(int annexDifference, String splitName, boolean pegToBottom) {
+        return solveDistributionCPSAT(annexDifference, splitName, pegToBottom, -1);
+    }
+
+    /**
+     * @param forcedFreeAnnex 0以上なら自由スタッフの別館人数をこの値に固定（案Bの探索用）。
+     *                        -1のとき従来どおりヒューリスティックで決定する。
+     */
+    private CPSATSolution solveDistributionCPSAT(int annexDifference, String splitName, boolean pegToBottom, int forcedFreeAnnex) {
+        com.google.ortools.Loader.loadNativeLibraries();
+
+        Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
+        final int bathReduction = bathCleaningType.reduction;
+        final int suppliesReduction = AdaptiveRoomOptimizer.SUPPLIES_ORDER_REDUCTION;
+        final int d = -annexDifference; // -1→1, -2→2
+        final int BIG = totalMainRooms + totalAnnexRooms + 10;
+
+        // ---- 分類（splitName は通常分類から除外し、後で両建物担当として別扱い）----
+        List<String> bathStaff = new ArrayList<>();
+        List<String> suppliesMain = new ArrayList<>();
+        List<String> suppliesAnnex = new ArrayList<>();
+        List<String> faultMain = new ArrayList<>();
+        List<String> faultAnnex = new ArrayList<>();
+        List<String> vendorMain = new ArrayList<>();
+        List<String> vendorAnnex = new ArrayList<>();
+        List<String> normalMain = new ArrayList<>();
+        List<String> normalAnnex = new ArrayList<>();
+        List<String> freeNames = new ArrayList<>();
+        List<String> faultBoth = new ArrayList<>();   // 両方の故障者 → 建物配分はソルバーが決定
+        List<String> vendorBoth = new ArrayList<>();  // 両方の業者 → 建物配分はソルバーが決定
+
+        for (Map.Entry<String, StaffConstraintInfo> e : staffInfo.entrySet()) {
+            String name = e.getKey();
+            if (name.equals(splitName)) continue;
+            StaffConstraintInfo info = e.getValue();
+            String bldg = info.buildingAssignment;
+            if (info.isBathCleaning) {
+                bathStaff.add(name);
+            } else if (info.isSuppliesOrder) {
+                if ("別館のみ".equals(bldg)) suppliesAnnex.add(name); else suppliesMain.add(name);
+            } else if ("故障者制限".equals(info.constraintType)) {
+                if ("本館のみ".equals(bldg)) faultMain.add(name);
+                else if ("別館のみ".equals(bldg)) faultAnnex.add(name);
+                else faultBoth.add(name);   // 両方: 本館/別館/分割のどれが最適かソルバーに委ねる
+            } else if (!"制限なし".equals(info.constraintType)) {
+                // 業者制限（enum LOWER_RANGE / displayNameは"リライアンス用"）。
+                // 元ロジックと同じく「制限なし・故障者以外」をすべて業者(min〜max)として扱う。
+                if ("本館のみ".equals(bldg)) vendorMain.add(name);
+                else if ("別館のみ".equals(bldg)) vendorAnnex.add(name);
+                else vendorBoth.add(name);  // 両方: 建物配分はソルバーに委ねる
+            } else if ("本館のみ".equals(bldg)) {
+                normalMain.add(name);
+            } else if ("別館のみ".equals(bldg)) {
+                normalAnnex.add(name);
+            } else {
+                freeNames.add(name);
+            }
+        }
+
+        // ---- 自由スタッフの本館/別館配分（従来Step2と同じ基準で人数を決定）----
+        // ※両方の制約スタッフはソルバーが建物を決めるが、ここでは自由人数決定のための概算として半々で見積もる
+        int constraintMainRooms = 0, constraintAnnexRooms = 0;
+        for (String n : faultMain) constraintMainRooms += staffInfo.get(n).maxRooms;
+        for (String n : faultAnnex) constraintAnnexRooms += staffInfo.get(n).maxRooms;
+        for (String n : vendorMain) constraintMainRooms += staffInfo.get(n).minRooms;
+        for (String n : vendorAnnex) constraintAnnexRooms += staffInfo.get(n).minRooms;
+        for (String n : faultBoth) { int r = staffInfo.get(n).maxRooms; constraintMainRooms += r / 2; constraintAnnexRooms += r - r / 2; }
+        for (String n : vendorBoth) { int r = staffInfo.get(n).minRooms; constraintMainRooms += r / 2; constraintAnnexRooms += r - r / 2; }
+
+        int bathCount = bathStaff.size();
+        int mainSuppliesCount = suppliesMain.size();
+        int annexSuppliesCount = suppliesAnnex.size();
+        int fixedMainCount = normalMain.size() + suppliesMain.size();
+        int fixedAnnexCount = normalAnnex.size() + suppliesAnnex.size();
+        int freeCount = freeNames.size();
+        int effectiveMainRooms = totalMainRooms - constraintMainRooms;
+        int effectiveAnnexRooms = totalAnnexRooms - constraintAnnexRooms;
+
+        int bestFreeAnnex = 0;
+        double bestDiff = Double.MAX_VALUE;
+        for (int fa = 0; fa <= freeCount; fa++) {
+            int fm = freeCount - fa;
+            int mainWorkers = fm + fixedMainCount + bathCount;
+            int annexWorkers = fa + fixedAnnexCount;
+            if (mainWorkers <= 0 && effectiveMainRooms > 0) continue;
+            if (annexWorkers <= 0 && effectiveAnnexRooms > 0) continue;
+            double mainBase = mainWorkers > 0 ?
+                    (double) (effectiveMainRooms + bathCount * bathReduction + mainSuppliesCount * suppliesReduction) / mainWorkers : 0;
+            double annexBase = annexWorkers > 0 ?
+                    (double) (effectiveAnnexRooms + annexSuppliesCount * suppliesReduction) / annexWorkers : 0;
+            double diff = Math.abs(annexBase - (mainBase + annexDifference));
+            if (diff < bestDiff) { bestDiff = diff; bestFreeAnnex = fa; }
+        }
+        // ★案B: 探索用に「ヒューリスティック中心値」と freeCount を記録（解なしでも有効）
+        this.lastHeuristicAnnex = bestFreeAnnex;
+        this.lastFreeCount = freeCount;
+        // forcedFreeAnnex が指定されていれば、その別館人数で固定する
+        if (forcedFreeAnnex >= 0) {
+            bestFreeAnnex = Math.min(forcedFreeAnnex, freeCount);
+        }
+        int freeMainN = freeCount - bestFreeAnnex;
+        List<String> freeMain = new ArrayList<>(freeNames.subList(0, freeMainN));
+        List<String> freeAnnex = new ArrayList<>(freeNames.subList(freeMainN, freeCount));
+
+        // ---- CP-SATモデル構築 ----
+        CpModel model = new CpModel();
+        Map<String, IntVar> mv = new HashMap<>();
+        Map<String, IntVar> av = new HashMap<>();
+
+        List<String> mainMembers = new ArrayList<>();
+        mainMembers.addAll(bathStaff); mainMembers.addAll(suppliesMain);
+        mainMembers.addAll(faultMain); mainMembers.addAll(vendorMain);
+        mainMembers.addAll(normalMain); mainMembers.addAll(freeMain);
+        List<String> annexMembers = new ArrayList<>();
+        annexMembers.addAll(suppliesAnnex); annexMembers.addAll(faultAnnex);
+        annexMembers.addAll(vendorAnnex); annexMembers.addAll(normalAnnex);
+        annexMembers.addAll(freeAnnex);
+
+        for (String n : mainMembers) mv.put(n, model.newIntVar(0, BIG, "m_" + n));
+        for (String n : annexMembers) av.put(n, model.newIntVar(0, BIG, "a_" + n));
+
+        // 両方の制約スタッフ: 本館・別館の両変数を持ち、配分はソルバーが決定
+        List<String> bothMembers = new ArrayList<>();
+        bothMembers.addAll(faultBoth); bothMembers.addAll(vendorBoth);
+        for (String n : bothMembers) {
+            mv.put(n, model.newIntVar(0, BIG, "m_" + n));
+            av.put(n, model.newIntVar(0, BIG, "a_" + n));
+        }
+
+        // レベル集合（制限なしの素のスタッフ＝本館/別館の基準レベル）
+        List<IntVar> levelMainVars = new ArrayList<>();
+        for (String n : normalMain) levelMainVars.add(mv.get(n));
+        for (String n : freeMain) levelMainVars.add(mv.get(n));
+        List<IntVar> levelAnnexVars = new ArrayList<>();
+        for (String n : normalAnnex) levelAnnexVars.add(av.get(n));
+        for (String n : freeAnnex) levelAnnexVars.add(av.get(n));
+
+        IntVar mainTop = model.newIntVar(0, BIG, "mainTop");
+        IntVar mainBottom = model.newIntVar(0, BIG, "mainBottom");
+        if (!levelMainVars.isEmpty()) {
+            model.addMaxEquality(mainTop, levelMainVars.toArray(new IntVar[0]));
+            model.addMinEquality(mainBottom, levelMainVars.toArray(new IntVar[0]));
+        } else {
+            model.addEquality(mainBottom, mainTop); // ばらつき0
+        }
+        IntVar annexTop = model.newIntVar(0, BIG, "annexTop");
+        IntVar annexBottom = model.newIntVar(0, BIG, "annexBottom");
+        if (!levelAnnexVars.isEmpty()) {
+            model.addMaxEquality(annexTop, levelAnnexVars.toArray(new IntVar[0]));
+            model.addMinEquality(annexBottom, levelAnnexVars.toArray(new IntVar[0]));
+        } else {
+            model.addEquality(annexBottom, annexTop);
+        }
+
+        // 大浴場・備品の基準レベル（条件①: 下段=mainBottom/annexBottom, 上段=mainTop/annexTop）
+        IntVar mainPeg = pegToBottom ? mainBottom : mainTop;
+        IntVar annexPeg = pegToBottom ? annexBottom : annexTop;
+
+        // 大浴場 = 基準レベル - 削減（4 or 5）
+        for (String n : bathStaff) {
+            model.addEquality(mv.get(n),
+                    LinearExpr.newBuilder().addTerm(mainPeg, 1).add(-bathReduction).build());
+        }
+        // 備品発注（本館）= 基準レベル - 6
+        for (String n : suppliesMain) {
+            model.addEquality(mv.get(n),
+                    LinearExpr.newBuilder().addTerm(mainPeg, 1).add(-suppliesReduction).build());
+        }
+        // 備品発注（別館）= 基準レベル - 6
+        for (String n : suppliesAnnex) {
+            model.addEquality(av.get(n),
+                    LinearExpr.newBuilder().addTerm(annexPeg, 1).add(-suppliesReduction).build());
+        }
+        // 故障者制限（本館）: 1 ≤ r ≤ min(maxRooms, mainTop), r ≥ min(maxRooms-2, mainTop)
+        List<IntVar> faultVars = new ArrayList<>(); // 条件②: 目的関数で設定値(max)へ引き上げる対象
+        for (String n : faultMain) {
+            int max = staffInfo.get(n).maxRooms;
+            IntVar v = mv.get(n);
+            model.addLessOrEqual(v, max);
+            model.addLessOrEqual(v, mainTop);
+            IntVar lo = model.newIntVar(-BIG, BIG, "flo_" + n);
+            model.addMinEquality(lo, new IntVar[]{ model.newConstant(max - 2), mainTop });
+            model.addGreaterOrEqual(v, lo);
+            model.addGreaterOrEqual(v, 1);
+            faultVars.add(v);
+        }
+        for (String n : faultAnnex) {
+            int max = staffInfo.get(n).maxRooms;
+            IntVar v = av.get(n);
+            model.addLessOrEqual(v, max);
+            model.addLessOrEqual(v, annexTop);
+            IntVar lo = model.newIntVar(-BIG, BIG, "flo_" + n);
+            model.addMinEquality(lo, new IntVar[]{ model.newConstant(max - 2), annexTop });
+            model.addGreaterOrEqual(v, lo);
+            model.addGreaterOrEqual(v, 1);
+            faultVars.add(v);
+        }
+        // 業者制限: minRooms ≤ r ≤ maxRooms
+        for (String n : vendorMain) {
+            StaffConstraintInfo info = staffInfo.get(n);
+            model.addGreaterOrEqual(mv.get(n), info.minRooms);
+            model.addLessOrEqual(mv.get(n), info.maxRooms);
+        }
+        for (String n : vendorAnnex) {
+            StaffConstraintInfo info = staffInfo.get(n);
+            model.addGreaterOrEqual(av.get(n), info.minRooms);
+            model.addLessOrEqual(av.get(n), info.maxRooms);
+        }
+        // 両方の故障者: 建物配分はソルバーが決定。各建物の取り分は通常レベル以下、合計≤max(≥1)、設定値へ引き上げ
+        for (String n : faultBoth) {
+            int max = staffInfo.get(n).maxRooms;
+            IntVar m = mv.get(n), a = av.get(n);
+            model.addLessOrEqual(m, mainTop);
+            model.addLessOrEqual(a, annexTop);
+            LinearExpr total = LinearExpr.newBuilder().addTerm(m, 1).addTerm(a, 1).build();
+            model.addLessOrEqual(total, max);
+            model.addGreaterOrEqual(total, 1);
+            faultVars.add(m); faultVars.add(a); // 合計を設定値へ引き上げ（条件②）
+        }
+        // 両方の業者: 合計が minRooms〜maxRooms。建物配分はソルバー任せ
+        for (String n : vendorBoth) {
+            StaffConstraintInfo info = staffInfo.get(n);
+            IntVar m = mv.get(n), a = av.get(n);
+            LinearExpr total = LinearExpr.newBuilder().addTerm(m, 1).addTerm(a, 1).build();
+            model.addGreaterOrEqual(total, info.minRooms);
+            model.addLessOrEqual(total, info.maxRooms);
+        }
+        // 制限なし（本館/別館/自由）: 1室以上
+        for (String n : normalMain) model.addGreaterOrEqual(mv.get(n), 1);
+        for (String n : freeMain) model.addGreaterOrEqual(mv.get(n), 1);
+        for (String n : normalAnnex) model.addGreaterOrEqual(av.get(n), 1);
+        for (String n : freeAnnex) model.addGreaterOrEqual(av.get(n), 1);
+
+        // 両建物担当（条件7）
+        IntVar splitMain = null, splitAnnex = null;
+        if (splitName != null) {
+            if (levelAnnexVars.isEmpty()) return null; // 別館最小の基準が無いので不可
+            splitMain = model.newIntVar(0, BIG, "split_m");
+            splitAnnex = model.newIntVar(0, BIG, "split_a");
+            model.addGreaterOrEqual(splitMain, 1);
+            model.addGreaterOrEqual(splitAnnex, 1);
+            // 総室数 = 別館最小(annexBottom) - 1
+            model.addEquality(
+                    LinearExpr.newBuilder().addTerm(splitMain, 1).addTerm(splitAnnex, 1).build(),
+                    LinearExpr.newBuilder().addTerm(annexBottom, 1).add(-1).build());
+        }
+
+        // 建物ごとの合計（ハード）
+        LinearExprBuilder mainSum = LinearExpr.newBuilder();
+        for (String n : mainMembers) mainSum.addTerm(mv.get(n), 1);
+        for (String n : bothMembers) mainSum.addTerm(mv.get(n), 1);
+        if (splitMain != null) mainSum.addTerm(splitMain, 1);
+        model.addEquality(mainSum.build(), totalMainRooms);
+
+        LinearExprBuilder annexSum = LinearExpr.newBuilder();
+        for (String n : annexMembers) annexSum.addTerm(av.get(n), 1);
+        for (String n : bothMembers) annexSum.addTerm(av.get(n), 1);
+        if (splitAnnex != null) annexSum.addTerm(splitAnnex, 1);
+        model.addEquality(annexSum.build(), totalAnnexRooms);
+
+        // 目的関数: ばらつき最小化（重み大）＋ |本館レベル-別館レベル-d| 最小化（重み小）
+        IntVar spreadMain = model.newIntVar(0, BIG, "spreadMain");
+        model.addEquality(spreadMain,
+                LinearExpr.newBuilder().addTerm(mainTop, 1).addTerm(mainBottom, -1).build());
+        IntVar spreadAnnex = model.newIntVar(0, BIG, "spreadAnnex");
+        model.addEquality(spreadAnnex,
+                LinearExpr.newBuilder().addTerm(annexTop, 1).addTerm(annexBottom, -1).build());
+        IntVar dDiff = model.newIntVar(-BIG, BIG, "dDiff");
+        model.addEquality(dDiff,
+                LinearExpr.newBuilder().addTerm(mainTop, 1).addTerm(annexTop, -1).add(-d).build());
+        IntVar dNeg = model.newIntVar(-BIG, BIG, "dNeg");
+        model.addEquality(dNeg, LinearExpr.newBuilder().addTerm(dDiff, -1).build());
+        IntVar dAbs = model.newIntVar(0, BIG, "dAbs");
+        model.addMaxEquality(dAbs, new IntVar[]{ dDiff, dNeg }); // dAbs = |dDiff|
+
+        final int W_SPREAD = 10; // 各建物のばらつき（最優先）
+        final int W_FAULT = 4;   // 故障者を設定値(max)へ引き上げる（ばらつきより弱く、dより強い）
+        final int W_D = 3;       // |本館レベル-別館レベル-d|
+        LinearExprBuilder objective = LinearExpr.newBuilder()
+                .addTerm(spreadMain, W_SPREAD)
+                .addTerm(spreadAnnex, W_SPREAD)
+                .addTerm(dAbs, W_D);
+        // 故障者は r を増やすほどコストを下げる（= 設定値maxへ引き上げ）。必要が無い限り下限へ落とさない。
+        for (IntVar fv : faultVars) {
+            objective.addTerm(fv, -W_FAULT);
+        }
+        model.minimize(objective.build());
+
+        // ---- 求解 ----
+        CpSolver solver = new CpSolver();
+        solver.getParameters().setMaxTimeInSeconds(5.0);
+        CpSolverStatus status = solver.solve(model);
+        if (status != CpSolverStatus.OPTIMAL && status != CpSolverStatus.FEASIBLE) {
+            System.out.println("CP-SAT status=" + status + " (annexDiff=" + annexDifference + ", split=" + splitName + ")");
+            return null;
+        }
+
+        // ---- 結果をStaffDistributionへ（ツイン前）----
+        Map<String, StaffDistribution> pattern = new HashMap<>();
+        for (String n : bathStaff) {
+            pattern.put(n, new StaffDistribution("", n, "本館のみ",
+                    (int) solver.value(mv.get(n)), 0, staffInfo.get(n).constraintType, true));
+        }
+        for (String n : suppliesMain) {
+            StaffDistribution sd = new StaffDistribution("", n, "本館のみ",
+                    (int) solver.value(mv.get(n)), 0, "制限なし", false);
+            sd.isSuppliesOrder = true; pattern.put(n, sd);
+        }
+        for (String n : suppliesAnnex) {
+            StaffDistribution sd = new StaffDistribution("", n, "別館のみ",
+                    0, (int) solver.value(av.get(n)), "制限なし", false);
+            sd.isSuppliesOrder = true; pattern.put(n, sd);
+        }
+        for (String n : faultMain)  putMainDist(pattern, n, (int) solver.value(mv.get(n)), staffInfo.get(n).constraintType);
+        for (String n : vendorMain) putMainDist(pattern, n, (int) solver.value(mv.get(n)), staffInfo.get(n).constraintType);
+        for (String n : normalMain) putMainDist(pattern, n, (int) solver.value(mv.get(n)), "制限なし");
+        for (String n : freeMain)   putMainDist(pattern, n, (int) solver.value(mv.get(n)), "制限なし");
+        for (String n : faultAnnex)  putAnnexDist(pattern, n, (int) solver.value(av.get(n)), staffInfo.get(n).constraintType);
+        for (String n : vendorAnnex) putAnnexDist(pattern, n, (int) solver.value(av.get(n)), staffInfo.get(n).constraintType);
+        for (String n : normalAnnex) putAnnexDist(pattern, n, (int) solver.value(av.get(n)), "制限なし");
+        for (String n : freeAnnex)   putAnnexDist(pattern, n, (int) solver.value(av.get(n)), "制限なし");
+        for (String n : bothMembers) {
+            putBothDist(pattern, n, (int) solver.value(mv.get(n)), (int) solver.value(av.get(n)),
+                    staffInfo.get(n).constraintType);
+        }
+        if (splitName != null) {
+            pattern.put(splitName, new StaffDistribution("", splitName, "両方",
+                    (int) solver.value(splitMain), (int) solver.value(splitAnnex),
+                    staffInfo.get(splitName).constraintType, false));
+        }
+
+        boolean spanValid = !levelMainVars.isEmpty() && !levelAnnexVars.isEmpty();
+        int mainTopVal = (int) solver.value(mainTop);
+        int annexBottomVal = (int) solver.value(annexBottom);
+        System.out.println("CP-SAT求解成功: status=" + status + ", annexDiff=" + annexDifference +
+                ", split=" + splitName + ", peg=" + (pegToBottom ? "下段" : "上段") +
+                ", mainTop=" + mainTopVal + ", annexBottom=" + annexBottomVal +
+                ", obj=" + solver.objectiveValue());
+        return new CPSATSolution(pattern, mainTopVal, annexBottomVal, spanValid, solver.objectiveValue());
+    }
+
+    private void putMainDist(Map<String, StaffDistribution> p, String n, int rooms, String ct) {
+        p.put(n, new StaffDistribution("", n, "本館のみ", rooms, 0, ct, false));
+    }
+
+    private void putAnnexDist(Map<String, StaffDistribution> p, String n, int rooms, String ct) {
+        p.put(n, new StaffDistribution("", n, "別館のみ", 0, rooms, ct, false));
+    }
+
+    /** 両方の制約スタッフ: 実際の配分結果から建物指定を決定して格納する。 */
+    private void putBothDist(Map<String, StaffDistribution> p, String n, int main, int annex, String ct) {
+        String bldg = (main > 0 && annex > 0) ? "両方" : (annex > 0 ? "別館のみ" : "本館のみ");
+        p.put(n, new StaffDistribution("", n, bldg, main, annex, ct, false));
+    }
+
+    /**
+     * ★共通ヘルパー: ツイン振り分け（条件③）。
+     * CP-SAT/ヒューリスティック両方の結果に一度だけ適用する。
+     * 基礎分 floor(総ツイン/人数) を全員に均等配分し、余りはリライアンス用（業者）が
+     * 優先吸収する。これにより通常スタッフ同士のツイン数が揃う。
+     */
+    private void distributeTwins(Map<String, StaffDistribution> pattern) {
+        allocateTwins(pattern, true, totalMainTwinRooms);
+        allocateTwins(pattern, false, totalAnnexTwinRooms);
+    }
+
+    private void allocateTwins(Map<String, StaffDistribution> pattern, boolean isMain, int totalTwin) {
+        // 対象スタッフ（その建物に1室以上持つ）
+        List<String> participants = new ArrayList<>();
+        for (Map.Entry<String, StaffDistribution> e : pattern.entrySet()) {
+            int rooms = isMain ? e.getValue().mainAssignedRooms : e.getValue().annexAssignedRooms;
+            if (rooms > 0) participants.add(e.getKey());
+        }
+        // 初期化: 全てシングル
+        for (String n : participants) {
+            StaffDistribution d = pattern.get(n);
+            if (isMain) { d.mainSingleAssignedRooms = d.mainAssignedRooms; d.mainTwinAssignedRooms = 0; }
+            else        { d.annexSingleAssignedRooms = d.annexAssignedRooms; d.annexTwinAssignedRooms = 0; }
+        }
+        String label = isMain ? "本館" : "別館";
+        if (participants.isEmpty() || totalTwin <= 0) {
+            System.out.println(label + "ツイン配分完了: " + participants.size() + "名（ツイン0）");
+            return;
+        }
+
+        int n = participants.size();
+        int base = totalTwin / n;
+        int remaining = totalTwin;
+        // 基礎分（全員均等。シングル残数で上限）
+        for (String nm : participants) {
+            int give = Math.min(base, singleCount(pattern, nm, isMain));
+            addTwin(pattern, nm, give, isMain);
+            remaining -= give;
+        }
+        // 余りはリライアンス用（業者）が優先吸収 → 通常スタッフは均等のまま
+        List<String> vendors = new ArrayList<>();
+        for (String nm : participants) {
+            if ("リライアンス用".equals(pattern.get(nm).constraintType)) vendors.add(nm);
+        }
+        remaining = roundRobinTwin(pattern, vendors, remaining, isMain);
+        // 業者が居ない/吸収しきれない分は全員へラウンドロビン（従来動作）
+        if (remaining > 0) {
+            remaining = roundRobinTwin(pattern, participants, remaining, isMain);
+        }
+        System.out.println(label + "ツイン配分完了: " + n + "名, 基礎=" + base + "/人, 業者吸収後残=" + remaining);
+    }
+
+    /** 指定リストへツインをラウンドロビンで割り当て、割り当てきれなかった残数を返す。 */
+    private int roundRobinTwin(Map<String, StaffDistribution> pattern, List<String> list, int remaining, boolean isMain) {
+        if (list.isEmpty() || remaining <= 0) return remaining;
+        int guard = 0, maxGuard = list.size() * 1000 + 10;
+        boolean anyCapacity = true;
+        while (remaining > 0 && anyCapacity) {
+            anyCapacity = false;
+            for (int i = 0; i < list.size() && remaining > 0; i++) {
+                String nm = list.get(i);
+                if (singleCount(pattern, nm, isMain) > 0) {
+                    addTwin(pattern, nm, 1, isMain);
+                    remaining--;
+                    anyCapacity = true;
+                }
+            }
+            if (++guard > maxGuard) { System.out.println("警告: ツイン配分ループ上限"); break; }
+        }
+        return remaining;
+    }
+
+    private int singleCount(Map<String, StaffDistribution> pattern, String name, boolean isMain) {
+        StaffDistribution d = pattern.get(name);
+        return isMain ? d.mainSingleAssignedRooms : d.annexSingleAssignedRooms;
+    }
+
+    private void addTwin(Map<String, StaffDistribution> pattern, String name, int k, boolean isMain) {
+        if (k <= 0) return;
+        StaffDistribution d = pattern.get(name);
+        if (isMain) { d.mainSingleAssignedRooms -= k; d.mainTwinAssignedRooms += k; }
+        else        { d.annexSingleAssignedRooms -= k; d.annexTwinAssignedRooms += k; }
     }
 
     /**
@@ -1386,17 +2068,42 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     private void switchPattern() {
+        applySelectedPattern();
+    }
+
+    /** 選択中ラベルのパターンを currentPattern に反映する。解なし(null)なら専用表示。 */
+    private void applySelectedPattern() {
         String selected = (String) patternSelector.getSelectedItem();
-        if ("1部屋差パターン".equals(selected)) {
-            currentPattern = deepCopyPattern(oneDiffPattern);
+        Map<String, StaffDistribution> p = (selected != null) ? patternMap.get(selected) : null;
+        if (p == null) {
+            currentPattern = null;
+            showNoSolution();
         } else {
-            currentPattern = deepCopyPattern(twoDiffPattern);
+            currentPattern = deepCopyPattern(p);
+            updateDataPanel();
         }
-        updateDataPanel();
+    }
+
+    /** 選択中パターンが解なしのときの表示（空表＋メッセージ）。 */
+    private void showNoSolution() {
+        if (dataPanel == null) return;
+        dataPanel.removeAll();
+        JLabel msg = new JLabel("この基準（大浴場 下段／上段）では条件を満たす割り振りが見つかりませんでした。別のパターンを選択してください。");
+        msg.setFont(new Font("MS Gothic", Font.PLAIN, 13));
+        dataPanel.add(msg);
+        dataPanel.revalidate();
+        dataPanel.repaint();
+        if (summaryLabel != null) summaryLabel.setText("");
+        if (warningLabel != null) warningLabel.setText("");
     }
 
     // ★★拡張: 6区分の情報を含むサマリー（ECO・リネン庫含む）
     private void updateSummary() {
+        if (currentPattern == null) {
+            if (summaryLabel != null) summaryLabel.setText("");
+            if (warningLabel != null) warningLabel.setText("");
+            return;
+        }
         int totalAssignedMainSingle = currentPattern.values().stream()
                 .mapToInt(d -> d.mainSingleAssignedRooms).sum();
         int totalAssignedMainTwin = currentPattern.values().stream()
@@ -1436,6 +2143,99 @@ public class NormalRoomDistributionDialog extends JDialog {
         );
 
         summaryLabel.setText(summaryText);
+        updateWarningLabel();
+    }
+
+    /** ★現在のパターン（ツイン配分後）を点検し、未達条件を警告として表示する。 */
+    private void updateWarningLabel() {
+        if (warningLabel == null) return;
+        java.util.List<String> warnings = computeWarnings(currentPattern, currentDesiredConvDiff());
+        if (warnings.isEmpty()) {
+            warningLabel.setText("");
+        } else {
+            // 複数行をHTMLで縦に並べる
+            StringBuilder sb = new StringBuilder("<html>");
+            for (int i = 0; i < warnings.size(); i++) {
+                if (i > 0) sb.append("<br>");
+                sb.append(escapeHtml(warnings.get(i)));
+            }
+            sb.append("</html>");
+            warningLabel.setText(sb.toString());
+        }
+    }
+
+    /** 現在選択中のパターンラベルから目標換算差（1 or 2）を返す。 */
+    private int currentDesiredConvDiff() {
+        Object sel = (patternSelector != null) ? patternSelector.getSelectedItem() : null;
+        String label = (sel != null) ? sel.toString() : defaultPatternLabel;
+        if (PAT_2B.equals(label) || PAT_2T.equals(label)) return 2;
+        return 1; // PAT_1B / PAT_1T / 不明時は1部屋差扱い
+    }
+
+    private String escapeHtml(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * ★過制約（条件未達）の検出。ツイン配分後のパターンを点検し、満たせなかった項目を返す。
+     * 1.本館通常の差≧2 / 2.別館通常の差≧2 / 3.換算逆転 / 4.業者の換算上限超過 / 5.換算の部屋差が目標と不一致。
+     */
+    private java.util.List<String> computeWarnings(Map<String, StaffDistribution> pattern, int desiredConvDiff) {
+        java.util.List<String> warnings = new java.util.ArrayList<>();
+        if (pattern == null || pattern.isEmpty()) return warnings;
+        Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
+
+        double mainMaxConv = -1, mainMinConv = Double.MAX_VALUE;
+        double annexMaxConv = -1, annexMinConv = Double.MAX_VALUE;
+        for (StaffDistribution d : pattern.values()) {
+            double conv = d.getConvertedTotal();
+            boolean isVendor = !"制限なし".equals(d.constraintType)
+                    && !"故障者制限".equals(d.constraintType)
+                    && !d.isBathCleaning && !d.isSuppliesOrder;
+            if (isVendor) {
+                StaffConstraintInfo info = staffInfo.get(d.staffName);
+                if (info != null && info.maxRooms > 0 && conv > info.maxRooms + 1e-9) {
+                    warnings.add(String.format("⚠ 業者（%s）の換算 %d が上限 %d を超えています",
+                            d.staffName, (int) Math.round(conv), info.maxRooms));
+                }
+                continue;
+            }
+            // 通常スタッフ（制限なし・非大浴場・非備品）のみでレベルを測る（故障者は対象外）
+            if (!"制限なし".equals(d.constraintType)) continue;
+            if (d.isBathCleaning || d.isSuppliesOrder) continue;
+            boolean pureMain = d.mainAssignedRooms > 0 && d.annexAssignedRooms == 0;
+            boolean pureAnnex = d.annexAssignedRooms > 0 && d.mainAssignedRooms == 0;
+            if (pureMain)  { mainMaxConv  = Math.max(mainMaxConv, conv);  mainMinConv  = Math.min(mainMinConv, conv); }
+            if (pureAnnex) { annexMaxConv = Math.max(annexMaxConv, conv); annexMinConv = Math.min(annexMinConv, conv); }
+        }
+
+        // 1. 本館通常スタッフ内の差
+        if (mainMaxConv >= 0 && mainMinConv != Double.MAX_VALUE) {
+            int spread = (int) Math.round(mainMaxConv - mainMinConv);
+            if (spread >= 2) {
+                warnings.add(String.format("⚠ 本館通常清掃スタッフ内に %d 部屋差があります（人数の都合で締められません）", spread));
+            }
+        }
+        // 2. 別館通常スタッフ内の差
+        if (annexMaxConv >= 0 && annexMinConv != Double.MAX_VALUE) {
+            int spread = (int) Math.round(annexMaxConv - annexMinConv);
+            if (spread >= 2) {
+                warnings.add(String.format("⚠ 別館通常清掃スタッフ内に %d 部屋差があります", spread));
+            }
+        }
+        // 3. 換算での本館＜別館の逆転
+        if (mainMinConv != Double.MAX_VALUE && annexMaxConv >= 0 && annexMaxConv > mainMinConv + 1e-9) {
+            warnings.add(String.format("⚠ 換算で本館＜別館の逆転があります（別館最大 %d ＞ 本館最小 %d）",
+                    (int) Math.round(annexMaxConv), (int) Math.round(mainMinConv)));
+        }
+        // 5. 換算の本館−別館差が目標と不一致
+        if (mainMaxConv >= 0 && annexMaxConv >= 0) {
+            int convDiff = (int) Math.round(mainMaxConv - annexMaxConv);
+            if (convDiff != desiredConvDiff) {
+                warnings.add(String.format("⚠ 換算の本館−別館差が %d で、目標 %d と一致しません", convDiff, desiredConvDiff));
+            }
+        }
+        return warnings;
     }
 
     /**
@@ -1457,13 +2257,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     }
 
     private void resetPattern() {
-        String selected = (String) patternSelector.getSelectedItem();
-        if ("1部屋差パターン".equals(selected)) {
-            currentPattern = deepCopyPattern(oneDiffPattern);
-        } else {
-            currentPattern = deepCopyPattern(twoDiffPattern);
-        }
-        updateDataPanel();
+        applySelectedPattern();
     }
 
     private Map<String, StaffDistribution> deepCopyPattern(Map<String, StaffDistribution> original) {
@@ -1478,8 +2272,20 @@ public class NormalRoomDistributionDialog extends JDialog {
         return dialogResult;
     }
 
+    /** ★★追加: 「スタッフ選択に戻る」が押されたか */
+    public boolean isBackToStaffSelection() {
+        return backToStaffSelection;
+    }
+
+    /** ★★追加: 「スタッフ選択に戻る」ボタンを表示する（初回フロー用） */
+    public void showBackToStaffSelectionButton() {
+        if (backToStaffButton != null) {
+            backToStaffButton.setVisible(true);
+        }
+    }
+
     public Map<String, StaffDistribution> getCurrentDistribution() {
-        return new HashMap<>(currentPattern);
+        return (currentPattern != null) ? new HashMap<>(currentPattern) : new HashMap<>();
     }
 
     /** ★★追加: 階別在庫を受け取る（手動割り当ての検証・選択肢用） */

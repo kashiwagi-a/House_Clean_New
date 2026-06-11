@@ -785,6 +785,33 @@ public class RoomAssignmentApplication extends JFrame {
                 availableStaff, totalRooms, cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
                 bathType, pointConstraints, roomDistribution);
 
+        // ★★追加: リネン庫設定の事前バリデーション
+        // リネン庫フロアのハード制約が原理的に成立しない設定の場合は、最適化を実行せずに中止する
+        {
+            int mainFloorCount = 0;
+            int annexFloorCount = 0;
+            for (AdaptiveRoomOptimizer.FloorInfo fi : floors) {
+                if (fi.isMainBuilding) mainFloorCount++;
+                else annexFloorCount++;
+            }
+            List<String> linenErrors = RoomAssignmentCPSATOptimizer.validateLinenClosetFeasibility(
+                    config, mainFloorCount, annexFloorCount);
+            if (!linenErrors.isEmpty()) {
+                appendLog("\n【リネン庫設定エラー】以下の問題により処理を中止しました:");
+                for (String err : linenErrors) {
+                    appendLog("  " + err);
+                }
+                JOptionPane.showMessageDialog(this,
+                        "リネン庫フロアの割り当てが成立しません:\n\n" +
+                                String.join("\n", linenErrors) +
+                                "\n\n通常清掃部屋割り振り設定を見直してください。",
+                        "リネン庫設定エラー", JOptionPane.ERROR_MESSAGE);
+                processButton.setEnabled(true);
+                processButton.setText("処理実行");
+                return;
+            }
+        }
+
         // === Phase 2: 最適化実行（バックグラウンドスレッド） ===
         appendLog("最適化を実行中（最大7つの解を探索）...");
 

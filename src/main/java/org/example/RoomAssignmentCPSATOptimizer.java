@@ -323,6 +323,148 @@ public class RoomAssignmentCPSATOptimizer {
     // ================================================================
 
     /**
+     * ★★追加: リネン庫需要の建物別振り分け結果
+     * 本館・別館の独立最適化モデルそれぞれに渡す「スタッフ別リネン庫要求階数」を保持する
+     */
+    public static class LinenDemandSplit {
+        public final Map<String, Integer> mainDemand = new HashMap<>();
+        public final Map<String, Integer> annexDemand = new HashMap<>();
+        public final List<String> errors = new ArrayList<>();
+    }
+
+    /**
+     * ★★追加: リネン庫担当スタッフの要求階数を本館・別館に振り分ける
+     * - 片方の建物のみ担当のスタッフ: その建物に全要求を割り当て
+     * - 両建物担当（跨ぎ）のスタッフ: 各建物最大1フロア制約のため、要求2階分なら本館1+別館1、
+     *   要求1階分なら空き（売れている階数 - 既割り当て要求）の多い建物側に割り当て
+     */
+    public static LinenDemandSplit computeLinenDemandSplit(
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
+            int mainFloorCount, int annexFloorCount) {
+
+        LinenDemandSplit split = new LinenDemandSplit();
+        if (config == null || config.roomDistribution == null) return split;
+
+        List<AdaptiveRoomOptimizer.ExtendedStaffInfo> crossStaff = new ArrayList<>();
+
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo info : config.extendedStaffInfo) {
+            if (!info.isLinenClosetCleaning || info.linenClosetFloorCount <= 0) continue;
+            String name = info.staff.name;
+            NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(name);
+            if (dist == null) {
+                split.errors.add(String.format(
+                        "%s: 部屋割り振り設定がないためリネン庫フロアを確保できません", name));
+                continue;
+            }
+            int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+            int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
+            int demand = info.linenClosetFloorCount;
+
+            if (mainR == 0 && annexR == 0) {
+                split.errors.add(String.format(
+                        "%s: 通常室の割り振りがないためリネン庫フロア（%d階分）を確保できません",
+                        name, demand));
+            } else if (mainR > 0 && annexR == 0) {
+                split.mainDemand.put(name, demand);
+            } else if (annexR > 0 && mainR == 0) {
+                split.annexDemand.put(name, demand);
+            } else {
+                crossStaff.add(info);  // 跨ぎスタッフは片建物スタッフの確定後に振り分け
+            }
+        }
+
+        // 跨ぎスタッフ: 本館・別館それぞれ最大1フロア担当のため、リネン庫も各館最大1階分
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo info : crossStaff) {
+            String name = info.staff.name;
+            int demand = info.linenClosetFloorCount;
+            if (demand > 2) {
+                split.errors.add(String.format(
+                        "%s: 本館・別館の両方を担当するスタッフは各館1フロアまでのため、リネン庫は最大2階分です（要求: %d階分）",
+                        name, demand));
+                demand = 2;
+            }
+            if (demand >= 2) {
+                split.mainDemand.put(name, 1);
+                split.annexDemand.put(name, 1);
+            } else {
+                int mainUsed = split.mainDemand.values().stream().mapToInt(Integer::intValue).sum();
+                int annexUsed = split.annexDemand.values().stream().mapToInt(Integer::intValue).sum();
+                int mainSlack = mainFloorCount - mainUsed;
+                int annexSlack = annexFloorCount - annexUsed;
+                if (mainSlack >= annexSlack) {
+                    split.mainDemand.put(name, 1);
+                } else {
+                    split.annexDemand.put(name, 1);
+                }
+            }
+        }
+
+        return split;
+    }
+
+    /**
+     * ★★追加: リネン庫設定の事前バリデーション
+     * 最適化を実行する前に、リネン庫のハード制約が原理的に成立し得るかをチェックする。
+     * 問題がある場合はエラーメッセージのリストを返す（空リスト = 問題なし）。
+     */
+    public static List<String> validateLinenClosetFeasibility(
+            AdaptiveRoomOptimizer.AdaptiveLoadConfig config,
+            int mainFloorCount, int annexFloorCount) {
+
+        List<String> errors = new ArrayList<>();
+        if (config == null || config.roomDistribution == null) return errors;
+
+        LinenDemandSplit split = computeLinenDemandSplit(config, mainFloorCount, annexFloorCount);
+        errors.addAll(split.errors);
+
+        int mainTotal = split.mainDemand.values().stream().mapToInt(Integer::intValue).sum();
+        int annexTotal = split.annexDemand.values().stream().mapToInt(Integer::intValue).sum();
+
+        if (mainTotal > mainFloorCount) {
+            errors.add(String.format(
+                    "本館のリネン庫要求合計（%d階分）が本館の売れている階数（%d階）を超えています",
+                    mainTotal, mainFloorCount));
+        }
+        if (annexTotal > annexFloorCount) {
+            errors.add(String.format(
+                    "別館のリネン庫要求合計（%d階分）が別館の売れている階数（%d階）を超えています",
+                    annexTotal, annexFloorCount));
+        }
+
+        // スタッフ個別: 担当しうる最大フロア数を超えるリネン庫要求のチェック
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo info : config.extendedStaffInfo) {
+            if (!info.isLinenClosetCleaning || info.linenClosetFloorCount <= 0) continue;
+            String name = info.staff.name;
+
+            AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(name);
+            boolean isVendor = pc != null && pc.constraintType != null
+                    && (pc.constraintType.contains("業者") || pc.constraintType.contains("リライアンス"));
+            boolean isBath = info.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE;
+
+            // 緩和ステップまで考慮した1建物あたりの最大フロア数
+            int maxPerBuilding;
+            if (isVendor)    maxPerBuilding = 4;  // 業者・リライアンス（Step1_5以降で最大4フロア）
+            else if (isBath) maxPerBuilding = 2;  // 大浴清掃（Step2以降で最大2フロア）
+            else             maxPerBuilding = 3;  // 通常（「1人だけ3フロア許可」で最大3フロア）
+
+            Integer mainD = split.mainDemand.get(name);
+            if (mainD != null && mainD > maxPerBuilding) {
+                errors.add(String.format(
+                        "%s: リネン庫要求（本館%d階分）が担当可能な最大フロア数（%d）を超えています",
+                        name, mainD, maxPerBuilding));
+            }
+            Integer annexD = split.annexDemand.get(name);
+            if (annexD != null && annexD > maxPerBuilding) {
+                errors.add(String.format(
+                        "%s: リネン庫要求（別館%d階分）が担当可能な最大フロア数（%d）を超えています",
+                        name, annexD, maxPerBuilding));
+            }
+        }
+
+        return errors;
+    }
+
+    /**
      * メイン最適化メソッド（未割当情報を含む結果を返す）
      */
     public static OptimizationResultWithUnassigned optimizeWithUnassigned(
@@ -454,6 +596,24 @@ public class RoomAssignmentCPSATOptimizer {
         noAnnexEcoStaff.addAll(checkoutAnnexStaff);
         noMainEcoStaff.removeAll(checkoutAnnexStaff);  // stayover=本館はECO許可
 
+        // ★★追加: リネン庫担当フロアのハード制約用に、要求階数を本館・別館へ振り分け
+        // 振り分けにエラーがある場合は制約を適用せず従来動作（後処理マッチングのみ）にフォールバック
+        LinenDemandSplit linenSplit = computeLinenDemandSplit(
+                config, buildingData.mainFloors.size(), buildingData.annexFloors.size());
+        Map<String, Integer> mainLinenDemand;
+        Map<String, Integer> annexLinenDemand;
+        if (linenSplit.errors.isEmpty()) {
+            mainLinenDemand = linenSplit.mainDemand;
+            annexLinenDemand = linenSplit.annexDemand;
+        } else {
+            for (String err : linenSplit.errors) {
+                LOGGER.severe("リネン庫設定エラー: " + err);
+            }
+            LOGGER.severe("リネン庫ハード制約を適用せずに最適化を続行します（リネン庫が不足する可能性があります）");
+            mainLinenDemand = null;
+            annexLinenDemand = null;
+        }
+
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> mainSolutions = new ArrayList<>();
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> annexSolutions = new ArrayList<>();
 
@@ -465,7 +625,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                         optimizeWithRelaxationMultiple(mainOnlyData, mainConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff, mainLinenDemand);
                 if (results != null && !results.isEmpty()) {
                     LOGGER.info(String.format("本館: 1フロア最大%d人制限で%d個の解が見つかりました。", maxStaffPerFloor, results.size()));
                     mainSolutions = results;
@@ -483,7 +643,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                             optimizeWithRelaxationMultiple(mainOnlyData, mainConfig,
-                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff, mainLinenDemand);
                     if (results != null && !results.isEmpty()) {
                         LOGGER.info(String.format("本館: %s で%d個の解が見つかりました。", step, results.size()));
                         mainSolutions = results;
@@ -509,7 +669,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                         optimizeWithRelaxationMultiple(annexOnlyData, annexConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxSolutions, maxStaffPerFloor, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff, annexLinenDemand);
                 if (results != null && !results.isEmpty()) {
                     LOGGER.info(String.format("別館: 1フロア最大%d人制限で%d個の解が見つかりました。", maxStaffPerFloor, results.size()));
                     annexSolutions = results;
@@ -526,7 +686,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
                             optimizeWithRelaxationMultiple(annexOnlyData, annexConfig,
-                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                    existingAssignments, step, originalConfig, maxSolutions, MAX_STAFF_PER_FLOOR_LIMIT, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff, annexLinenDemand);
                     if (results != null && !results.isEmpty()) {
                         LOGGER.info(String.format("別館: %s で%d個の解が見つかりました。", step, results.size()));
                         annexSolutions = results;
@@ -705,6 +865,24 @@ public class RoomAssignmentCPSATOptimizer {
         noAnnexEcoStaff.addAll(checkoutAnnexStaff);
         noMainEcoStaff.removeAll(checkoutAnnexStaff);  // stayover=本館はECO許可
 
+        // ★★追加: リネン庫担当フロアのハード制約用に、要求階数を本館・別館へ振り分け
+        // 振り分けにエラーがある場合は制約を適用せず従来動作（後処理マッチングのみ）にフォールバック
+        LinenDemandSplit linenSplit = computeLinenDemandSplit(
+                config, buildingData.mainFloors.size(), buildingData.annexFloors.size());
+        Map<String, Integer> mainLinenDemand;
+        Map<String, Integer> annexLinenDemand;
+        if (linenSplit.errors.isEmpty()) {
+            mainLinenDemand = linenSplit.mainDemand;
+            annexLinenDemand = linenSplit.annexDemand;
+        } else {
+            for (String err : linenSplit.errors) {
+                LOGGER.severe("リネン庫設定エラー: " + err);
+            }
+            LOGGER.severe("リネン庫ハード制約を適用せずに最適化を続行します（リネン庫が不足する可能性があります）");
+            mainLinenDemand = null;
+            annexLinenDemand = null;
+        }
+
         List<AdaptiveRoomOptimizer.StaffAssignment> mainResult = new ArrayList<>();
         List<AdaptiveRoomOptimizer.StaffAssignment> annexResult = new ArrayList<>();
 
@@ -716,7 +894,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<AdaptiveRoomOptimizer.StaffAssignment> result =
                         optimizeWithRelaxation(mainOnlyData, mainConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff, mainLinenDemand);
                 if (result != null && !result.isEmpty()) {
                     LOGGER.info(String.format("本館: 1フロア最大%d人制限で完全解が見つかりました。", maxStaffPerFloor));
                     mainResult = result;
@@ -734,7 +912,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<AdaptiveRoomOptimizer.StaffAssignment> result =
                             optimizeWithRelaxation(mainOnlyData, mainConfig,
-                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT, noMainEcoStaff, checkoutMainStaff, checkoutAnnexStaff, mainLinenDemand);
                     if (result != null && !result.isEmpty()) {
                         LOGGER.info("本館: " + step + " で完全解が見つかりました。");
                         mainResult = result;
@@ -758,7 +936,7 @@ public class RoomAssignmentCPSATOptimizer {
                  maxStaffPerFloor <= MAX_STAFF_PER_FLOOR_LIMIT; maxStaffPerFloor++) {
                 List<AdaptiveRoomOptimizer.StaffAssignment> result =
                         optimizeWithRelaxation(annexOnlyData, annexConfig,
-                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                existingAssignments, RelaxationConfig.STEP1, originalConfig, maxStaffPerFloor, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff, annexLinenDemand);
                 if (result != null && !result.isEmpty()) {
                     LOGGER.info(String.format("別館: 1フロア最大%d人制限で完全解が見つかりました。", maxStaffPerFloor));
                     annexResult = result;
@@ -775,7 +953,7 @@ public class RoomAssignmentCPSATOptimizer {
                 for (RelaxationConfig step : relaxSteps) {
                     List<AdaptiveRoomOptimizer.StaffAssignment> result =
                             optimizeWithRelaxation(annexOnlyData, annexConfig,
-                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                                    existingAssignments, step, originalConfig, MAX_STAFF_PER_FLOOR_LIMIT, noAnnexEcoStaff, checkoutMainStaff, checkoutAnnexStaff, annexLinenDemand);
                     if (result != null && !result.isEmpty()) {
                         LOGGER.info("別館: " + step + " で完全解が見つかりました。");
                         annexResult = result;
@@ -808,7 +986,8 @@ public class RoomAssignmentCPSATOptimizer {
             int maxStaffPerFloor,
             Set<String> noEcoStaff,
             Set<String> checkoutMainStaff,
-            Set<String> checkoutAnnexStaff) {
+            Set<String> checkoutAnnexStaff,
+            Map<String, Integer> linenFloorDemand) {
 
         LOGGER.info(String.format("=== CPSAT最適化（%s, 1フロア最大%d人）===", relaxConfig, maxStaffPerFloor));
 
@@ -820,7 +999,7 @@ public class RoomAssignmentCPSATOptimizer {
 
         Map<String, TwinAssignment> twinPattern = twinPatterns.get(0);
         List<PartialSolutionResult> results =
-                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, 1, originalConfig, noEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, 1, originalConfig, noEcoStaff, checkoutMainStaff, checkoutAnnexStaff, linenFloorDemand);
 
         for (PartialSolutionResult result : results) {
             if (result.shortage == 0) {
@@ -858,7 +1037,8 @@ public class RoomAssignmentCPSATOptimizer {
             int maxStaffPerFloor,
             Set<String> noEcoStaff,
             Set<String> checkoutMainStaff,
-            Set<String> checkoutAnnexStaff) {
+            Set<String> checkoutAnnexStaff,
+            Map<String, Integer> linenFloorDemand) {
 
         LOGGER.info(String.format("=== CPSAT複数解最適化（%s, 1フロア最大%d人, 最大%d解）===",
                 relaxConfig, maxStaffPerFloor, maxSolutions));
@@ -898,7 +1078,7 @@ public class RoomAssignmentCPSATOptimizer {
         Map<String, TwinAssignment> twinPattern = twinPatterns.get(0);
 
         List<PartialSolutionResult> allResults =
-                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, maxSolutions, originalConfig, noEcoStaff, checkoutMainStaff, checkoutAnnexStaff);
+                assignRoomsMultiple(buildingData, config, twinPattern, maxStaffPerFloor, relaxConfig, maxSolutions, originalConfig, noEcoStaff, checkoutMainStaff, checkoutAnnexStaff, linenFloorDemand);
 
         // 完全解・ECO部分解・部分解を分離
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> completeSolutions = new ArrayList<>();
@@ -1067,7 +1247,8 @@ public class RoomAssignmentCPSATOptimizer {
             AdaptiveRoomOptimizer.AdaptiveLoadConfig originalConfig,
             Set<String> noEcoStaff,
             Set<String> checkoutMainStaff,
-            Set<String> checkoutAnnexStaff) {
+            Set<String> checkoutAnnexStaff,
+            Map<String, Integer> linenFloorDemand) {
 
         CpModel model = new CpModel();
 
@@ -1295,6 +1476,60 @@ public class RoomAssignmentCPSATOptimizer {
                     BoolVar yVar = yVars.get(yVarName);
                     model.addGreaterThan(total, 0).onlyEnforceIf(yVar);
                     model.addEquality(total, 0).onlyEnforceIf(yVar.not());
+                }
+            }
+        }
+
+        // === ★★追加: リネン庫フロア制約（ハード） ===
+        // 各リネン庫担当スタッフが、自身の清掃フロア（y=1のフロア）の中から
+        // 要求階数ぶんのリネン庫フロアを、他スタッフと重複せずに必ず確保できることを保証する。
+        // l_s_f = 1 ⇔ スタッフsがフロアfのリネン庫を担当
+        //   制約1: l_s_f → y_s_f（リネン庫フロアは清掃担当フロアであること）
+        //   制約2: Σf l_s_f = 要求階数（ハード制約）
+        //   制約3: Σs l_s_f ≤ 1（各フロアのリネン庫担当は1人まで）
+        // 実際のリネン庫フロアの確定は従来どおり後処理（assignLinenClosetFloors）が行う。
+        // 本制約により実現可能なレイアウトのみが解となるため、後処理のマッチングは必ず全要求を満たせる。
+        Map<String, List<BoolVar>> floorLinenVars = new HashMap<>();  // floorNumber文字列 → 当該フロアのl変数群
+        if (linenFloorDemand != null && !linenFloorDemand.isEmpty()) {
+            for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+                String staffName = staffInfo.staff.name;
+                Integer demand = linenFloorDemand.get(staffName);
+                if (demand == null || demand <= 0) continue;
+
+                List<BoolVar> staffLinenVars = new ArrayList<>();
+                for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
+                    String yVarName = String.format("y_%s_%d", staffName, floor.floorNumber);
+                    BoolVar yVar = yVars.get(yVarName);
+                    if (yVar == null) continue;
+
+                    BoolVar lVar = model.newBoolVar(
+                            String.format("l_%s_%d", staffName, floor.floorNumber));
+                    model.addImplication(lVar, yVar);  // リネン庫フロアは清掃フロアであること
+                    staffLinenVars.add(lVar);
+                    floorLinenVars.computeIfAbsent(String.valueOf(floor.floorNumber),
+                            k -> new ArrayList<>()).add(lVar);
+                }
+
+                if (staffLinenVars.isEmpty()) {
+                    LOGGER.warning(String.format(
+                            "リネン庫制約: %s のフロア変数が存在しないため制約を適用できません（要求: %d階分）",
+                            staffName, demand));
+                    continue;
+                }
+
+                model.addEquality(
+                        LinearExpr.sum(staffLinenVars.toArray(new BoolVar[0])), demand);
+                LOGGER.info(String.format(
+                        "リネン庫制約: %s に重複なし%d階分のリネン庫フロア確保をハード制約として追加",
+                        staffName, demand));
+            }
+
+            // 各フロアのリネン庫担当は1人まで
+            for (Map.Entry<String, List<BoolVar>> entry : floorLinenVars.entrySet()) {
+                List<BoolVar> varsOnFloor = entry.getValue();
+                if (varsOnFloor.size() >= 2) {
+                    model.addLessOrEqual(
+                            LinearExpr.sum(varsOnFloor.toArray(new BoolVar[0])), 1);
                 }
             }
         }

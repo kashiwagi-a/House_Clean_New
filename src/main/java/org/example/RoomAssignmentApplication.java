@@ -1031,10 +1031,12 @@ public class RoomAssignmentApplication extends JFrame {
     /**
      * ★新規追加: 担当者変更ダイアログ
      * 在籍スタッフ全員をチェックボックス一覧で表示し、選択されたスタッフのリストを返す。
-     * 初期状態は全て未チェック。キャンセル時はnullを返す。
-     * 0人でOK押下時は警告を表示し、ダイアログは閉じない。
+     * ★変更: 初期チェックは currentSelection（現在選択中のスタッフ）に含まれる人を ON にする。
+     *         currentSelection が null/空なら全て未チェックになる。
+     * キャンセル時はnullを返す。0人でOK押下時は警告を表示し、ダイアログは閉じない。
      */
-    private List<FileProcessor.Staff> showStaffSelectionDialog(java.awt.Window parent) {
+    private List<FileProcessor.Staff> showStaffSelectionDialog(java.awt.Window parent,
+                                                               List<FileProcessor.Staff> currentSelection) {
         if (selectedShiftFile == null) {
             JOptionPane.showMessageDialog(parent,
                     "シフトファイルが選択されていません。",
@@ -1072,15 +1074,23 @@ public class RoomAssignmentApplication extends JFrame {
         infoPanel.add(new JLabel(" 担当するスタッフにチェックを入れてください"));
         infoPanel.add(new JLabel(" 在籍スタッフ: " + enrolledStaff.size() + "名"));
 
-        // チェックボックス一覧（初期は全て未チェック）
+        // チェックボックス一覧（★変更: 現在選択中のスタッフを初期チェック）
         JPanel checkPanel = new JPanel();
         checkPanel.setLayout(new BoxLayout(checkPanel, BoxLayout.Y_AXIS));
         checkPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
+        // ★追加: 現在選択中スタッフのid集合（初期チェック判定用）。null/空なら全て未チェック。
+        final java.util.Set<String> selectedIds = new java.util.HashSet<>();
+        if (currentSelection != null) {
+            for (FileProcessor.Staff s : currentSelection) {
+                selectedIds.add(s.id);
+            }
+        }
+
         final List<JCheckBox> checkBoxes = new ArrayList<>();
         for (FileProcessor.Staff staff : enrolledStaff) {
             JCheckBox cb = new JCheckBox(staff.name);
-            cb.setSelected(false); // 仕様: 初期は全て未チェック
+            cb.setSelected(selectedIds.contains(staff.id)); // ★変更: 現在選択中ならON
             checkBoxes.add(cb);
             checkPanel.add(cb);
         }
@@ -1093,6 +1103,14 @@ public class RoomAssignmentApplication extends JFrame {
 
         // OK結果の格納用（キャンセル時は空のまま、OK時に選択分が入る）
         final List<FileProcessor.Staff> result = new ArrayList<>();
+
+        // ★追加: 全てのチェックを外すボタン
+        JButton uncheckAllButton = new JButton("全て外す");
+        uncheckAllButton.addActionListener(e -> {
+            for (JCheckBox cb : checkBoxes) {
+                cb.setSelected(false);
+            }
+        });
 
         JButton okButton = new JButton("OK");
         okButton.addActionListener(e -> {
@@ -1117,6 +1135,7 @@ public class RoomAssignmentApplication extends JFrame {
         JButton cancelButton = new JButton("キャンセル");
         cancelButton.addActionListener(e -> dialog.dispose());
 
+        buttonPanel.add(uncheckAllButton);
         buttonPanel.add(okButton);
         buttonPanel.add(cancelButton);
 
@@ -1342,7 +1361,7 @@ public class RoomAssignmentApplication extends JFrame {
         // ★新規追加: 担当者変更ボタン（在籍スタッフから手動で選び直し）
         JButton staffChangeButton = new JButton("担当者変更");
         staffChangeButton.addActionListener(e -> {
-            List<FileProcessor.Staff> newStaff = showStaffSelectionDialog(dialog);
+            List<FileProcessor.Staff> newStaff = showStaffSelectionDialog(dialog, availableStaff);
             if (newStaff == null) {
                 // キャンセルされた、またはエラー時は何もしない（既存のスタッフリストを維持）
                 return;
@@ -1387,6 +1406,26 @@ public class RoomAssignmentApplication extends JFrame {
         dialog.setVisible(true);
 
         if (confirmed.get()) {
+            // ★追加: 手動選択(設定完了)の結果を元のシフト表へ反映
+            //   選択=空欄 / 非選択かつ空欄="/" / 非選択かつ文字あり=維持
+            if (selectedShiftFile != null && selectedDate != null) {
+                try {
+                    boolean applied = FileProcessor.applyManualSelectionToShiftFile(
+                            selectedShiftFile, selectedDate, availableStaff);
+                    if (applied) {
+                        appendLog("シフト表へ担当者選択を反映しました（選択=空欄／非選択='/'／記入済みは維持）。");
+                    } else {
+                        appendLog("対象日の列が見つからなかったため、シフト表への反映を中止しました。");
+                    }
+                } catch (Exception ex) {
+                    appendLog("シフト表への反映に失敗しました: " + ex.getMessage());
+                    JOptionPane.showMessageDialog(this,
+                            "シフト表への反映に失敗しました。\n" +
+                                    "ファイルがExcel等で開かれていないかご確認ください。\n\n" + ex.getMessage(),
+                            "反映エラー", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+
             for (int i = 0; i < tableModel.getRowCount(); i++) {
                 String staffName = (String) tableModel.getValueAt(i, 0);
                 String constraintType = (String) tableModel.getValueAt(i, 1);

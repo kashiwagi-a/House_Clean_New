@@ -84,6 +84,9 @@ public class RoomAssignmentCPSATOptimizer {
         static final RelaxationConfig STEP2_MAIN  = new RelaxationConfig(4, true,  false);
         static final RelaxationConfig STEP3_MAIN  = new RelaxationConfig(4, true,  true);
         static final RelaxationConfig STEP2_ANNEX = new RelaxationConfig(4, false, true);
+        // ★追加: 業者フロア上限を5に拡張する最終ステップ
+        static final RelaxationConfig STEP4_MAIN  = new RelaxationConfig(5, true,  true);
+        static final RelaxationConfig STEP3_ANNEX = new RelaxationConfig(5, false, true);
 
         RelaxationConfig(int vendorMaxFloors, boolean releaseBathFloorLimit, boolean allowOneStaffThreeFloors) {
             this.vendorMaxFloors           = vendorMaxFloors;
@@ -101,6 +104,11 @@ public class RoomAssignmentCPSATOptimizer {
                 return "Step2(大浴制限解除)";
             if (vendorMaxFloors == 4 && releaseBathFloorLimit  &&  allowOneStaffThreeFloors)
                 return "Step3(1人3フロア許可+大浴制限解除)";
+            // ★追加: 業者5フロア緩和ステップのラベル
+            if (vendorMaxFloors == 5 && releaseBathFloorLimit  &&  allowOneStaffThreeFloors)
+                return "Step4(業者5F緩和+大浴制限解除+1人3フロア許可)";
+            if (vendorMaxFloors == 5 && !releaseBathFloorLimit &&  allowOneStaffThreeFloors)
+                return "Step3別館(業者5F緩和+1人3フロア許可)";
             return "Step2別館(1人3フロア許可)";
         }
     }
@@ -443,7 +451,7 @@ public class RoomAssignmentCPSATOptimizer {
 
             // 緩和ステップまで考慮した1建物あたりの最大フロア数
             int maxPerBuilding;
-            if (isVendor)    maxPerBuilding = 4;  // 業者・リライアンス（Step1_5以降で最大4フロア）
+            if (isVendor)    maxPerBuilding = 5;  // 業者・リライアンス（緩和最終ステップで最大5フロア）
             else if (isBath) maxPerBuilding = 2;  // 大浴清掃（Step2以降で最大2フロア）
             else             maxPerBuilding = 3;  // 通常（「1人だけ3フロア許可」で最大3フロア）
 
@@ -638,7 +646,8 @@ public class RoomAssignmentCPSATOptimizer {
                 RelaxationConfig[] relaxSteps = {
                         RelaxationConfig.STEP1_5,
                         RelaxationConfig.STEP2_MAIN,
-                        RelaxationConfig.STEP3_MAIN
+                        RelaxationConfig.STEP3_MAIN,
+                        RelaxationConfig.STEP4_MAIN   // ★追加
                 };
                 for (RelaxationConfig step : relaxSteps) {
                     List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
@@ -681,7 +690,8 @@ public class RoomAssignmentCPSATOptimizer {
             if (annexSolutions.isEmpty()) {
                 RelaxationConfig[] relaxSteps = {
                         RelaxationConfig.STEP1_5,
-                        RelaxationConfig.STEP2_ANNEX
+                        RelaxationConfig.STEP2_ANNEX,
+                        RelaxationConfig.STEP3_ANNEX   // ★追加
                 };
                 for (RelaxationConfig step : relaxSteps) {
                     List<List<AdaptiveRoomOptimizer.StaffAssignment>> results =
@@ -907,7 +917,8 @@ public class RoomAssignmentCPSATOptimizer {
                 RelaxationConfig[] relaxSteps = {
                         RelaxationConfig.STEP1_5,
                         RelaxationConfig.STEP2_MAIN,
-                        RelaxationConfig.STEP3_MAIN
+                        RelaxationConfig.STEP3_MAIN,
+                        RelaxationConfig.STEP4_MAIN   // ★追加
                 };
                 for (RelaxationConfig step : relaxSteps) {
                     List<AdaptiveRoomOptimizer.StaffAssignment> result =
@@ -948,7 +959,8 @@ public class RoomAssignmentCPSATOptimizer {
             if (annexResult.isEmpty()) {
                 RelaxationConfig[] relaxSteps = {
                         RelaxationConfig.STEP1_5,
-                        RelaxationConfig.STEP2_ANNEX
+                        RelaxationConfig.STEP2_ANNEX,
+                        RelaxationConfig.STEP3_ANNEX   // ★追加
                 };
                 for (RelaxationConfig step : relaxSteps) {
                     List<AdaptiveRoomOptimizer.StaffAssignment> result =

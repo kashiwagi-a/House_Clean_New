@@ -830,6 +830,107 @@ public class FileProcessor {
         }
     }
 
+    // ★新規追加: 手動選択(設定完了)の結果を元のシフト表へ反映する。
+    //  - 選択スタッフ        → 対象日のセルを空欄
+    //  - 非選択かつ文字あり  → そのまま（変更しない）
+    //  - 非選択かつ空欄      → "/"
+    // 空欄判定は空文字と半角スペース1つ。既存セルの書式は維持し、
+    // 元が空セルへ "/" を書く場合は同列の隣接セルから書式を引き継ぐ。
+    // 安全策: 日付列が見つからない場合は推測列に書かず中止して false を返す。
+    // 戻り値: 反映成功=true / 日付列が見つからず中止=false
+    // 入出力エラーは IOException として呼び出し側へ送出する（呼び出し側でエラー表示）。
+    public static boolean applyManualSelectionToShiftFile(File file, LocalDate date,
+                                                          List<Staff> selectedStaff) throws IOException {
+        // 選択スタッフの集合（id==name なので名前で照合）
+        java.util.Set<String> selectedNames = new java.util.HashSet<>();
+        if (selectedStaff != null) {
+            for (Staff s : selectedStaff) {
+                if (s != null && s.name != null) {
+                    selectedNames.add(s.name.trim());
+                }
+            }
+        }
+
+        // 既存ファイルを一旦メモリに読み込む（入力ストリームは閉じてから同ファイルへ書き戻す）
+        Workbook workbook;
+        try (FileInputStream fis = new FileInputStream(file)) {
+            workbook = new XSSFWorkbook(fis);
+        }
+
+        try {
+            Sheet sheet = workbook.getSheetAt(0);
+            Row dateRow = sheet.getRow(2);
+            int targetColumn = findDateColumnInShiftFile(dateRow, date);
+
+            // 安全策: 日付列が見つからない場合は推測せず中止
+            if (targetColumn == -1) {
+                LOGGER.warning("対象日(" + date + ")の列が見つからないため、シフト表への反映を中止しました。");
+                return false;
+            }
+
+            // getAvailableStaff / getAllEnrolledStaff と同じ走査範囲
+            for (int i = 5; i <= 999; i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                Cell nameCell = row.getCell(5);
+                String staffName = getCellValueAsString(nameCell).trim();
+                if (staffName.isEmpty()) continue;
+
+                boolean selected = selectedNames.contains(staffName);
+                Cell shiftCell = row.getCell(targetColumn);
+                String shiftValue = getCellValueAsString(shiftCell).trim();
+                boolean isBlank = shiftValue.isEmpty() || shiftValue.equals(" ");
+
+                if (selected) {
+                    // 選択スタッフ → 空欄にする（書式は維持。元が空欄/空セルなら何もしない）
+                    if (shiftCell != null && !isBlank) {
+                        shiftCell.setCellValue(""); // 文字のみ消去。CellStyleは保持される
+                    }
+                } else {
+                    // 非選択スタッフ
+                    if (isBlank) {
+                        // 非選択かつ空欄 → "/"（書式は同列の隣接セルから引き継ぐ）
+                        if (shiftCell == null) {
+                            shiftCell = row.createCell(targetColumn);
+                            CellStyle style = findStyleInColumn(sheet, i, targetColumn);
+                            if (style != null) {
+                                shiftCell.setCellStyle(style);
+                            }
+                        }
+                        shiftCell.setCellValue("/");
+                    }
+                    // 非選択かつ文字あり → そのまま（何もしない）
+                }
+            }
+
+            try (FileOutputStream fos = new FileOutputStream(file)) {
+                workbook.write(fos);
+            }
+            LOGGER.info("シフト表への反映が完了しました（対象列=" + targetColumn + "）。");
+            return true;
+        } finally {
+            workbook.close();
+        }
+    }
+
+    // ★新規追加: 元が空セルで書式を持たない場合に、同列の上下行から書式を引き継ぐためのヘルパー。
+    private static CellStyle findStyleInColumn(Sheet sheet, int rowIndex, int column) {
+        for (int offset = 1; offset <= 50; offset++) {
+            Row up = sheet.getRow(rowIndex - offset);
+            if (up != null) {
+                Cell c = up.getCell(column);
+                if (c != null) return c.getCellStyle();
+            }
+            Row down = sheet.getRow(rowIndex + offset);
+            if (down != null) {
+                Cell c = down.getCell(column);
+                if (c != null) return c.getCellStyle();
+            }
+        }
+        return null;
+    }
+
     // スタッフシフトファイルで日付列を検索
     private static int findDateColumnInShiftFile(Row dateRow, LocalDate targetDate) {
         if (dateRow == null) return -1;

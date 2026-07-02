@@ -12,8 +12,9 @@ import java.util.List;
 import java.util.logging.Logger;
 
 /**
- * 故障部屋選択ダイアログ
- * 故障部屋（値が1の部屋）を清掃対象に含めるかどうかを選択する
+ * 故障・未販売部屋選択ダイアログ
+ * 故障部屋（6列目の値が1の部屋）および未販売部屋（7列目の値が0の部屋）を
+ * 清掃対象に含めるかどうかを選択する
  */
 public class BrokenRoomSelectionDialog extends JDialog {
     private static final Logger LOGGER = Logger.getLogger(BrokenRoomSelectionDialog.class.getName());
@@ -25,26 +26,41 @@ public class BrokenRoomSelectionDialog extends JDialog {
     private boolean dialogResult = false;
 
     /**
-     * 故障部屋情報クラス
+     * 故障・未販売部屋情報クラス
      */
     public static class BrokenRoomInfo {
         public final String roomNumber;
         public final String roomType;
         public final int floor;
         public final String building;
+        public final boolean isBroken;   // ★追加: 故障（6列目=1）
+        public final boolean isUnsold;   // ★追加: 未販売（7列目=0）
         public boolean selectedForCleaning;
 
-        public BrokenRoomInfo(String roomNumber, String roomType, int floor, String building) {
+        public BrokenRoomInfo(String roomNumber, String roomType, int floor, String building,
+                              boolean isBroken, boolean isUnsold) {
             this.roomNumber = roomNumber;
             this.roomType = roomType;
             this.floor = floor;
             this.building = building;
+            this.isBroken = isBroken;
+            this.isUnsold = isUnsold;
             this.selectedForCleaning = false;
+        }
+
+        /**
+         * ★追加: 区分の表示文字列を取得
+         */
+        public String getCategoryDisplay() {
+            if (isBroken && isUnsold) return "故障＋未販売";
+            if (isBroken) return "故障";
+            if (isUnsold) return "未販売";
+            return "";
         }
 
         @Override
         public String toString() {
-            return roomNumber + " (" + roomType + ", " + floor + "階, " + building + ")";
+            return roomNumber + " (" + roomType + ", " + floor + "階, " + building + ", " + getCategoryDisplay() + ")";
         }
     }
 
@@ -52,15 +68,15 @@ public class BrokenRoomSelectionDialog extends JDialog {
      * コンストラクタ
      */
     public BrokenRoomSelectionDialog(JFrame parent, File roomDataFile) {
-        super(parent, "故障部屋清掃設定", true);
+        super(parent, "故障・未販売部屋清掃設定", true);
         this.brokenRoomData = new HashMap<>();
         this.selectedForCleaning = new HashSet<>();
 
-        // 故障部屋データを読み込み
+        // 故障・未販売部屋データを読み込み
         loadBrokenRoomData(roomDataFile);
 
         initializeGUI();
-        setSize(600, 400);
+        setSize(680, 400);
         setLocationRelativeTo(parent);
     }
 
@@ -92,27 +108,33 @@ public class BrokenRoomSelectionDialog extends JDialog {
                 String roomNumber = parts.length > 1 ? parts[1].trim() : "";
                 String roomTypeCode = parts.length > 2 ? parts[2].trim() : "";
                 String brokenStatus = parts.length > 5 ? parts[5].trim() : "";
+                String roomStatus = parts.length > 6 ? parts[6].trim() : "";  // ★追加: 清掃状態（7列目）
 
-                // 故障部屋（値が1）のみを対象
-                if ("1".equals(brokenStatus) && !roomNumber.isEmpty()) {
+                boolean isBroken = "1".equals(brokenStatus);
+                boolean isUnsold = "0".equals(roomStatus);  // ★追加: 未販売（状態0）
+
+                // 故障部屋（6列目=1）または未販売部屋（7列目=0）を対象
+                if ((isBroken || isUnsold) && !roomNumber.isEmpty()) {
                     String roomType = determineRoomType(roomTypeCode);
                     int floor = extractFloor(roomNumber);
                     String building = isAnnexRoom(roomNumber) ? "別館" : "本館";
 
-                    BrokenRoomInfo roomInfo = new BrokenRoomInfo(roomNumber, roomType, floor, building);
+                    BrokenRoomInfo roomInfo = new BrokenRoomInfo(roomNumber, roomType, floor, building,
+                            isBroken, isUnsold);
                     brokenRoomData.put(roomNumber, roomInfo);
 
-                    LOGGER.info("故障部屋を検出: " + roomNumber + " (" + roomType + ", " + floor + "階, " + building + ")");
+                    LOGGER.info("故障・未販売部屋を検出: " + roomNumber + " (" + roomType + ", " + floor + "階, " +
+                            building + ", " + roomInfo.getCategoryDisplay() + ")");
                 }
             }
 
             reader.close();
-            LOGGER.info("故障部屋データ読み込み完了: " + brokenRoomData.size() + "室");
+            LOGGER.info("故障・未販売部屋データ読み込み完了: " + brokenRoomData.size() + "室");
 
         } catch (Exception e) {
-            LOGGER.severe("故障部屋データの読み込みエラー: " + e.getMessage());
+            LOGGER.severe("故障・未販売部屋データの読み込みエラー: " + e.getMessage());
             JOptionPane.showMessageDialog(this,
-                    "故障部屋データの読み込みに失敗しました: " + e.getMessage(),
+                    "故障・未販売部屋データの読み込みに失敗しました: " + e.getMessage(),
                     "エラー", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -125,17 +147,22 @@ public class BrokenRoomSelectionDialog extends JDialog {
 
         // 上部：説明パネル
         JPanel infoPanel = new JPanel(new BorderLayout());
-        infoPanel.setBorder(BorderFactory.createTitledBorder("故障部屋清掃設定"));
+        infoPanel.setBorder(BorderFactory.createTitledBorder("故障・未販売部屋清掃設定"));
+
+        // ★追加: 故障・未販売の内訳件数（両方に該当する部屋は双方にカウント）
+        long brokenCount = brokenRoomData.values().stream().filter(r -> r.isBroken).count();
+        long unsoldCount = brokenRoomData.values().stream().filter(r -> r.isUnsold).count();
 
         JLabel infoLabel = new JLabel("<html><div style='padding:10px;'>" +
-                "故障状態の部屋を清掃対象に含めるかどうかを選択してください。<br>" +
+                "故障・未販売状態の部屋を清掃対象に含めるかどうかを選択してください。<br>" +
                 "チェックを入れた部屋は通常の清掃対象として処理されます。<br>" +
-                "故障部屋数: " + brokenRoomData.size() + "室" +
+                "故障部屋: " + brokenCount + "室 / 未販売部屋: " + unsoldCount + "室（合計 " +
+                brokenRoomData.size() + "室）" +
                 "</div></html>");
         infoPanel.add(infoLabel, BorderLayout.CENTER);
         add(infoPanel, BorderLayout.NORTH);
 
-        // 中央：故障部屋テーブル
+        // 中央：故障・未販売部屋テーブル
         createBrokenRoomTable();
         JScrollPane scrollPane = new JScrollPane(brokenRoomTable);
         scrollPane.setPreferredSize(new Dimension(550, 250));
@@ -165,9 +192,9 @@ public class BrokenRoomSelectionDialog extends JDialog {
 
         add(buttonPanel, BorderLayout.SOUTH);
 
-        // 故障部屋が0の場合の処理
+        // 故障・未販売部屋が0の場合の処理
         if (brokenRoomData.isEmpty()) {
-            JLabel noDataLabel = new JLabel("故障状態の部屋はありません", JLabel.CENTER);
+            JLabel noDataLabel = new JLabel("故障・未販売状態の部屋はありません", JLabel.CENTER);
             noDataLabel.setFont(new Font("MS Gothic", Font.PLAIN, 16));
             add(noDataLabel, BorderLayout.CENTER);
 
@@ -177,10 +204,10 @@ public class BrokenRoomSelectionDialog extends JDialog {
     }
 
     /**
-     * 故障部屋テーブルの作成
+     * 故障・未販売部屋テーブルの作成
      */
     private void createBrokenRoomTable() {
-        String[] columnNames = {"選択", "部屋番号", "部屋タイプ", "階", "建物"};
+        String[] columnNames = {"選択", "部屋番号", "部屋タイプ", "階", "建物", "区分"};
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -204,7 +231,8 @@ public class BrokenRoomSelectionDialog extends JDialog {
                     roomInfo.roomNumber,
                     roomInfo.roomType,
                     roomInfo.floor + "階",
-                    roomInfo.building
+                    roomInfo.building,
+                    roomInfo.getCategoryDisplay()  // ★追加: 区分（故障／未販売）
             };
             tableModel.addRow(row);
         }
@@ -219,6 +247,7 @@ public class BrokenRoomSelectionDialog extends JDialog {
         brokenRoomTable.getColumnModel().getColumn(2).setPreferredWidth(100); // 部屋タイプ
         brokenRoomTable.getColumnModel().getColumn(3).setPreferredWidth(80);  // 階
         brokenRoomTable.getColumnModel().getColumn(4).setPreferredWidth(80);  // 建物
+        brokenRoomTable.getColumnModel().getColumn(5).setPreferredWidth(110); // ★追加: 区分
 
         // チェックボックスのレンダラー設定
         brokenRoomTable.getColumnModel().getColumn(0).setCellRenderer(new TableCellRenderer() {
@@ -277,7 +306,7 @@ public class BrokenRoomSelectionDialog extends JDialog {
      */
     private void updateSelectionCount() {
         // タイトルに選択数を表示
-        setTitle("故障部屋清掃設定 - " + selectedForCleaning.size() + "/" + brokenRoomData.size() + "室選択中");
+        setTitle("故障・未販売部屋清掃設定 - " + selectedForCleaning.size() + "/" + brokenRoomData.size() + "室選択中");
     }
 
     /**
@@ -286,7 +315,7 @@ public class BrokenRoomSelectionDialog extends JDialog {
     private void onOkClicked(ActionEvent e) {
         dialogResult = true;
 
-        LOGGER.info("故障部屋清掃設定完了:");
+        LOGGER.info("故障・未販売部屋清掃設定完了:");
         LOGGER.info("  清掃対象に追加: " + selectedForCleaning.size() + "室");
 
         for (String roomNumber : selectedForCleaning) {
@@ -307,14 +336,14 @@ public class BrokenRoomSelectionDialog extends JDialog {
     }
 
     /**
-     * 清掃対象に選択された故障部屋の部屋番号セットを取得
+     * 清掃対象に選択された故障・未販売部屋の部屋番号セットを取得
      */
     public Set<String> getSelectedRoomsForCleaning() {
         return new HashSet<>(selectedForCleaning);
     }
 
     /**
-     * 故障部屋情報マップを取得
+     * 故障・未販売部屋情報マップを取得
      */
     public Map<String, BrokenRoomInfo> getBrokenRoomData() {
         return new HashMap<>(brokenRoomData);

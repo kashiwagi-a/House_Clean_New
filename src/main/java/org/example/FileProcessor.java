@@ -96,6 +96,7 @@ public class FileProcessor {
          */
         public String getStatusDisplay() {
             switch (roomStatus) {
+                case "0": return "未販売";  // ★追加: 状態0（未販売）
                 case "1": return "未チェックイン";  // ★追加: 状態1
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
@@ -464,6 +465,7 @@ public class FileProcessor {
             statusCounts.forEach((status, count) -> {
                 String statusDisplay;
                 switch (status) {
+                    case "0": statusDisplay = "未販売"; break;  // ★追加: 状態0（未販売）
                     case "2": statusDisplay = "チェックアウト"; break;
                     case "3": statusDisplay = "連泊"; break;
                     case "4": statusDisplay = "時間延長"; break;

@@ -301,9 +301,9 @@ public class RoomAssignmentApplication extends JFrame {
     private JPanel createButtonPanel() {
         JPanel panel = new JPanel(new FlowLayout());
 
-        brokenRoomSettingsButton = new JButton("故障部屋設定");
+        brokenRoomSettingsButton = new JButton("故障・未販売設定");
         brokenRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
-        brokenRoomSettingsButton.setPreferredSize(new Dimension(120, 35));
+        brokenRoomSettingsButton.setPreferredSize(new Dimension(150, 35));
         brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
         brokenRoomSettingsButton.setForeground(Color.BLACK);
         brokenRoomSettingsButton.addActionListener(this::openBrokenRoomSettings);
@@ -351,8 +351,8 @@ public class RoomAssignmentApplication extends JFrame {
             if (dialog.getDialogResult()) {
                 selectedBrokenRoomsForCleaning = dialog.getSelectedRoomsForCleaning();
 
-                appendLog("故障部屋設定が完了しました:");
-                appendLog("  清掃対象に追加する故障部屋: " + selectedBrokenRoomsForCleaning.size() + "室");
+                appendLog("故障・未販売部屋設定が完了しました:");
+                appendLog("  清掃対象に追加する故障・未販売部屋: " + selectedBrokenRoomsForCleaning.size() + "室");
 
                 if (!selectedBrokenRoomsForCleaning.isEmpty()) {
                     for (String roomNumber : selectedBrokenRoomsForCleaning) {
@@ -362,13 +362,13 @@ public class RoomAssignmentApplication extends JFrame {
 
                 brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
                 brokenRoomSettingsButton.setForeground(Color.BLACK);
-                brokenRoomSettingsButton.setText("故障部屋設定済み");
+                brokenRoomSettingsButton.setText("故障・未販売設定済み");
             }
 
         } catch (Exception ex) {
-            LOGGER.severe("故障部屋設定ダイアログでエラー: " + ex.getMessage());
+            LOGGER.severe("故障・未販売部屋設定ダイアログでエラー: " + ex.getMessage());
             JOptionPane.showMessageDialog(this,
-                    "故障部屋設定でエラーが発生しました: " + ex.getMessage(),
+                    "故障・未販売部屋設定でエラーが発生しました: " + ex.getMessage(),
                     "エラー", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -393,7 +393,7 @@ public class RoomAssignmentApplication extends JFrame {
             appendLog("部屋データファイルを選択しました: " + selectedRoomFile.getName());
 
             brokenRoomSettingsButton.setEnabled(true);
-            brokenRoomSettingsButton.setText("故障部屋設定");
+            brokenRoomSettingsButton.setText("故障・未販売設定");
             brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
             selectedBrokenRoomsForCleaning.clear();
 
@@ -605,9 +605,10 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         if (!selectedBrokenRoomsForCleaning.isEmpty()) {
+            // ★注: 未販売部屋も同じプロパティで渡す（FileProcessor側の既存バイパス処理を流用するため名称は維持）
             String brokenRoomsStr = String.join(",", selectedBrokenRoomsForCleaning);
             System.setProperty("selectedBrokenRooms", brokenRoomsStr);
-            appendLog("清掃対象故障部屋を設定: " + selectedBrokenRoomsForCleaning.size() + "室");
+            appendLog("清掃対象の故障・未販売部屋を設定: " + selectedBrokenRoomsForCleaning.size() + "室");
         } else {
             System.clearProperty("selectedBrokenRooms");
         }

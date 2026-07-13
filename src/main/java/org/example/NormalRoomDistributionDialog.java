@@ -34,11 +34,18 @@ public class NormalRoomDistributionDialog extends JDialog {
     private Map<String, StaffDistribution> currentPattern;
 
     // ★A案: 割り振りパターンのラベル（1部屋差/2部屋差 × 大浴場 下段/上段 の4種）
-    static final String PAT_1B = "1部屋差・大浴場下段";
-    static final String PAT_1T = "1部屋差・大浴場上段";
-    static final String PAT_2B = "2部屋差・大浴場下段";
-    static final String PAT_2T = "2部屋差・大浴場上段";
-    private static final String[] PATTERN_LABELS = { PAT_1B, PAT_1T, PAT_2B, PAT_2T };
+    // ★★表示名変更: パターン1=1部屋差・大浴場下段, パターン2=1部屋差・大浴場上段,
+    //               パターン3=2部屋差・大浴場下段, パターン4=2部屋差・大浴場上段
+    static final String PAT_1B = "パターン1";
+    static final String PAT_1T = "パターン2";
+    static final String PAT_2B = "パターン3";
+    static final String PAT_2T = "パターン4";
+    // ★★館またぎ: 両建物1人を最初から立てて解くパターン（5つ目）
+    static final String PAT_SPLIT = "館またぎ";
+    private static final String[] PATTERN_LABELS = { PAT_1B, PAT_1T, PAT_2B, PAT_2T, PAT_SPLIT };
+
+    // ★★館またぎパターンで採用された基準の目標換算差（1 or 2）。警告判定(currentDesiredConvDiff)で使用。
+    private int splitPatternConvDiff = 1;
 
     // ★既存フィールド（後方互換性のため保持）
     private int totalMainRooms;
@@ -72,6 +79,14 @@ public class NormalRoomDistributionDialog extends JDialog {
     private Map<String, ManualFloorAssignmentDialog.StaffManual> manualLayout = null;
     // ★★追加: 「階別の手動割り当て」を実際に確定したか（初期レイアウト反映と区別するため）
     private boolean manualLayoutUsed = false;
+
+    // ★★追加(入れ替え機能): 入れ替え対象選択用チェックボックス（スタッフ名→チェックボックス）
+    private final Map<String, JCheckBox> swapSelectionBoxes = new LinkedHashMap<>();
+    // ★★追加(入れ替え機能): 「選択」列の固定幅（狭くするためGridLayoutから独立させる）
+    private static final int SELECT_COLUMN_WIDTH = 30;
+    // ★★追加(並べ替え機能): ドラッグ＆ドロップによる手動の表示順（null=自動ソート）
+    //   パターン切替・リセット時に null に戻し、自動ソートへ復帰する
+    private List<String> displayOrder = null;
 
     /**
      * ★拡張版: スタッフ割り振り情報
@@ -422,9 +437,21 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         JPanel tablePanel = new JPanel(new BorderLayout());
 
-        JPanel headerPanel = new JPanel(new GridLayout(1, 11));
+        // ★★変更: 「選択」列を固定幅(30px)で狭くするため、
+        //   BorderLayout(WEST=選択列, CENTER=従来の11列グリッド)構成に変更
+        //   ※GridLayoutは全列均等幅になるため、選択列だけ独立させる
+        JPanel headerPanel = new JPanel(new BorderLayout());
         headerPanel.setBackground(UIManager.getColor("TableHeader.background"));
         headerPanel.setBorder(BorderFactory.createMatteBorder(1, 1, 1, 1, Color.GRAY));
+
+        JLabel selectHeaderLabel = new JLabel("選択", JLabel.CENTER);
+        selectHeaderLabel.setFont(new Font("MS Gothic", Font.BOLD, 11));
+        selectHeaderLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+        selectHeaderLabel.setPreferredSize(new Dimension(SELECT_COLUMN_WIDTH, 25));
+        headerPanel.add(selectHeaderLabel, BorderLayout.WEST);
+
+        JPanel headerCells = new JPanel(new GridLayout(1, 11));
+        headerCells.setOpaque(false);
 
         // ECO列・通常合計列を削除（ECOはCP-SATが自動配分）
         String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "指定階",
@@ -438,8 +465,9 @@ public class NormalRoomDistributionDialog extends JDialog {
             headerLabel.setFont(new Font("MS Gothic", Font.BOLD, 11));
             headerLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
             headerLabel.setPreferredSize(new Dimension(widths[i], 25));
-            headerPanel.add(headerLabel);
+            headerCells.add(headerLabel);
         }
+        headerPanel.add(headerCells, BorderLayout.CENTER);
 
         tablePanel.add(headerPanel, BorderLayout.NORTH);
 
@@ -462,6 +490,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     private void updateDataPanel() {
         if (currentPattern == null) { showNoSolution(); return; }
         dataPanel.removeAll();
+        swapSelectionBoxes.clear();  // ★★追加: 行再構築のため入れ替え選択状態をクリア
 
         List<StaffDistribution> sortedStaff = new ArrayList<>(currentPattern.values());
 
@@ -501,15 +530,54 @@ public class NormalRoomDistributionDialog extends JDialog {
             return s1.staffName.compareTo(s2.staffName);
         });
 
-        for (StaffDistribution staff : sortedStaff) {
-            JPanel rowPanel = new JPanel(new GridLayout(1, 11));
-            rowPanel.setBorder(BorderFactory.createMatteBorder(0, 1, 1, 1, Color.GRAY));
-            rowPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 35));
-            rowPanel.setPreferredSize(new Dimension(0, 35));
+        // ★★追加: ドラッグ＆ドロップで並べ替え済みの場合はその順序を優先（自動ソートを上書き）
+        //   displayOrder に無いスタッフは自動ソート順のまま末尾に並ぶ（安定ソート）
+        if (displayOrder != null && !displayOrder.isEmpty()) {
+            Map<String, Integer> orderIndex = new HashMap<>();
+            for (int i = 0; i < displayOrder.size(); i++) {
+                orderIndex.put(displayOrder.get(i), i);
+            }
+            sortedStaff.sort(Comparator.comparingInt(
+                    s -> orderIndex.getOrDefault(s.staffName, Integer.MAX_VALUE)));
+        }
 
-            // スタッフ名
+        for (StaffDistribution staff : sortedStaff) {
+            // ★★変更: 行を BorderLayout(WEST=選択列(固定幅30px), CENTER=従来の11列グリッド) に変更
+            //   これにより「選択」列だけを狭くできる（GridLayoutは全列均等幅のため）
+            JPanel rowContainer = new JPanel(new BorderLayout());
+            rowContainer.setBorder(BorderFactory.createMatteBorder(0, 1, 1, 1, Color.GRAY));
+            rowContainer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 35));
+            rowContainer.setPreferredSize(new Dimension(0, 35));
+            // ★★追加: ドラッグ並べ替え後の順序記録用にスタッフ名を行に紐づける
+            rowContainer.putClientProperty("staffName", staff.staffName);
+
+            // ★★追加: 入れ替え対象の選択チェックボックス（固定幅で狭く表示）
+            JPanel selectPanel = new JPanel(new GridBagLayout());
+            selectPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            selectPanel.setPreferredSize(new Dimension(SELECT_COLUMN_WIDTH, 35));
+            JCheckBox selectBox = new JCheckBox();
+            if (staff.isBathCleaning || staff.isSuppliesOrder) {
+                // ★★追加: 大浴場清掃担当・備品発注担当は入れ替え不可（選択自体を無効化）
+                selectBox.setEnabled(false);
+                selectBox.setToolTipText(staff.isBathCleaning
+                        ? "大浴場清掃担当のため入れ替えできません"
+                        : "備品発注担当のため入れ替えできません");
+            } else {
+                selectBox.setToolTipText("入れ替え対象として選択（2人選んで「選択した2人を入れ替え」）");
+            }
+            swapSelectionBoxes.put(staff.staffName, selectBox);
+            selectPanel.add(selectBox);
+            rowContainer.add(selectPanel, BorderLayout.WEST);
+
+            // 従来の11列部分（スタッフ名〜換算合計）。既存リスナーはこのrowPanelを参照する
+            JPanel rowPanel = new JPanel(new GridLayout(1, 11));
+
+            // スタッフ名（★★追加: ドラッグで行の並べ替えが可能）
             JLabel nameLabel = new JLabel(staff.staffName, JLabel.CENTER);
             nameLabel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            nameLabel.setToolTipText("ドラッグで行を並べ替え");
+            nameLabel.setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
+            installRowDragHandler(nameLabel, rowContainer);
             rowPanel.add(nameLabel);
 
             // 制限タイプ
@@ -661,7 +729,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             convertedLabel.setFont(new Font("MS Gothic", Font.BOLD, 11));
             rowPanel.add(convertedLabel);
 
-            dataPanel.add(rowPanel);
+            rowContainer.add(rowPanel, BorderLayout.CENTER);
+            dataPanel.add(rowContainer);
         }
 
         dataPanel.revalidate();
@@ -671,9 +740,206 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private void updateRowDisplay(JPanel rowPanel, StaffDistribution staff) {
         Component[] components = rowPanel.getComponents();
-        // 換算合計更新（index 10: 通常合計列削除により11→10）
+        // 換算合計更新（★★変更: 選択列は行コンテナ側(WEST)に移したため、11列グリッド内の index 10 のまま）
         if (components.length > 10) {
             ((JLabel)components[10]).setText(String.valueOf((int) staff.getConvertedTotal()));
+        }
+    }
+
+    /**
+     * ★★追加: ドラッグ＆ドロップによる行並べ替えハンドラをスタッフ名ラベルに設定する。
+     * スタッフ名ラベルをドラッグすると行が上下に移動し、離した時点の順序を手動並び順として記録する。
+     * 手動並び順はパターン切替・リセットで破棄され、自動ソートに戻る。
+     */
+    private void installRowDragHandler(JLabel dragHandle, JPanel rowPanel) {
+        MouseAdapter handler = new MouseAdapter() {
+            private boolean moved = false;
+
+            @Override
+            public void mousePressed(MouseEvent e) {
+                moved = false;
+                // ドラッグ中の行を青枠で強調
+                rowPanel.setBorder(BorderFactory.createMatteBorder(1, 1, 1, 1, new Color(0, 120, 215)));
+            }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                Point p = SwingUtilities.convertPoint(dragHandle, e.getPoint(), dataPanel);
+                int targetIndex = rowIndexAtY(p.y);
+                int currentIndex = dataPanel.getComponentZOrder(rowPanel);
+                if (targetIndex >= 0 && currentIndex >= 0 && targetIndex != currentIndex) {
+                    dataPanel.setComponentZOrder(rowPanel, targetIndex);
+                    dataPanel.revalidate();
+                    dataPanel.repaint();
+                    moved = true;
+                }
+                // スクロール領域外へドラッグした場合の自動スクロール
+                dataPanel.scrollRectToVisible(new Rectangle(0, p.y - 30, 1, 60));
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                rowPanel.setBorder(BorderFactory.createMatteBorder(0, 1, 1, 1, Color.GRAY));
+                if (moved) {
+                    captureDisplayOrderFromPanel();
+                }
+            }
+        };
+        dragHandle.addMouseListener(handler);
+        dragHandle.addMouseMotionListener(handler);
+    }
+
+    /** ★★追加: dataPanel内のY座標から行インデックスを求める（範囲外は端の行に丸める） */
+    private int rowIndexAtY(int y) {
+        Component[] comps = dataPanel.getComponents();
+        if (comps.length == 0) return -1;
+        for (int i = 0; i < comps.length; i++) {
+            Component c = comps[i];
+            if (y >= c.getY() && y < c.getY() + c.getHeight()) {
+                return i;
+            }
+        }
+        if (y < 0) return 0;
+        Component last = comps[comps.length - 1];
+        if (y >= last.getY() + last.getHeight()) return comps.length - 1;
+        return -1;
+    }
+
+    /** ★★追加: 現在のdataPanelの行順を手動並び順として記録する（ドラッグ完了時に呼ぶ） */
+    private void captureDisplayOrderFromPanel() {
+        List<String> order = new ArrayList<>();
+        for (Component c : dataPanel.getComponents()) {
+            if (c instanceof JComponent) {
+                Object name = ((JComponent) c).getClientProperty("staffName");
+                if (name != null) order.add(name.toString());
+            }
+        }
+        if (!order.isEmpty()) {
+            displayOrder = order;
+        }
+    }
+
+    /**
+     * ★★変更: 選択チェックボックスで選んだ2人を「名前だけ」入れ替える。
+     * 実装上は名前・ID以外のフィールド（部屋数・制限タイプ・建物割り当て・指定階・リネン庫）を
+     * 2人の間で交換する。これにより表の行内容（制限タイプ・部屋数など）は行に固定されたまま、
+     * 担当者名だけが入れ替わって見える。
+     * ★★追加: 大浴場清掃担当・備品発注担当のスタッフは入れ替え不可
+     * （チェックボックス無効化に加え、ここでも二重にチェックする）。
+     * 入れ替え先の行の換算値が本人の登録上限（業者制限等）を超える場合は確認ダイアログを表示する。
+     */
+    private void swapSelectedStaff() {
+        if (currentPattern == null) {
+            JOptionPane.showMessageDialog(this,
+                    "選択中のパターンは解なしのため入れ替えできません。",
+                    "入れ替え", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        List<String> selected = new ArrayList<>();
+        for (Map.Entry<String, JCheckBox> entry : swapSelectionBoxes.entrySet()) {
+            if (entry.getValue().isSelected()) {
+                selected.add(entry.getKey());
+            }
+        }
+        if (selected.size() != 2) {
+            JOptionPane.showMessageDialog(this,
+                    "入れ替えるスタッフを2人選択してください。（現在の選択: " + selected.size() + "人）",
+                    "入れ替え", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        StaffDistribution a = currentPattern.get(selected.get(0));
+        StaffDistribution b = currentPattern.get(selected.get(1));
+        if (a == null || b == null) return;
+
+        // ★★追加: 大浴場清掃担当・備品発注担当は入れ替え不可
+        List<String> blocked = new ArrayList<>();
+        for (StaffDistribution d : new StaffDistribution[]{ a, b }) {
+            if (d.isBathCleaning) {
+                blocked.add(d.staffName + "（大浴場清掃担当）");
+            } else if (d.isSuppliesOrder) {
+                blocked.add(d.staffName + "（備品発注担当）");
+            }
+        }
+        if (!blocked.isEmpty()) {
+            StringBuilder msg = new StringBuilder("以下のスタッフは担当が固定されているため入れ替えできません：\n\n");
+            for (String s : blocked) {
+                msg.append("• ").append(s).append("\n");
+            }
+            JOptionPane.showMessageDialog(this, msg.toString(),
+                    "入れ替え", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // 交換後の換算値で本人の登録上限（業者制限等）超過をチェック
+        // （換算値は部屋数のみで決まるため、交換後の換算値＝相手の現在の換算値）
+        Map<String, StaffConstraintInfo> staffInfo = collectStaffConstraints();
+        List<String> overLimit = new ArrayList<>();
+        checkSwapUpperLimit(a, b.getConvertedTotal(), staffInfo, overLimit);
+        checkSwapUpperLimit(b, a.getConvertedTotal(), staffInfo, overLimit);
+        if (!overLimit.isEmpty()) {
+            StringBuilder msg = new StringBuilder("入れ替えると以下の上限超過が発生します：\n\n");
+            for (String s : overLimit) {
+                msg.append("• ").append(s).append("\n");
+            }
+            msg.append("\nこのまま入れ替えますか？");
+            int result = JOptionPane.showConfirmDialog(this, msg.toString(),
+                    "上限超過の確認", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (result != JOptionPane.YES_OPTION) return;
+        }
+
+        // ★★変更: 「名前だけの入れ替え」＝名前・ID以外の全項目を交換し、行の内容を固定する
+        // 部屋数の交換
+        int tmp;
+        tmp = a.mainSingleAssignedRooms;  a.mainSingleAssignedRooms  = b.mainSingleAssignedRooms;  b.mainSingleAssignedRooms  = tmp;
+        tmp = a.mainTwinAssignedRooms;   a.mainTwinAssignedRooms   = b.mainTwinAssignedRooms;   b.mainTwinAssignedRooms   = tmp;
+        tmp = a.annexSingleAssignedRooms; a.annexSingleAssignedRooms = b.annexSingleAssignedRooms; b.annexSingleAssignedRooms = tmp;
+        tmp = a.annexTwinAssignedRooms;  a.annexTwinAssignedRooms  = b.annexTwinAssignedRooms;  b.annexTwinAssignedRooms  = tmp;
+        // 建物割り当ての交換
+        String tmpBuilding = a.buildingAssignment;
+        a.buildingAssignment = b.buildingAssignment;
+        b.buildingAssignment = tmpBuilding;
+        // ★★追加: 制限タイプ表示の交換（行に固定するため）
+        String tmpConstraint = a.constraintType;
+        a.constraintType = b.constraintType;
+        b.constraintType = tmpConstraint;
+        // ※お風呂（大浴場清掃）・備品発注は入れ替え不可のため交換しない（上の事前チェックで弾かれる）
+        // 指定階の交換
+        Set<Integer> tmpFloors = a.preferredFloors;
+        a.preferredFloors = b.preferredFloors;
+        b.preferredFloors = tmpFloors;
+        // リネン庫の交換
+        boolean tmpLinen = a.isLinenClosetCleaning;
+        a.isLinenClosetCleaning = b.isLinenClosetCleaning;
+        b.isLinenClosetCleaning = tmpLinen;
+        int tmpLinenCount = a.linenClosetFloorCount;
+        a.linenClosetFloorCount = b.linenClosetFloorCount;
+        b.linenClosetFloorCount = tmpLinenCount;
+        // ※ECO部屋数(mainEco/annexEco)は常に0のため交換不要
+        a.updateTotal();
+        b.updateTotal();
+
+        // 手動並び順がある場合は2人の位置も入れ替える
+        // → 行の内容（お風呂○・制限タイプ・部屋数等）は元の位置に固定されたまま、名前だけが入れ替わる
+        // （自動ソート時は行内容と一緒にソートキーも移動するため、位置交換なしで同じ見た目になる）
+        if (displayOrder != null) {
+            int ia = displayOrder.indexOf(a.staffName);
+            int ib = displayOrder.indexOf(b.staffName);
+            if (ia >= 0 && ib >= 0) {
+                Collections.swap(displayOrder, ia, ib);
+            }
+        }
+
+        updateDataPanel();  // 再描画（サマリー更新・選択クリア含む）
+    }
+
+    /** ★★追加: 交換後の換算値が上限（業者制限・故障者制限等）を超えるかチェックし、超える場合はoutに追記 */
+    private void checkSwapUpperLimit(StaffDistribution staff, double newConv,
+                                     Map<String, StaffConstraintInfo> staffInfo, List<String> out) {
+        StaffConstraintInfo info = staffInfo.get(staff.staffName);
+        if (info != null && !"制限なし".equals(info.constraintType)
+                && info.maxRooms > 0 && newConv > info.maxRooms + 1e-9) {
+            out.add(String.format("%s（%s）: 換算 %d が上限 %d を超えます",
+                    staff.staffName, info.constraintType, (int) Math.round(newConv), info.maxRooms));
         }
     }
 
@@ -734,6 +1000,11 @@ public class NormalRoomDistributionDialog extends JDialog {
         });
         backToStaffButton.setVisible(false);  // 既定は非表示
         panel.add(backToStaffButton);
+
+        // ★★追加: 選択した2人の名前だけを入れ替える（行の内容＝部屋数・制限・お風呂等は行に固定）
+        JButton swapButton = new JButton("選択した2人を入れ替え");
+        swapButton.addActionListener(e -> swapSelectedStaff());
+        panel.add(swapButton);
 
         JButton resetButton = new JButton("リセット");
         resetButton.addActionListener(e -> resetPattern());
@@ -949,6 +1220,8 @@ public class NormalRoomDistributionDialog extends JDialog {
         patternMap.put(PAT_1T, calculatePatternForcedPeg(-1, false));
         patternMap.put(PAT_2B, calculatePatternForcedPeg(-2, true));
         patternMap.put(PAT_2T, calculatePatternForcedPeg(-2, false));
+        // ★★館またぎ: 4基準すべてを両建物1人ありで解き、換算スコア最良を採用
+        patternMap.put(PAT_SPLIT, calculatePatternSplit());
 
         for (String label : PATTERN_LABELS) {
             System.out.println("=== " + label + " ===");
@@ -1008,6 +1281,63 @@ public class NormalRoomDistributionDialog extends JDialog {
         return null;
     }
 
+    /**
+     * ★★館またぎパターン（5つ目）: またぎスタッフ(pickSplitCandidate)を最初から立てた状態で
+     * 4基準（1部屋差/2部屋差 × 大浴場 下段/上段）すべてをsolveBestで解き、
+     * conversionScore（各基準の目標換算差に対する評価）が最良の解を採用する。
+     * 同点はCP目的関数値で決める（solveBestと同方式）。
+     * 候補スタッフなし・全基準解なし・OR-Tools不可の場合は null（＝解なし表示）。
+     * ※またぎスタッフの総室数=別館最小-1のハード制約は既存(条件7)のまま。
+     * ※既存4パターンの計算パス・フォールバックには影響しない。
+     */
+    private Map<String, StaffDistribution> calculatePatternSplit() {
+        String splitName = pickSplitCandidate();
+        if (splitName == null) {
+            System.out.println("館またぎ: 候補スタッフなし → 解なし");
+            return null;
+        }
+
+        Map<String, StaffDistribution> best = null;
+        double bestScore = Double.MAX_VALUE;
+        double bestObjective = Double.MAX_VALUE;
+        int bestConvDiff = 1;
+
+        for (int desiredConvDiff = 1; desiredConvDiff <= 2; desiredConvDiff++) {
+            for (boolean pegToBottom : new boolean[]{ true, false }) {
+                CPSATSolution s;
+                try {
+                    s = solveBest(desiredConvDiff, splitName, pegToBottom);
+                } catch (Throwable t) {
+                    System.out.println("館またぎ CP-SAT例外: " + t
+                            + " (換算差=" + desiredConvDiff
+                            + ", peg=" + (pegToBottom ? "下段" : "上段") + ")");
+                    continue;
+                }
+                if (s == null) continue;
+                double score = conversionScore(s.pattern, desiredConvDiff);
+                if (score < bestScore - 1e-9
+                        || (Math.abs(score - bestScore) < 1e-9 && s.objective < bestObjective)) {
+                    best = s.pattern;
+                    bestScore = score;
+                    bestObjective = s.objective;
+                    bestConvDiff = desiredConvDiff;
+                }
+            }
+        }
+
+        if (best == null) {
+            System.out.println("館またぎ: 全基準で解なし");
+            return null;
+        }
+
+        this.splitPatternConvDiff = bestConvDiff;
+        System.out.println("館またぎ採用: またぎ=" + splitName
+                + ", 目標換算差=" + bestConvDiff
+                + ", score=" + String.format("%.2f", bestScore));
+        distributeTwins(best);  // ツイン配分はここで一度だけ（既存パターンと同タイミング）
+        return best;
+    }
+
     /** 別館人数の探索窓（ヒューリスティック中心±）。 */
     private static final int HEADCOUNT_WINDOW = 2;
     /** 室差の探索窓（別館ツインの換算膨張ぶん、室では少し多めに差をつける必要があるため）。 */
@@ -1032,8 +1362,11 @@ public class NormalRoomDistributionDialog extends JDialog {
         solveDistributionCPSAT(-desiredConvDiff, splitName, pegToBottom, -1);
         int center = lastHeuristicAnnex;
         int freeCount = lastFreeCount;
-        int loFa = Math.max(0, center - HEADCOUNT_WINDOW);
-        int hiFa = Math.min(freeCount, center + HEADCOUNT_WINDOW);
+        // ★片建物限定対応: 故障者(両方)が居る場合、半々見積もりからのズレ
+        //   （実際は全量が片建物に寄る）を吸収するため探索窓を+1広げる
+        int window = HEADCOUNT_WINDOW + (lastFaultBothCount > 0 ? 1 : 0);
+        int loFa = Math.max(0, center - window);
+        int hiFa = Math.min(freeCount, center + window);
 
         CPSATSolution best = null;
         double bestScore = Double.MAX_VALUE;
@@ -1132,6 +1465,8 @@ public class NormalRoomDistributionDialog extends JDialog {
         List<String> normalFreeNames = new ArrayList<>();        // 制限なし + 建物指定なし
         List<String> normalMainOnlyNames = new ArrayList<>();    // 制限なし + 本館のみ（非大浴場）
         List<String> normalAnnexOnlyNames = new ArrayList<>();   // 制限なし + 別館のみ
+        // ★片建物限定: 故障者(両方)は分割せず、後段で残室数の多い側の建物へまとめる（決定待ちリスト）
+        List<String> faultBothPending = new ArrayList<>();
 
         int constraintMainRooms = 0;
         int constraintAnnexRooms = 0;
@@ -1157,7 +1492,11 @@ public class NormalRoomDistributionDialog extends JDialog {
                     constraintMainRooms += rooms;
                 } else if ("別館のみ".equals(info.buildingAssignment)) {
                     constraintAnnexRooms += rooms;
+                } else if ("故障者制限".equals(info.constraintType)) {
+                    // ★片建物限定: 故障者(両方)の建物はループ後に決定（ここでは加算を保留）
+                    faultBothPending.add(name);
                 } else {
+                    // 業者制限(両方)は従来どおり半々で分割
                     constraintMainRooms += rooms / 2;
                     constraintAnnexRooms += rooms - rooms / 2;
                 }
@@ -1168,6 +1507,25 @@ public class NormalRoomDistributionDialog extends JDialog {
             } else {
                 normalFreeNames.add(name);
             }
+        }
+
+        // ★片建物限定: 故障者(両方)は「制約控除後の残室数」が多い側の建物へまとめて配属する。
+        //   部屋数(max)の大きい故障者から順に決めることで、片側への過度な偏りを抑える。
+        Map<String, String> faultBothBuilding = new HashMap<>();
+        faultBothPending.sort((a, b) -> Integer.compare(staffInfo.get(b).maxRooms, staffInfo.get(a).maxRooms));
+        for (String name : faultBothPending) {
+            int rooms = staffInfo.get(name).maxRooms;
+            int remMain = totalMainRooms - constraintMainRooms;
+            int remAnnex = totalAnnexRooms - constraintAnnexRooms;
+            if (remMain >= remAnnex) {
+                faultBothBuilding.put(name, "本館のみ");
+                constraintMainRooms += rooms;
+            } else {
+                faultBothBuilding.put(name, "別館のみ");
+                constraintAnnexRooms += rooms;
+            }
+            System.out.println("Step 1: " + name + " (故障者制限・両方) → " +
+                    faultBothBuilding.get(name) + "にまとめて配属");
         }
 
         int bathCount = bathStaffNames.size();
@@ -1248,11 +1606,14 @@ public class NormalRoomDistributionDialog extends JDialog {
         for (String name : constraintStaffNames) {
             StaffConstraintInfo info = staffInfo.get(name);
             int rooms = "故障者制限".equals(info.constraintType) ? info.maxRooms : info.minRooms;
-            if ("本館のみ".equals(info.buildingAssignment)) {
+            // ★片建物限定: 故障者(両方)はStep1で決定した建物へまとめて配属
+            String forcedBldg = faultBothBuilding.get(name);
+            if ("本館のみ".equals(info.buildingAssignment) || "本館のみ".equals(forcedBldg)) {
                 pattern.put(name, new StaffDistribution("", name, "本館のみ", rooms, 0, info.constraintType, false));
-            } else if ("別館のみ".equals(info.buildingAssignment)) {
+            } else if ("別館のみ".equals(info.buildingAssignment) || "別館のみ".equals(forcedBldg)) {
                 pattern.put(name, new StaffDistribution("", name, "別館のみ", 0, rooms, info.constraintType, false));
             } else {
+                // 業者制限(両方)は従来どおり半々で分割
                 pattern.put(name, new StaffDistribution("", name, "両方",
                         rooms / 2, rooms - rooms / 2, info.constraintType, false));
             }
@@ -1372,6 +1733,8 @@ public class NormalRoomDistributionDialog extends JDialog {
     // ★案B: solveDistributionCPSAT が直近の求解で用いた自由人数情報（別館人数探索の範囲決定に使用）
     private int lastFreeCount = 0;
     private int lastHeuristicAnnex = 0;
+    // ★片建物限定対応: 直近の求解での「故障者(両方)」人数（探索窓の拡張判定に使用）
+    private int lastFaultBothCount = 0;
 
     /**
      * ★条件①: 大浴場・備品を「下段(mainBottom)基準」で解き、本館最大-別館最小の差で採否を決める。
@@ -1454,7 +1817,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         List<String> normalMain = new ArrayList<>();
         List<String> normalAnnex = new ArrayList<>();
         List<String> freeNames = new ArrayList<>();
-        List<String> faultBoth = new ArrayList<>();   // 両方の故障者 → 建物配分はソルバーが決定
+        List<String> faultBoth = new ArrayList<>();   // 両方の故障者 → ★片建物限定: どちらの建物かはソルバーが決定（分割はしない）
         List<String> vendorBoth = new ArrayList<>();  // 両方の業者 → 建物配分はソルバーが決定
 
         for (Map.Entry<String, StaffConstraintInfo> e : staffInfo.entrySet()) {
@@ -1469,7 +1832,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             } else if ("故障者制限".equals(info.constraintType)) {
                 if ("本館のみ".equals(bldg)) faultMain.add(name);
                 else if ("別館のみ".equals(bldg)) faultAnnex.add(name);
-                else faultBoth.add(name);   // 両方: 本館/別館/分割のどれが最適かソルバーに委ねる
+                else faultBoth.add(name);   // 両方: ★片建物限定: 本館/別館のどちらにまとめるかをソルバーに委ねる（分割はしない）
             } else if (!"制限なし".equals(info.constraintType)) {
                 // 業者制限（enum LOWER_RANGE / displayNameは"リライアンス用"）。
                 // 元ロジックと同じく「制限なし・故障者以外」をすべて業者(min〜max)として扱う。
@@ -1522,6 +1885,9 @@ public class NormalRoomDistributionDialog extends JDialog {
         // ★案B: 探索用に「ヒューリスティック中心値」と freeCount を記録（解なしでも有効）
         this.lastHeuristicAnnex = bestFreeAnnex;
         this.lastFreeCount = freeCount;
+        // ★片建物限定対応: 故障者(両方)は実際には片建物にまとまるため、
+        //   上の半々見積もりとズレる。solveBest側で探索窓を広げて吸収する。
+        this.lastFaultBothCount = faultBoth.size();
         // forcedFreeAnnex が指定されていれば、その別館人数で固定する
         if (forcedFreeAnnex >= 0) {
             bestFreeAnnex = Math.min(forcedFreeAnnex, freeCount);
@@ -1634,12 +2000,18 @@ public class NormalRoomDistributionDialog extends JDialog {
             model.addGreaterOrEqual(av.get(n), info.minRooms);
             model.addLessOrEqual(av.get(n), info.maxRooms);
         }
-        // 両方の故障者: 建物配分はソルバーが決定。各建物の取り分は通常レベル以下、合計≤max(≥1)、設定値へ引き上げ
+        // 両方の故障者: どちらの建物にするかはソルバーが決定。
+        // ★片建物限定: 本館・別館のどちらか一方にまとめて配属（両建物への分割は禁止）。
+        // 取り分は通常レベル以下、合計≤max(≥1)、設定値へ引き上げ
         for (String n : faultBoth) {
             int max = staffInfo.get(n).maxRooms;
             IntVar m = mv.get(n), a = av.get(n);
             model.addLessOrEqual(m, mainTop);
             model.addLessOrEqual(a, annexTop);
+            // ★片建物限定: useMain=true なら別館分を0に、false なら本館分を0に強制
+            BoolVar useMain = model.newBoolVar("fbUseMain_" + n);
+            model.addEquality(a, 0).onlyEnforceIf(useMain);
+            model.addEquality(m, 0).onlyEnforceIf(useMain.not());
             LinearExpr total = LinearExpr.newBuilder().addTerm(m, 1).addTerm(a, 1).build();
             model.addLessOrEqual(total, max);
             model.addGreaterOrEqual(total, 1);
@@ -2073,6 +2445,8 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     /** 選択中ラベルのパターンを currentPattern に反映する。解なし(null)なら専用表示。 */
     private void applySelectedPattern() {
+        // ★★追加: パターン切替・リセット時は手動並び順を破棄して自動ソートに戻す
+        displayOrder = null;
         String selected = (String) patternSelector.getSelectedItem();
         Map<String, StaffDistribution> p = (selected != null) ? patternMap.get(selected) : null;
         if (p == null) {
@@ -2088,6 +2462,7 @@ public class NormalRoomDistributionDialog extends JDialog {
     private void showNoSolution() {
         if (dataPanel == null) return;
         dataPanel.removeAll();
+        swapSelectionBoxes.clear();  // ★★追加: 行が無いため入れ替え選択もクリア
         JLabel msg = new JLabel("この基準（大浴場 下段／上段）では条件を満たす割り振りが見つかりませんでした。別のパターンを選択してください。");
         msg.setFont(new Font("MS Gothic", Font.PLAIN, 13));
         dataPanel.add(msg);
@@ -2146,22 +2521,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         updateWarningLabel();
     }
 
-    /** ★現在のパターン（ツイン配分後）を点検し、未達条件を警告として表示する。 */
+    /** ★警告メッセージ表示は無効化（ユーザー要望により非表示） */
     private void updateWarningLabel() {
         if (warningLabel == null) return;
-        java.util.List<String> warnings = computeWarnings(currentPattern, currentDesiredConvDiff());
-        if (warnings.isEmpty()) {
-            warningLabel.setText("");
-        } else {
-            // 複数行をHTMLで縦に並べる
-            StringBuilder sb = new StringBuilder("<html>");
-            for (int i = 0; i < warnings.size(); i++) {
-                if (i > 0) sb.append("<br>");
-                sb.append(escapeHtml(warnings.get(i)));
-            }
-            sb.append("</html>");
-            warningLabel.setText(sb.toString());
-        }
+        warningLabel.setText("");
     }
 
     /** 現在選択中のパターンラベルから目標換算差（1 or 2）を返す。 */
@@ -2169,6 +2532,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         Object sel = (patternSelector != null) ? patternSelector.getSelectedItem() : null;
         String label = (sel != null) ? sel.toString() : defaultPatternLabel;
         if (PAT_2B.equals(label) || PAT_2T.equals(label)) return 2;
+        if (PAT_SPLIT.equals(label)) return splitPatternConvDiff; // ★★館またぎ: 採用基準の換算差
         return 1; // PAT_1B / PAT_1T / 不明時は1部屋差扱い
     }
 

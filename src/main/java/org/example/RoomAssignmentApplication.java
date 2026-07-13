@@ -684,9 +684,10 @@ public class RoomAssignmentApplication extends JFrame {
         // ★★変更: 5と5.5をループ化（割り振り画面の「スタッフ選択に戻る」でやり直し可能）
         List<StaffPointConstraint> tmpConstraints;
         Map<String, NormalRoomDistributionDialog.StaffDistribution> tmpDistribution;
+        List<StaffPointConstraint> previousConstraints = null;  // ★★追加: 「戻る」時の設定復元用
         while (true) {
             // 5. ポイント制限の設定(大浴場清掃スタッフ選択機能付き)
-            tmpConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType);
+            tmpConstraints = selectStaffPointConstraintsWithBathCleaning(availableStaff, bathType, previousConstraints);
 
             // 5.5. ★新機能: 通常清掃部屋の事前割り振り設定
             appendLog("通常清掃部屋の割り振りパターンを設定中...");
@@ -697,6 +698,7 @@ public class RoomAssignmentApplication extends JFrame {
             if (!distributionBackRequested) {
                 break;  // OKまたはキャンセル → 従来どおり次へ進む
             }
+            previousConstraints = tmpConstraints;  // ★★追加: 今回の設定を次回表示用に保持
             appendLog("「スタッフ選択に戻る」が選択されました。ポイント制限設定からやり直します。");
         }
         final List<StaffPointConstraint> pointConstraints = tmpConstraints;
@@ -1154,7 +1156,8 @@ public class RoomAssignmentApplication extends JFrame {
      * ★修正: ポイント制限・大浴場清掃スタッフ選択(制限値入力エラー修正版)
      */
     private List<StaffPointConstraint> selectStaffPointConstraintsWithBathCleaning(
-            List<FileProcessor.Staff> availableStaff, AdaptiveRoomOptimizer.BathCleaningType bathType) {
+            List<FileProcessor.Staff> availableStaff, AdaptiveRoomOptimizer.BathCleaningType bathType,
+            List<StaffPointConstraint> previousConstraints) {  // ★★追加: 前回設定（初回はnull）
         List<StaffPointConstraint> constraints = new ArrayList<>();
 
         JDialog dialog = new JDialog(parentFrame, "ポイント制限・大浴場清掃・備品発注設定", true);
@@ -1180,6 +1183,44 @@ public class RoomAssignmentApplication extends JFrame {
         for (FileProcessor.Staff staff : availableStaff) {
             Object[] row = {staff.name, "制限なし", "", "両方", false, false, "未設定"};
             tableModel.addRow(row);
+        }
+
+        // ★★追加: 「スタッフ選択に戻る」で戻ってきた場合、前回設定をスタッフ名で照合して復元
+        //   previousConstraints に含まれないスタッフ（前回すべて初期値だった人・新規追加された人）は初期値のまま
+        if (previousConstraints != null) {
+            for (int i = 0; i < tableModel.getRowCount(); i++) {
+                String rowStaffName = (String) tableModel.getValueAt(i, 0);
+                for (StaffPointConstraint prev : previousConstraints) {
+                    if (!prev.staffName.equals(rowStaffName)) {
+                        continue;
+                    }
+                    String constraintTypeText;
+                    String constraintValueText = "";
+                    String statusText;
+
+                    if (prev.constraintType == StaffPointConstraint.ConstraintType.UPPER_LIMIT) {
+                        constraintTypeText = "故障者制限";
+                        constraintValueText = String.valueOf(prev.upperLimit);
+                        statusText = "設定済み(故障者" + prev.upperLimit + "P)";
+                    } else if (prev.constraintType == StaffPointConstraint.ConstraintType.LOWER_RANGE) {
+                        constraintTypeText = "業者制限";
+                        constraintValueText = prev.lowerMinLimit + "〜" + prev.lowerMaxLimit;
+                        statusText = "設定済み(業者" + prev.lowerMinLimit + "〜" + prev.lowerMaxLimit + "P)";
+                    } else {
+                        constraintTypeText = "制限なし";
+                        statusText = prev.isBathCleaningStaff ? "大浴場清掃担当"
+                                : (prev.isSuppliesOrderStaff ? "備品発注担当" : "制限なし");
+                    }
+
+                    tableModel.setValueAt(constraintTypeText, i, 1);
+                    tableModel.setValueAt(constraintValueText, i, 2);
+                    tableModel.setValueAt(prev.buildingAssignment.displayName, i, 3);
+                    tableModel.setValueAt(prev.isBathCleaningStaff, i, 4);
+                    tableModel.setValueAt(prev.isSuppliesOrderStaff, i, 5);
+                    tableModel.setValueAt(statusText, i, 6);
+                    break;
+                }
+            }
         }
 
         JTable table = new JTable(tableModel);
@@ -1272,12 +1313,15 @@ public class RoomAssignmentApplication extends JFrame {
                         // ★大浴場清掃と備品発注は排他: 大浴場清掃をオフにする
                         tableModel.setValueAt(false, editingRow, 4);
                         tableModel.setValueAt("備品発注担当", editingRow, 6);
-                        // ★備品発注は建物指定をユーザー設定のまま維持（大浴場清掃のような本館固定はしない）
+                        // ★★変更: 備品発注ON時は建物指定を「本館のみ」に自動切り替え（大浴場清掃と同じ挙動）
+                        tableModel.setValueAt("本館のみ", editingRow, 3);
                     } else {
                         String constraintType = (String) tableModel.getValueAt(editingRow, 1);
                         if ("制限なし".equals(constraintType)) {
                             tableModel.setValueAt("制限なし", editingRow, 6);
                         }
+                        // ★★追加: 備品発注OFF時は建物指定を「両方」に戻す（大浴場清掃と同じ挙動）
+                        tableModel.setValueAt("両方", editingRow, 3);
                     }
                 }
 

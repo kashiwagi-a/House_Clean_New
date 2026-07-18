@@ -49,8 +49,19 @@ public class RoomNumberAssigner {
                     assignment.staff.name, assignedRooms.size(), availableRooms.size()));
         }
 
+        // ★新規: 未割り当てに連泊部屋が残っている場合、割り当て済みの非連泊部屋と入れ替えて救済
+        // （連泊部屋は必ず清掃が必要なため、未割り当てに残すのはチェックアウト等の部屋のみとする）
+        rescueStayoverRooms(assignments, result, availableRooms);
+
         if (!availableRooms.isEmpty()) {
-            LOGGER.warning("未割り当て部屋が残っています: " + availableRooms.size() + "室");
+            long stayoverLeft = availableRooms.stream()
+                    .filter(r -> "3".equals(r.roomStatus)).count();
+            if (stayoverLeft > 0) {
+                LOGGER.warning("未割り当て部屋が残っています: " + availableRooms.size()
+                        + "室（うち連泊: " + stayoverLeft + "室 ※同一階に入れ替え可能な非連泊部屋がありませんでした）");
+            } else {
+                LOGGER.warning("未割り当て部屋が残っています: " + availableRooms.size() + "室（連泊部屋なし）");
+            }
         }
 
         return result;
@@ -157,6 +168,22 @@ public class RoomNumberAssigner {
         }
 
         // ★修正: 最終ソート（リネン庫担当フロアのみ大きい順、それ以外は昇順）
+        // ※救済処理（rescueStayoverRooms）後の再ソートでも使うため共通メソッド化（ロジックは従来と同一）
+        sortAssignedRooms(assignment, assignedRooms);
+
+        return assignedRooms;
+    }
+
+    /**
+     * ★新規: スタッフの割り当て部屋リストを最終ソートする共通メソッド
+     * （従来 assignRoomsToStaff 末尾にあったソートロジックをそのまま移設。動作は同一）
+     * リネン庫担当フロアのみ部屋番号を大きい順、それ以外は昇順。
+     */
+    private void sortAssignedRooms(AdaptiveRoomOptimizer.StaffAssignment assignment,
+                                   List<FileProcessor.Room> assignedRooms) {
+        boolean isLinenClosetStaff = assignment.isLinenClosetCleaning;
+        Set<Integer> linenFloorSet = new HashSet<>(assignment.getLinenClosetFloors());
+
         if (isLinenClosetStaff && !linenFloorSet.isEmpty()) {
             assignedRooms.sort((r1, r2) -> {
                 // まず階で比較（昇順）
@@ -175,8 +202,106 @@ public class RoomNumberAssigner {
             // 通常スタッフ: 部屋番号順（昇順）
             assignedRooms.sort(Comparator.comparing(room -> room.roomNumber));
         }
+    }
 
-        return assignedRooms;
+    /**
+     * ★新規: 未割り当てに残った連泊部屋（roomStatus="3"）を救済する
+     *
+     * 連泊部屋は必ず清掃（割り当て）が必要なため、未割り当てプールに連泊部屋が
+     * 残っている場合、割り当て済みの「非連泊」部屋と1対1で入れ替える。
+     * 入れ替え条件:
+     *   - 同一階であること（スタッフの担当階を変えないため）
+     *   - エコ区分が同一であること（エコ⇔エコ、通常⇔通常のみ）
+     *   - 通常部屋の場合は部屋タイプ（S/T等）も同一であること
+     * これにより、スタッフごとの部屋数・担当階・部屋タイプ内訳・エコ数は一切変化しない。
+     * 全部屋が割り当て済み、または未割り当てに連泊部屋がない場合は何もしない（従来動作のまま）。
+     */
+    private void rescueStayoverRooms(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            Map<String, List<FileProcessor.Room>> result,
+            List<FileProcessor.Room> availableRooms) {
+
+        // 未割り当てに残っている連泊部屋を抽出
+        List<FileProcessor.Room> unassignedStayovers = availableRooms.stream()
+                .filter(r -> "3".equals(r.roomStatus))
+                .collect(Collectors.toList());
+
+        if (unassignedStayovers.isEmpty()) {
+            return; // 救済不要（従来動作のまま）
+        }
+
+        LOGGER.info("未割り当ての連泊部屋を検出: " + unassignedStayovers.size()
+                + "室。割り当て済みの非連泊部屋との入れ替えを試みます");
+
+        Set<String> modifiedStaffNames = new HashSet<>(); // 入れ替え後に再ソートが必要なスタッフ
+
+        for (FileProcessor.Room stayover : unassignedStayovers) {
+            String bestStaffName = null;
+            int bestIndex = -1;
+            int bestScore = Integer.MAX_VALUE;
+
+            // 全スタッフの割り当て済み部屋から入れ替え候補を探す
+            for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+                List<FileProcessor.Room> staffRooms = result.get(assignment.staff.name);
+                if (staffRooms == null) continue;
+
+                for (int i = 0; i < staffRooms.size(); i++) {
+                    FileProcessor.Room candidate = staffRooms.get(i);
+
+                    // 連泊部屋同士の入れ替えは無意味なので対象外
+                    if ("3".equals(candidate.roomStatus)) continue;
+                    // 同一階のみ（担当階を変えない）
+                    if (candidate.floor != stayover.floor) continue;
+                    // エコ区分は必ず一致（エコ数を変えない）
+                    if (candidate.isEco != stayover.isEco) continue;
+
+                    boolean typeMatches = mapRoomType(candidate.roomType)
+                            .equals(mapRoomType(stayover.roomType));
+                    // 通常部屋は部屋タイプ一致が必須（タイプ内訳を変えない）
+                    if (!candidate.isEco && !typeMatches) continue;
+
+                    // スコア: タイプ一致を優先し、部屋番号が近いものを選ぶ
+                    // （エコ部屋は元の割り当てロジック同様タイプ不問だが、一致する方を優先）
+                    int score = (typeMatches ? 0 : 1_000_000)
+                            + Math.abs(extractRoomNumber(candidate.roomNumber)
+                            - extractRoomNumber(stayover.roomNumber));
+
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestStaffName = assignment.staff.name;
+                        bestIndex = i;
+                    }
+                }
+            }
+
+            if (bestStaffName != null) {
+                List<FileProcessor.Room> staffRooms = result.get(bestStaffName);
+                FileProcessor.Room replaced = staffRooms.get(bestIndex);
+
+                // 入れ替え実行: 連泊部屋を割り当て、非連泊部屋を未割り当てへ戻す
+                staffRooms.set(bestIndex, stayover);
+                availableRooms.remove(stayover);
+                availableRooms.add(replaced);
+                modifiedStaffNames.add(bestStaffName);
+
+                LOGGER.info(String.format("連泊部屋を救済: %s を %s に割り当て（%s は未割り当てへ）",
+                        stayover.roomNumber, bestStaffName, replaced.roomNumber));
+            } else {
+                LOGGER.warning("連泊部屋 " + stayover.roomNumber
+                        + " (" + stayover.floor + "階) の入れ替え候補が見つかりませんでした"
+                        + "（同一階・同一区分の非連泊割り当て部屋なし）");
+            }
+        }
+
+        // 入れ替えが発生したスタッフの部屋リストを再ソート（従来と同じソート規則を適用）
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            if (modifiedStaffNames.contains(assignment.staff.name)) {
+                List<FileProcessor.Room> staffRooms = result.get(assignment.staff.name);
+                if (staffRooms != null) {
+                    sortAssignedRooms(assignment, staffRooms);
+                }
+            }
+        }
     }
 
     /**

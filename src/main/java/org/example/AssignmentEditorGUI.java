@@ -40,6 +40,9 @@ public class AssignmentEditorGUI extends JFrame {
     // ★追加: 残し部屋管理
     private Set<String> excludedRooms = new HashSet<>();
 
+    // ★新規: 未割り当て発の残し部屋管理（既存の残し部屋設定とは別管理。設定・解除は未割り当てダイアログ内で行う）
+    private Set<String> unassignedExcludedRooms = new HashSet<>();
+
     // ★追加: グループ境界の行インデックス（罫線表示用）
     private Set<Integer> groupBoundaryRows = new HashSet<>();
 
@@ -783,9 +786,10 @@ public class AssignmentEditorGUI extends JFrame {
             panel.add(solutionLabel);
         }
 
-        // 残し部屋数表示
-        if (!excludedRooms.isEmpty()) {
-            panel.add(new JLabel(String.format(" | 残し部屋: %d室", excludedRooms.size())));
+        // 残し部屋数表示（★修正: 未割り当て発の残し部屋も合算して表示）
+        int totalExcludedCount = excludedRooms.size() + unassignedExcludedRooms.size();
+        if (totalExcludedCount > 0) {
+            panel.add(new JLabel(String.format(" | 残し部屋: %d室", totalExcludedCount)));
         }
 
         if (staffDataMap.size() != actualStaffCount) {
@@ -975,6 +979,7 @@ public class AssignmentEditorGUI extends JFrame {
 
         // 残し部屋をリセット
         excludedRooms.clear();
+        unassignedExcludedRooms.clear();  // ★新規: 未割り当て発の残し部屋もリセット
 
         // テーブルを更新
         loadAssignmentData();
@@ -1051,6 +1056,13 @@ public class AssignmentEditorGUI extends JFrame {
         unassignedRoomsButton.setBackground(new java.awt.Color(255, 150, 150));
         unassignedRoomsButton.addActionListener(e -> showUnassignedRoomsDialog());
         buttonPanel.add(unassignedRoomsButton);
+
+        // ★新規: ウォークインボタン（未販売部屋をスタッフへ割り振る）
+        JButton walkInButton = new JButton("ウォークイン");
+        walkInButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        walkInButton.setBackground(new java.awt.Color(150, 200, 255));  // 青系の色
+        walkInButton.addActionListener(e -> showWalkInDialog());
+        buttonPanel.add(walkInButton);
 
         // スタッフ入れ替えボタン
         JButton swapStaffButton = new JButton("スタッフ入れ替え");
@@ -1959,6 +1971,7 @@ public class AssignmentEditorGUI extends JFrame {
 
         this.staffDataMap = newStaffDataMap;
         this.excludedRooms.clear();  // 残し部屋設定をクリア
+        this.unassignedExcludedRooms.clear();  // ★新規: 未割り当て発の残し部屋もクリア
     }
 
     protected void assignRoomNumbers() {
@@ -3007,6 +3020,98 @@ public class AssignmentEditorGUI extends JFrame {
                 }
             }
 
+            // ★新規: 残し部屋ブロックの出力（全スタッフの後・最終セット）
+            // 対象: 残し部屋設定(excludedRooms) + 未割り当て発(unassignedExcludedRooms) の両方
+            Set<String> allExcludedRoomNumbers = new HashSet<>(excludedRooms);
+            allExcludedRoomNumbers.addAll(unassignedExcludedRooms);
+
+            if (!allExcludedRoomNumbers.isEmpty() && processingResult.cleaningDataObj != null) {
+                // Roomオブジェクトを収集（roomsToCleanから参照）し、通常清掃とEcoに分類
+                List<FileProcessor.Room> excludedNormalRooms = new ArrayList<>();
+                List<FileProcessor.Room> excludedEcoRooms = new ArrayList<>();
+
+                for (FileProcessor.Room room : processingResult.cleaningDataObj.roomsToClean) {
+                    if (allExcludedRoomNumbers.contains(room.roomNumber)) {
+                        if (room.isEcoClean) {
+                            excludedEcoRooms.add(room);
+                        } else {
+                            excludedNormalRooms.add(room);
+                        }
+                    }
+                }
+
+                if (!excludedNormalRooms.isEmpty() || !excludedEcoRooms.isEmpty()) {
+                    // 次のセット境界に移動（スタッフ出力と同じ規則）
+                    if (!isAtSetBoundary(currentRow)) {
+                        currentRow = getNextSetBoundary(currentRow);
+                    }
+
+                    // 部屋番号順にソート
+                    excludedNormalRooms.sort(Comparator.comparing(r -> r.roomNumber));
+                    excludedEcoRooms.sort(Comparator.comparing(r -> r.roomNumber));
+
+                    // ブロックの最初の行を記録（集計出力用）
+                    int excludedFirstRow = currentRow;
+
+                    // 通常清掃部屋を出力（A列の担当名は「残し部屋」）
+                    for (FileProcessor.Room room : excludedNormalRooms) {
+                        Row row = sheet.createRow(currentRow);
+                        writeRoomData(row, "残し部屋", room);
+                        currentRow++;
+                    }
+
+                    // Eco部屋がある場合、1行空けて出力（スタッフ出力と同形式）
+                    if (!excludedEcoRooms.isEmpty()) {
+                        if (!excludedNormalRooms.isEmpty()) {
+                            currentRow++;  // 空行
+                        }
+                        for (FileProcessor.Room room : excludedEcoRooms) {
+                            Row row = sheet.createRow(currentRow);
+                            writeRoomData(row, "残し部屋", room);
+                            currentRow++;
+                        }
+                    }
+
+                    // ブロック最初の行を取得（集計出力用）
+                    Row excludedHeadRow = sheet.getRow(excludedFirstRow);
+                    if (excludedHeadRow == null) excludedHeadRow = sheet.createRow(excludedFirstRow);
+
+                    // F〜I列: エコ部屋タイプ別カウント（水色）
+                    {
+                        int ecoS = 0, ecoT = 0, ecoD = 0, ecoFD = 0;
+                        for (FileProcessor.Room room : excludedEcoRooms) {
+                            switch (room.roomType) {
+                                case "S": case "NS": case "ANS": case "ABF": case "AKS": ecoS++; break;
+                                case "T": case "NT": case "ANT": case "ADT": ecoT++; break;
+                                case "D": case "ND": case "AND": ecoD++; break;
+                                case "FD": ecoFD++; break;
+                            }
+                        }
+                        if (ecoS > 0)  { Cell c = excludedHeadRow.createCell(5); c.setCellValue(ecoS);  c.setCellStyle(ecoStyle); }
+                        if (ecoT > 0)  { Cell c = excludedHeadRow.createCell(6); c.setCellValue(ecoT);  c.setCellStyle(ecoStyle); }
+                        if (ecoD > 0)  { Cell c = excludedHeadRow.createCell(7); c.setCellValue(ecoD);  c.setCellStyle(ecoStyle); }
+                        if (ecoFD > 0) { Cell c = excludedHeadRow.createCell(8); c.setCellValue(ecoFD); c.setCellStyle(ecoStyle); }
+                    }
+
+                    // J〜M列: 通常清掃部屋タイプ別カウント（薄緑）
+                    {
+                        int normS = 0, normT = 0, normD = 0, normFD = 0;
+                        for (FileProcessor.Room room : excludedNormalRooms) {
+                            switch (room.roomType) {
+                                case "S": case "NS": case "ANS": case "ABF": case "AKS": normS++; break;
+                                case "T": case "NT": case "ANT": case "ADT": normT++; break;
+                                case "D": case "ND": case "AND": normD++; break;
+                                case "FD": normFD++; break;
+                            }
+                        }
+                        if (normS > 0)  { Cell c = excludedHeadRow.createCell(9);  c.setCellValue(normS);  c.setCellStyle(normalStyle); }
+                        if (normT > 0)  { Cell c = excludedHeadRow.createCell(10); c.setCellValue(normT);  c.setCellStyle(normalStyle); }
+                        if (normD > 0)  { Cell c = excludedHeadRow.createCell(11); c.setCellValue(normD);  c.setCellStyle(normalStyle); }
+                        if (normFD > 0) { Cell c = excludedHeadRow.createCell(12); c.setCellValue(normFD); c.setCellStyle(normalStyle); }
+                    }
+                }
+            }
+
             // 列幅を調整
             sheet.setColumnWidth(0, 12 * 256);  // A: 担当
             sheet.setColumnWidth(1, 8 * 256);   // B: 部屋番号
@@ -3140,6 +3245,9 @@ public class AssignmentEditorGUI extends JFrame {
         // 残し部屋も除外
         assignedRoomNumbers.addAll(excludedRooms);
 
+        // ★新規: 未割り当て発の残し部屋も除外
+        assignedRoomNumbers.addAll(unassignedExcludedRooms);
+
         // 未割り当て部屋を特定
         for (FileProcessor.Room room : allRooms) {
             if (!assignedRoomNumbers.contains(room.roomNumber)) {
@@ -3159,7 +3267,19 @@ public class AssignmentEditorGUI extends JFrame {
     private void showUnassignedRoomsDialog() {
         List<FileProcessor.Room> unassignedRooms = getUnassignedRooms();
 
-        if (unassignedRooms.isEmpty()) {
+        // ★新規: 未割り当て発の残し部屋のRoomオブジェクトを収集
+        List<FileProcessor.Room> unassignedExcludedRoomList = new ArrayList<>();
+        if (processingResult.cleaningDataObj != null) {
+            for (FileProcessor.Room room : processingResult.cleaningDataObj.roomsToClean) {
+                if (unassignedExcludedRooms.contains(room.roomNumber)) {
+                    unassignedExcludedRoomList.add(room);
+                }
+            }
+        }
+        unassignedExcludedRoomList.sort(Comparator.comparing(r -> r.roomNumber));
+
+        // ★修正: 未割り当ても未割り当て発の残し部屋もない場合のみ終了
+        if (unassignedRooms.isEmpty() && unassignedExcludedRoomList.isEmpty()) {
             JOptionPane.showMessageDialog(this,
                     "未割り当ての部屋はありません。\nすべての部屋が割り当て済みです。",
                     "未割り当て部屋", JOptionPane.INFORMATION_MESSAGE);
@@ -3173,8 +3293,8 @@ public class AssignmentEditorGUI extends JFrame {
         JPanel headerPanel = new JPanel(new BorderLayout());
         headerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         JLabel headerLabel = new JLabel(String.format(
-                "未割り当て部屋: %d室 （チェックを入れてスタッフに割り当てできます）",
-                unassignedRooms.size()));
+                "未割り当て部屋: %d室 / 残し部屋（未割り当て発）: %d室",
+                unassignedRooms.size(), unassignedExcludedRoomList.size()));
         headerLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 14));
         headerPanel.add(headerLabel, BorderLayout.CENTER);
         dialog.add(headerPanel, BorderLayout.NORTH);
@@ -3183,7 +3303,8 @@ public class AssignmentEditorGUI extends JFrame {
         JPanel listPanel = new JPanel(new BorderLayout());
         listPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
-        String[] columnNames = {"選択", "部屋番号", "部屋タイプ", "建物", "階", "状態", "エコ清掃"};
+        // ★修正: 区分列を追加（未割り当て / 残し部屋）
+        String[] columnNames = {"選択", "部屋番号", "部屋タイプ", "建物", "階", "状態", "エコ清掃", "区分"};
         DefaultTableModel unassignedTableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -3196,6 +3317,9 @@ public class AssignmentEditorGUI extends JFrame {
             }
         };
 
+        // ★新規: 部屋番号→Roomの参照マップ（アクション時の検索用）
+        Map<String, FileProcessor.Room> dialogRoomMap = new LinkedHashMap<>();
+
         for (FileProcessor.Room room : unassignedRooms) {
             Object[] rowData = {
                     false,
@@ -3204,9 +3328,27 @@ public class AssignmentEditorGUI extends JFrame {
                     room.building,
                     room.floor + "階",
                     room.getStatusDisplay(),
-                    room.isEcoClean ? "エコ" : ""
+                    room.isEcoClean ? "エコ" : "",
+                    "未割り当て"
             };
             unassignedTableModel.addRow(rowData);
+            dialogRoomMap.put(room.roomNumber, room);
+        }
+
+        // ★新規: 未割り当て発の残し部屋を一覧の後半に表示
+        for (FileProcessor.Room room : unassignedExcludedRoomList) {
+            Object[] rowData = {
+                    false,
+                    room.roomNumber,
+                    room.roomType,
+                    room.building,
+                    room.floor + "階",
+                    room.getStatusDisplay(),
+                    room.isEcoClean ? "エコ" : "",
+                    "残し部屋"
+            };
+            unassignedTableModel.addRow(rowData);
+            dialogRoomMap.put(room.roomNumber, room);
         }
 
         JTable unassignedTable = new JTable(unassignedTableModel);
@@ -3218,6 +3360,7 @@ public class AssignmentEditorGUI extends JFrame {
         unassignedTable.getColumnModel().getColumn(4).setPreferredWidth(60);
         unassignedTable.getColumnModel().getColumn(5).setPreferredWidth(100);
         unassignedTable.getColumnModel().getColumn(6).setPreferredWidth(70);
+        unassignedTable.getColumnModel().getColumn(7).setPreferredWidth(80);
 
         DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
         centerRenderer.setHorizontalAlignment(JLabel.CENTER);
@@ -3249,19 +3392,21 @@ public class AssignmentEditorGUI extends JFrame {
 
         dialog.add(listPanel, BorderLayout.CENTER);
 
-        // 下部パネル
-        JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
-        bottomPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        // 下部パネル（★修正: 2段構成に変更。上段=スタッフ割り当て、下段=残し部屋操作）
+        JPanel bottomPanel = new JPanel(new GridLayout(2, 1));
+        bottomPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 10, 10));
+
+        JPanel assignRowPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 5));
 
         JLabel staffLabel = new JLabel("割り当て先スタッフ:");
         staffLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 12));
-        bottomPanel.add(staffLabel);
+        assignRowPanel.add(staffLabel);
 
         String[] staffNames = staffDataMap.keySet().toArray(new String[0]);
         Arrays.sort(staffNames);
         JComboBox<String> staffCombo = new JComboBox<>(staffNames);
         staffCombo.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 12));
-        bottomPanel.add(staffCombo);
+        assignRowPanel.add(staffCombo);
 
         JButton assignButton = new JButton("選択部屋を割り当て");
         assignButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
@@ -3275,17 +3420,32 @@ public class AssignmentEditorGUI extends JFrame {
             }
 
             List<FileProcessor.Room> selectedRooms = new ArrayList<>();
+            List<String> excludedSelected = new ArrayList<>();  // ★新規: 選択された残し部屋行
             for (int i = 0; i < unassignedTableModel.getRowCount(); i++) {
                 Boolean selected = (Boolean) unassignedTableModel.getValueAt(i, 0);
                 if (selected != null && selected) {
                     String roomNumber = (String) unassignedTableModel.getValueAt(i, 1);
-                    for (FileProcessor.Room room : unassignedRooms) {
-                        if (room.roomNumber.equals(roomNumber)) {
-                            selectedRooms.add(room);
-                            break;
-                        }
+                    String kubun = (String) unassignedTableModel.getValueAt(i, 7);
+                    // ★新規: 残し部屋行はスタッフ割り当ての対象外
+                    if ("残し部屋".equals(kubun)) {
+                        excludedSelected.add(roomNumber);
+                        continue;
+                    }
+                    FileProcessor.Room room = dialogRoomMap.get(roomNumber);
+                    if (room != null) {
+                        selectedRooms.add(room);
                     }
                 }
+            }
+
+            // ★新規: 残し部屋行が含まれる場合はエラー
+            if (!excludedSelected.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "残し部屋に設定された部屋が選択に含まれています:\n" +
+                                String.join(", ", excludedSelected) +
+                                "\n先に「選択部屋を残し部屋から戻す」を行ってください。",
+                        "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
             }
 
             if (selectedRooms.isEmpty()) {
@@ -3306,11 +3466,122 @@ public class AssignmentEditorGUI extends JFrame {
                         selectedRooms.size(), selectedStaff));
             }
         });
-        bottomPanel.add(assignButton);
+        assignRowPanel.add(assignButton);
+
+        bottomPanel.add(assignRowPanel);
+
+        // ★新規: 残し部屋操作の段
+        JPanel excludeRowPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 5));
+
+        JButton toExcludedButton = new JButton("選択部屋を残し部屋へ");
+        toExcludedButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        toExcludedButton.setBackground(new java.awt.Color(255, 200, 100));  // 残し部屋設定ボタンと同系色
+        toExcludedButton.addActionListener(e -> {
+            List<String> targetRooms = new ArrayList<>();
+            List<String> stayoverRooms = new ArrayList<>();   // ★連泊部屋（移動不可）
+            List<String> alreadyExcluded = new ArrayList<>();
+
+            for (int i = 0; i < unassignedTableModel.getRowCount(); i++) {
+                Boolean selected = (Boolean) unassignedTableModel.getValueAt(i, 0);
+                if (selected != null && selected) {
+                    String roomNumber = (String) unassignedTableModel.getValueAt(i, 1);
+                    String kubun = (String) unassignedTableModel.getValueAt(i, 7);
+                    if ("残し部屋".equals(kubun)) {
+                        alreadyExcluded.add(roomNumber);
+                        continue;
+                    }
+                    FileProcessor.Room room = dialogRoomMap.get(roomNumber);
+                    // ★連泊部屋（状態"3"）は残し部屋にできない
+                    if (room != null && "3".equals(room.roomStatus)) {
+                        stayoverRooms.add(roomNumber);
+                        continue;
+                    }
+                    targetRooms.add(roomNumber);
+                }
+            }
+
+            if (!stayoverRooms.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "連泊部屋は残し部屋に設定できません:\n" + String.join(", ", stayoverRooms),
+                        "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (!alreadyExcluded.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "既に残し部屋の部屋が選択に含まれています:\n" + String.join(", ", alreadyExcluded),
+                        "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (targetRooms.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "残し部屋にする部屋を選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            int confirm = JOptionPane.showConfirmDialog(dialog,
+                    String.format("%d室を残し部屋にしますか？", targetRooms.size()),
+                    "確認", JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                unassignedExcludedRooms.addAll(targetRooms);
+                refreshTable();  // サマリーの残し部屋数表示を更新
+                dialog.dispose();
+                statusLabel.setText(String.format("%d室を残し部屋にしました", targetRooms.size()));
+                showUnassignedRoomsDialog();  // 最新状態でダイアログを再表示
+            }
+        });
+        excludeRowPanel.add(toExcludedButton);
+
+        JButton fromExcludedButton = new JButton("選択部屋を残し部屋から戻す");
+        fromExcludedButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        fromExcludedButton.addActionListener(e -> {
+            List<String> targetRooms = new ArrayList<>();
+            List<String> notExcluded = new ArrayList<>();
+
+            for (int i = 0; i < unassignedTableModel.getRowCount(); i++) {
+                Boolean selected = (Boolean) unassignedTableModel.getValueAt(i, 0);
+                if (selected != null && selected) {
+                    String roomNumber = (String) unassignedTableModel.getValueAt(i, 1);
+                    String kubun = (String) unassignedTableModel.getValueAt(i, 7);
+                    if ("残し部屋".equals(kubun)) {
+                        targetRooms.add(roomNumber);
+                    } else {
+                        notExcluded.add(roomNumber);
+                    }
+                }
+            }
+
+            if (!notExcluded.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "残し部屋ではない部屋が選択に含まれています:\n" + String.join(", ", notExcluded),
+                        "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (targetRooms.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "残し部屋から戻す部屋を選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            int confirm = JOptionPane.showConfirmDialog(dialog,
+                    String.format("%d室を残し部屋から未割り当てに戻しますか？", targetRooms.size()),
+                    "確認", JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                targetRooms.forEach(unassignedExcludedRooms::remove);
+                refreshTable();  // サマリーの残し部屋数表示を更新
+                dialog.dispose();
+                statusLabel.setText(String.format("%d室を残し部屋から戻しました", targetRooms.size()));
+                showUnassignedRoomsDialog();  // 最新状態でダイアログを再表示
+            }
+        });
+        excludeRowPanel.add(fromExcludedButton);
 
         JButton closeButton = new JButton("閉じる");
         closeButton.addActionListener(e -> dialog.dispose());
-        bottomPanel.add(closeButton);
+        excludeRowPanel.add(closeButton);
+
+        bottomPanel.add(excludeRowPanel);
 
         dialog.add(bottomPanel, BorderLayout.SOUTH);
 
@@ -3347,6 +3618,20 @@ public class AssignmentEditorGUI extends JFrame {
                 floorRooms.add(room);
             }
 
+            // ★新規: 元データにも反映する
+            // （残し部屋設定の適用時は元データから再構築されるため、反映しないと手動割り当てが消えてしまう）
+            // ※元データが未構築（空）の段階では反映しない。後のassignRoomNumbersによる初期保存を妨げないため。
+            if (staffData.originalDetailedRoomsByFloor != null
+                    && !staffData.originalDetailedRoomsByFloor.isEmpty()) {
+                List<FileProcessor.Room> origFloorRooms = staffData.originalDetailedRoomsByFloor
+                        .computeIfAbsent(floor, k -> new ArrayList<>());
+                boolean existsInOriginal = origFloorRooms.stream()
+                        .anyMatch(r -> r.roomNumber.equals(room.roomNumber));
+                if (!existsInOriginal) {
+                    origFloorRooms.add(room);
+                }
+            }
+
             if (!staffData.floors.contains(floor)) {
                 staffData.floors.add(floor);
                 Collections.sort(staffData.floors);
@@ -3355,5 +3640,232 @@ public class AssignmentEditorGUI extends JFrame {
 
         staffData.calculateExtendedMetrics();
         recalculateStaffPoints(staffData);
+    }
+
+    /**
+     * ★新規: ウォークイン候補の部屋を取得
+     * 未販売部屋（状態"0"）のうち、まだどのスタッフにも割り当てられておらず、
+     * 残し部屋にもなっていない部屋を返す。
+     * ※故障部屋、および「故障・未販売部屋清掃設定」で清掃対象に追加済みの部屋は
+     *   FileProcessor側でunsoldRoomsに含まれないため、ここには現れない。
+     */
+    private List<FileProcessor.Room> getWalkInCandidateRooms() {
+        List<FileProcessor.Room> candidates = new ArrayList<>();
+
+        if (processingResult.cleaningDataObj == null) {
+            return candidates;
+        }
+
+        // 既にスタッフへ割り当て済みの部屋番号を収集（ウォークイン割り当て後の再表示対策）
+        Set<String> assignedRoomNumbers = new HashSet<>();
+        for (StaffData staff : staffDataMap.values()) {
+            if (staff.detailedRoomsByFloor != null) {
+                for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                    for (FileProcessor.Room room : rooms) {
+                        assignedRoomNumbers.add(room.roomNumber);
+                    }
+                }
+            }
+        }
+
+        // 残し部屋も除外（残し部屋設定でウォークイン部屋が外された場合の重複防止）
+        assignedRoomNumbers.addAll(excludedRooms);
+        assignedRoomNumbers.addAll(unassignedExcludedRooms);
+
+        for (FileProcessor.Room room : processingResult.cleaningDataObj.unsoldRooms) {
+            if (!assignedRoomNumbers.contains(room.roomNumber)) {
+                candidates.add(room);
+            }
+        }
+
+        candidates.sort(Comparator.comparing(r -> r.roomNumber));
+        return candidates;
+    }
+
+    /**
+     * ★新規: ウォークインダイアログを表示
+     * 未販売部屋を一覧表示し、部屋ごとに区分（out / エコ）を選択してスタッフへ割り当てる。
+     * outは状態"2"（チェックアウト）の通常部屋、エコはエコ清掃フラグONの部屋として登録される。
+     */
+    private void showWalkInDialog() {
+        List<FileProcessor.Room> walkInRooms = getWalkInCandidateRooms();
+
+        if (walkInRooms.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "ウォークイン可能な未販売部屋はありません。",
+                    "ウォークイン", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        JDialog dialog = new JDialog(this, "ウォークイン", true);
+        dialog.setLayout(new BorderLayout());
+
+        // 上部パネル
+        JPanel headerPanel = new JPanel(new BorderLayout());
+        headerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        JLabel headerLabel = new JLabel(String.format(
+                "未販売部屋: %d室 （チェックと区分を設定してスタッフに割り当てできます）",
+                walkInRooms.size()));
+        headerLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 14));
+        headerPanel.add(headerLabel, BorderLayout.CENTER);
+        dialog.add(headerPanel, BorderLayout.NORTH);
+
+        // 中央パネル
+        JPanel listPanel = new JPanel(new BorderLayout());
+        listPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+
+        String[] columnNames = {"選択", "部屋番号", "部屋タイプ", "建物", "階", "区分"};
+        DefaultTableModel walkInTableModel = new DefaultTableModel(columnNames, 0) {
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                if (columnIndex == 0) return Boolean.class;
+                return String.class;
+            }
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 0 || column == 5;  // 選択と区分のみ編集可
+            }
+        };
+
+        for (FileProcessor.Room room : walkInRooms) {
+            Object[] rowData = {
+                    false,
+                    room.roomNumber,
+                    room.roomType,
+                    room.building,
+                    room.floor + "階",
+                    "out"  // 区分のデフォルトはout
+            };
+            walkInTableModel.addRow(rowData);
+        }
+
+        JTable walkInTable = new JTable(walkInTableModel);
+        walkInTable.setRowHeight(25);
+        walkInTable.getColumnModel().getColumn(0).setPreferredWidth(50);
+        walkInTable.getColumnModel().getColumn(1).setPreferredWidth(80);
+        walkInTable.getColumnModel().getColumn(2).setPreferredWidth(80);
+        walkInTable.getColumnModel().getColumn(3).setPreferredWidth(60);
+        walkInTable.getColumnModel().getColumn(4).setPreferredWidth(60);
+        walkInTable.getColumnModel().getColumn(5).setPreferredWidth(80);
+
+        // 区分列はプルダウン（out / エコ）で編集
+        JComboBox<String> kubunCombo = new JComboBox<>(new String[]{"out", "エコ"});
+        kubunCombo.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 12));
+        walkInTable.getColumnModel().getColumn(5)
+                .setCellEditor(new javax.swing.DefaultCellEditor(kubunCombo));
+
+        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
+        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
+        for (int i = 1; i < columnNames.length; i++) {
+            walkInTable.getColumnModel().getColumn(i).setCellRenderer(centerRenderer);
+        }
+
+        JScrollPane scrollPane = new JScrollPane(walkInTable);
+        scrollPane.setPreferredSize(new Dimension(550, 300));
+        listPanel.add(scrollPane, BorderLayout.CENTER);
+
+        // 全選択/全解除
+        JPanel selectPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JButton selectAllButton = new JButton("全選択");
+        selectAllButton.addActionListener(e -> {
+            for (int i = 0; i < walkInTableModel.getRowCount(); i++) {
+                walkInTableModel.setValueAt(true, i, 0);
+            }
+        });
+        JButton deselectAllButton = new JButton("全解除");
+        deselectAllButton.addActionListener(e -> {
+            for (int i = 0; i < walkInTableModel.getRowCount(); i++) {
+                walkInTableModel.setValueAt(false, i, 0);
+            }
+        });
+        selectPanel.add(selectAllButton);
+        selectPanel.add(deselectAllButton);
+        listPanel.add(selectPanel, BorderLayout.SOUTH);
+
+        dialog.add(listPanel, BorderLayout.CENTER);
+
+        // 下部パネル
+        JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        bottomPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        JLabel staffLabel = new JLabel("割り当て先スタッフ:");
+        staffLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 12));
+        bottomPanel.add(staffLabel);
+
+        String[] staffNames = staffDataMap.keySet().toArray(new String[0]);
+        Arrays.sort(staffNames);
+        JComboBox<String> staffCombo = new JComboBox<>(staffNames);
+        staffCombo.setFont(new java.awt.Font("MS Gothic", java.awt.Font.PLAIN, 12));
+        bottomPanel.add(staffCombo);
+
+        JButton assignButton = new JButton("選択部屋を割り当て");
+        assignButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        assignButton.setBackground(new java.awt.Color(100, 200, 100));
+        assignButton.addActionListener(e -> {
+            // 編集中のセルがある場合は確定させる（区分プルダウン編集途中の値を反映）
+            if (walkInTable.isEditing()) {
+                walkInTable.getCellEditor().stopCellEditing();
+            }
+
+            String selectedStaff = (String) staffCombo.getSelectedItem();
+            if (selectedStaff == null) {
+                JOptionPane.showMessageDialog(dialog,
+                        "スタッフを選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            List<FileProcessor.Room> selectedRooms = new ArrayList<>();
+            int ecoCount = 0;
+            for (int i = 0; i < walkInTableModel.getRowCount(); i++) {
+                Boolean selected = (Boolean) walkInTableModel.getValueAt(i, 0);
+                if (selected != null && selected) {
+                    String roomNumber = (String) walkInTableModel.getValueAt(i, 1);
+                    String kubun = (String) walkInTableModel.getValueAt(i, 5);
+                    boolean isEco = "エコ".equals(kubun);
+                    if (isEco) ecoCount++;
+
+                    for (FileProcessor.Room room : walkInRooms) {
+                        if (room.roomNumber.equals(roomNumber)) {
+                            // 区分に応じたRoomを生成して割り当て
+                            // out: 状態"2"（チェックアウト）の通常部屋 / エコ: エコ清掃フラグON
+                            FileProcessor.Room assignRoom = new FileProcessor.Room(
+                                    room.roomNumber, room.roomType, isEco, false, "2");
+                            selectedRooms.add(assignRoom);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (selectedRooms.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog,
+                        "割り当てる部屋を選択してください", "エラー", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            int confirm = JOptionPane.showConfirmDialog(dialog,
+                    String.format("%d室（out: %d室 / エコ: %d室）を「%s」に割り当てますか？",
+                            selectedRooms.size(), selectedRooms.size() - ecoCount, ecoCount, selectedStaff),
+                    "確認", JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                assignRoomsToStaff(selectedStaff, selectedRooms);
+                refreshTable();
+                dialog.dispose();
+                statusLabel.setText(String.format("ウォークイン: %d室を「%s」に割り当てました",
+                        selectedRooms.size(), selectedStaff));
+            }
+        });
+        bottomPanel.add(assignButton);
+
+        JButton closeButton = new JButton("閉じる");
+        closeButton.addActionListener(e -> dialog.dispose());
+        bottomPanel.add(closeButton);
+
+        dialog.add(bottomPanel, BorderLayout.SOUTH);
+
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
     }
 }

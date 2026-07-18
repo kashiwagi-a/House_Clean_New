@@ -31,14 +31,18 @@ public class FileProcessor {
         public final int totalAnnexRooms;
         public final int totalBrokenRooms;
         public final List<String> ecoWarnings;  // ★追加: エコ清掃警告リスト
+        public final List<Room> unsoldRooms;    // ★ウォークイン用: 未販売部屋（状態0、故障部屋・清掃対象追加済みは含まない）
 
+        // ★ウォークイン対応: 未販売部屋リスト付きコンストラクタ
         public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
-                            List<Room> ecoRooms, List<Room> brokenRooms, List<String> ecoWarnings) {
+                            List<Room> ecoRooms, List<Room> brokenRooms,
+                            List<String> ecoWarnings, List<Room> unsoldRooms) {
             this.mainRooms = mainRooms;
             this.annexRooms = annexRooms;
             this.ecoRooms = ecoRooms;
             this.brokenRooms = brokenRooms;
             this.ecoWarnings = ecoWarnings != null ? ecoWarnings : new ArrayList<>();
+            this.unsoldRooms = unsoldRooms != null ? unsoldRooms : new ArrayList<>();
 
             // 清掃対象の全部屋リストを作成
             this.roomsToClean = new ArrayList<>();
@@ -48,6 +52,12 @@ public class FileProcessor {
             this.totalMainRooms = mainRooms.size();
             this.totalAnnexRooms = annexRooms.size();
             this.totalBrokenRooms = brokenRooms.size();
+        }
+
+        // 後方互換性のためのコンストラクタ（unsoldRoomsなし）
+        public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
+                            List<Room> ecoRooms, List<Room> brokenRooms, List<String> ecoWarnings) {
+            this(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, new ArrayList<>());
         }
 
         // 後方互換性のためのコンストラクタ
@@ -172,6 +182,7 @@ public class FileProcessor {
         List<Room> ecoRooms = new ArrayList<>();
         List<Room> brokenRooms = new ArrayList<>();
         List<String> ecoWarnings = new ArrayList<>();  // ★追加: 警告リスト
+        List<Room> unsoldRooms = new ArrayList<>();    // ★ウォークイン用: 未販売部屋（状態0）記録リスト
 
         // ★追加: 全部屋のマップを作成（部屋番号 → Room オブジェクト）
         Map<String, Room> allRoomsMap = new HashMap<>();
@@ -289,6 +300,12 @@ public class FileProcessor {
                     if (!selectedBrokenRooms.contains(roomNumber) &&
                             !roomStatus.equals("1") && !roomStatus.equals("2") && !roomStatus.equals("3") && !roomStatus.equals("4")) {
                         cleaningStatusSkipped++;
+                        // ★ウォークイン用: 未販売部屋（状態0）を記録
+                        // ※故障部屋（故障＋未販売含む）は前段の故障判定でスキップ済みのためここには来ない
+                        // ※「故障・未販売部屋清掃設定」で清掃対象に追加済みの部屋もこの分岐に入らないため記録されない
+                        if ("0".equals(roomStatus)) {
+                            unsoldRooms.add(new Room(roomNumber, determineRoomType(roomTypeCode), false, false, roomStatus));
+                        }
                         LOGGER.info("★除外: 清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
                         continue;
                     }
@@ -482,8 +499,9 @@ public class FileProcessor {
             LOGGER.info("  - 故障部屋（清掃対象外）: " + brokenRooms.size() + "室");
             LOGGER.info("  - エコ清掃: " + ecoRooms.size() + "室");
             LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）、4（清掃要）");
+            LOGGER.info("  - 未販売部屋（ウォークイン候補）: " + unsoldRooms.size() + "室");
 
-            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings);
+            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, unsoldRooms);
 
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "部屋データの読み込み中にエラーが発生しました", e);

@@ -885,6 +885,24 @@ public class RoomAssignmentApplication extends JFrame {
                                     selectedBrokenRoomsForCleaningCount, solutionInfo),
                             "処理完了", JOptionPane.INFORMATION_MESSAGE);
 
+                    // ★追加: 未割当ECOの警告（ECO上限設定等により配りきれなかった場合）
+                    try {
+                        int unassignedEco = RoomAssignmentCPSATOptimizer.countUnassignedEco(
+                                multiResult.getAssignments(0), floors);
+                        if (unassignedEco > 0) {
+                            appendLog(String.format("【警告】ECO %d室が未割当です。", unassignedEco));
+                            JOptionPane.showMessageDialog(RoomAssignmentApplication.this,
+                                    String.format("ECO %d室がどのスタッフにも割り振られていません。\n" +
+                                                    "ECO上限の設定がきつい可能性があります。\n" +
+                                                    "必要に応じて「通常清掃割り振り設定」のECO上限を見直してください。",
+                                            unassignedEco),
+                                    "ECO未割当の警告", JOptionPane.WARNING_MESSAGE);
+                        }
+                    } catch (Exception ecoEx) {
+                        // 警告計算の失敗は処理結果に影響させない
+                        LOGGER.warning("未割当ECOチェックに失敗: " + ecoEx.getMessage());
+                    }
+
                 } catch (Exception ex) {
                     String errorMsg = "最適化中にエラーが発生しました: " + ex.getMessage();
                     appendLog("エラー: " + errorMsg);

@@ -1825,6 +1825,28 @@ public class RoomAssignmentCPSATOptimizer {
         // staffEcoShortageVars は使わないが後続コードとの互換性のため空Mapを定義
         Map<String, IntVar> staffEcoShortageVars = new HashMap<>();
 
+        // === ★追加: スタッフごとのECO上限制約（通常清掃割り振り設定のECO上限列） ===
+        // ecoUpperLimit: -1=上限なし（制約を追加しない）、0以上=そのスタッフのECO合計 ≤ 上限値
+        // ECO未割当はソフト制約（floorEcoShort）で吸収されるため、この上限で解なしにはならない
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+            String staffName = staffInfo.staff.name;
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
+            if (dist == null || dist.ecoUpperLimit < 0) continue;
+
+            List<IntVar> staffEcoList = new ArrayList<>();
+            for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
+                String eVarName = String.format("e_%s_%d", staffName, floor.floorNumber);
+                if (ecoVars.containsKey(eVarName)) staffEcoList.add(ecoVars.get(eVarName));
+            }
+            if (staffEcoList.isEmpty()) continue;
+
+            model.addLessOrEqual(
+                    LinearExpr.sum(staffEcoList.toArray(new IntVar[0])),
+                    dist.ecoUpperLimit);
+            LOGGER.info(String.format("ECO上限制約: %s ECO合計 ≤ %d室", staffName, dist.ecoUpperLimit));
+        }
+
         // === 大浴清掃スタッフの2フロア目使用ペナルティ ===
         // 大浴清掃スタッフがECOのために2フロア目を使う場合にペナルティを課す。
         // 優先順位: シングル全室(1000) > 1フロアに収める(10) > ECO全室(1)
@@ -2550,6 +2572,27 @@ public class RoomAssignmentCPSATOptimizer {
                         name, annexR, mainR));
             }
         }
+    }
+
+    /**
+     * ★追加: 割り当て結果の未割当ECO室数を計算する（最適化後の警告表示用）
+     * 全フロアのECO供給合計 − 割り当て済みECO合計 を返す。
+     */
+    public static int countUnassignedEco(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            List<AdaptiveRoomOptimizer.FloorInfo> floors) {
+        if (assignments == null || floors == null) return 0;
+        int supply = 0;
+        for (AdaptiveRoomOptimizer.FloorInfo floor : floors) {
+            supply += floor.ecoRooms;
+        }
+        int assigned = 0;
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            for (AdaptiveRoomOptimizer.RoomAllocation alloc : assignment.roomsByFloor.values()) {
+                assigned += alloc.ecoRooms;
+            }
+        }
+        return Math.max(0, supply - assigned);
     }
 
     private static int getMaxFloors(String staffName, AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {

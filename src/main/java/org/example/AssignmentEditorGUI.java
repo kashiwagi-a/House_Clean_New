@@ -1768,6 +1768,22 @@ public class AssignmentEditorGUI extends JFrame {
                             multiResult.totalSolutionCount),
                     "再最適化完了", JOptionPane.INFORMATION_MESSAGE);
 
+            // ★追加: 未割当ECOの警告（ECO上限設定等により配りきれなかった場合）
+            try {
+                int unassignedEco = RoomAssignmentCPSATOptimizer.countUnassignedEco(
+                        multiResult.getAssignments(0), floors);
+                if (unassignedEco > 0) {
+                    JOptionPane.showMessageDialog(this,
+                            String.format("ECO %d室がどのスタッフにも割り振られていません。\n" +
+                                            "ECO上限の設定がきつい可能性があります。\n" +
+                                            "必要に応じて「通常清掃割り振り設定」のECO上限を見直してください。",
+                                    unassignedEco),
+                            "ECO未割当の警告", JOptionPane.WARNING_MESSAGE);
+                }
+            } catch (Exception ecoEx) {
+                System.err.println("未割当ECOチェックに失敗: " + ecoEx.getMessage());
+            }
+
         } catch (Exception ex) {
             setCursor(Cursor.getDefaultCursor());
             statusLabel.setText("再最適化に失敗しました");

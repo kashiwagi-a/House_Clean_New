@@ -113,6 +113,9 @@ public class NormalRoomDistributionDialog extends JDialog {
         public int mainEcoAssignedRooms = 0;
         public int annexEcoAssignedRooms = 0;
 
+        // ★★追加: ECO割り振り上限（-1=上限なし、0=ECOなし、1以上=上限室数）
+        public int ecoUpperLimit = -1;
+
         // ★★追加: 指定階（空の場合は制限なし）
         public Set<Integer> preferredFloors;
 
@@ -158,6 +161,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.preferredFloors = new HashSet<>(other.preferredFloors);
             this.isLinenClosetCleaning = other.isLinenClosetCleaning;
             this.linenClosetFloorCount = other.linenClosetFloorCount;
+            this.ecoUpperLimit = other.ecoUpperLimit;  // ★★追加: ECO上限のコピー
         }
 
         public void updateTotal() {
@@ -450,15 +454,16 @@ public class NormalRoomDistributionDialog extends JDialog {
         selectHeaderLabel.setPreferredSize(new Dimension(SELECT_COLUMN_WIDTH, 25));
         headerPanel.add(selectHeaderLabel, BorderLayout.WEST);
 
-        JPanel headerCells = new JPanel(new GridLayout(1, 11));
+        JPanel headerCells = new JPanel(new GridLayout(1, 12));  // ★★変更: 11→12列（ECO上限列追加）
         headerCells.setOpaque(false);
 
         // ECO列・通常合計列を削除（ECOはCP-SATが自動配分）
-        String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "指定階",
+        // ★★追加: ECO上限列（CP-SATのECO自動配分に対する上限。空欄=制限なし）
+        String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "ECO上限", "指定階",
                 "本館S", "本館T",
                 "別館S", "別館T",
                 "換算合計"};
-        int[] widths = {100, 100, 50, 55, 70, 100, 80, 80, 80, 80, 100};
+        int[] widths = {100, 100, 50, 55, 70, 60, 100, 80, 80, 80, 80, 100};
 
         for (int i = 0; i < headers.length; i++) {
             JLabel headerLabel = new JLabel(headers[i], JLabel.CENTER);
@@ -569,8 +574,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             selectPanel.add(selectBox);
             rowContainer.add(selectPanel, BorderLayout.WEST);
 
-            // 従来の11列部分（スタッフ名〜換算合計）。既存リスナーはこのrowPanelを参照する
-            JPanel rowPanel = new JPanel(new GridLayout(1, 11));
+            // 従来の列部分（スタッフ名〜換算合計）。既存リスナーはこのrowPanelを参照する
+            JPanel rowPanel = new JPanel(new GridLayout(1, 12));  // ★★変更: 11→12列（ECO上限列追加）
 
             // スタッフ名（★★追加: ドラッグで行の並べ替えが可能）
             JLabel nameLabel = new JLabel(staff.staffName, JLabel.CENTER);
@@ -635,6 +640,20 @@ public class NormalRoomDistributionDialog extends JDialog {
                 updateRowDisplay(rowPanel, staff);
                 updateSummary();
             });
+
+            // ★★追加: ECO上限スピナー（空欄=制限なし、0=ECOなし、1以上=上限室数）
+            JPanel ecoLimitPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
+            ecoLimitPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            SpinnerNumberModel ecoLimitModel = new SpinnerNumberModel(staff.ecoUpperLimit, -1, 99, 1);
+            JSpinner ecoLimitSpinner = new JSpinner(ecoLimitModel);
+            ecoLimitSpinner.setPreferredSize(new Dimension(55, 25));
+            applyMinusOneAsBlankFormatter(ecoLimitSpinner);
+            ecoLimitSpinner.setToolTipText("ECO割り振り上限（空欄=制限なし、0=ECOなし）");
+            ecoLimitSpinner.addChangeListener(e -> {
+                staff.ecoUpperLimit = (int) ecoLimitSpinner.getValue();
+            });
+            ecoLimitPanel.add(ecoLimitSpinner);
+            rowPanel.add(ecoLimitPanel);
 
             // ★★追加: 指定階テキストフィールド
             JPanel floorPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
@@ -740,9 +759,9 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private void updateRowDisplay(JPanel rowPanel, StaffDistribution staff) {
         Component[] components = rowPanel.getComponents();
-        // 換算合計更新（★★変更: 選択列は行コンテナ側(WEST)に移したため、11列グリッド内の index 10 のまま）
-        if (components.length > 10) {
-            ((JLabel)components[10]).setText(String.valueOf((int) staff.getConvertedTotal()));
+        // 換算合計更新（★★変更: ECO上限列追加により 12列グリッド内の index 11 に移動）
+        if (components.length > 11) {
+            ((JLabel)components[11]).setText(String.valueOf((int) staff.getConvertedTotal()));
         }
     }
 
@@ -914,6 +933,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         int tmpLinenCount = a.linenClosetFloorCount;
         a.linenClosetFloorCount = b.linenClosetFloorCount;
         b.linenClosetFloorCount = tmpLinenCount;
+        // ★★追加: ECO上限の交換（行の内容に固定するため、他項目と同様に交換する）
+        int tmpEcoLimit = a.ecoUpperLimit;
+        a.ecoUpperLimit = b.ecoUpperLimit;
+        b.ecoUpperLimit = tmpEcoLimit;
         // ※ECO部屋数(mainEco/annexEco)は常に0のため交換不要
         a.updateTotal();
         b.updateTotal();
@@ -970,6 +993,41 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         formatter.setValueClass(Integer.class);
         formatter.setMinimum(0);
+        formatter.setMaximum(99);
+
+        DefaultFormatterFactory factory = new DefaultFormatterFactory(formatter);
+        textField.setFormatterFactory(factory);
+        textField.setHorizontalAlignment(JTextField.CENTER);
+    }
+
+    /**
+     * ★★追加: -1を空白で表示するカスタムフォーマッターをスピナーに適用（ECO上限用）
+     * 空欄=-1（上限なし）、0=ECOなし、1以上=上限室数
+     */
+    private void applyMinusOneAsBlankFormatter(JSpinner spinner) {
+        JSpinner.NumberEditor editor = (JSpinner.NumberEditor) spinner.getEditor();
+        JFormattedTextField textField = editor.getTextField();
+
+        NumberFormatter formatter = new NumberFormatter() {
+            @Override
+            public String valueToString(Object value) throws ParseException {
+                if (value == null || (value instanceof Number && ((Number) value).intValue() == -1)) {
+                    return "";
+                }
+                return super.valueToString(value);
+            }
+
+            @Override
+            public Object stringToValue(String text) throws ParseException {
+                if (text == null || text.trim().isEmpty()) {
+                    return -1;
+                }
+                return super.stringToValue(text);
+            }
+        };
+
+        formatter.setValueClass(Integer.class);
+        formatter.setMinimum(-1);
         formatter.setMaximum(99);
 
         DefaultFormatterFactory factory = new DefaultFormatterFactory(formatter);

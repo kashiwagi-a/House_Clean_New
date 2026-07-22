@@ -43,6 +43,9 @@ public class AssignmentEditorGUI extends JFrame {
     // ★新規: 未割り当て発の残し部屋管理（既存の残し部屋設定とは別管理。設定・解除は未割り当てダイアログ内で行う）
     private Set<String> unassignedExcludedRooms = new HashSet<>();
 
+    // ★新規: 備考設定（部屋番号 → 備考テキスト）
+    private final Map<String, String> roomRemarksMap = new HashMap<>();
+
     // ★追加: グループ境界の行インデックス（罫線表示用）
     private Set<Integer> groupBoundaryRows = new HashSet<>();
 
@@ -1098,6 +1101,13 @@ public class AssignmentEditorGUI extends JFrame {
         roomDistributionButton.addActionListener(e -> showRoomDistributionDialog());
         buttonPanel.add(roomDistributionButton);
 
+        // ★新規: 備考設定ボタン
+        JButton remarksButton = new JButton("備考設定");
+        remarksButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        remarksButton.setBackground(new java.awt.Color(200, 230, 180)); // 緑系の色
+        remarksButton.addActionListener(e -> showRemarksDialog());
+        buttonPanel.add(remarksButton);
+
         buttonPanel.add(Box.createHorizontalStrut(20));
 
         // 既存ボタン
@@ -1110,6 +1120,119 @@ public class AssignmentEditorGUI extends JFrame {
         buttonPanel.add(finishButton);
 
         return buttonPanel;
+    }
+
+    /**
+     * ★新規: 備考設定ダイアログを表示
+     * 現在スタッフに割り振られている部屋（清掃部屋）のみを対象とする
+     */
+    private void showRemarksDialog() {
+        // 現在割り振られている部屋を収集
+        List<StaffData> sortedStaff = getSortedStaffList();
+        List<Object[]> roomEntries = new ArrayList<>();  // [0]=スタッフ名, [1]=Room
+
+        for (StaffData staff : sortedStaff) {
+            if (staff.detailedRoomsByFloor == null) continue;
+            for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                for (FileProcessor.Room room : rooms) {
+                    roomEntries.add(new Object[]{staff.name, room});
+                }
+            }
+        }
+
+        if (roomEntries.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "割り当てられている部屋がありません", "備考設定",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        // ★修正: 本館→別館、部屋番号順（数値）にソート
+        roomEntries.sort(Comparator
+                .comparingInt((Object[] e) ->
+                        "本館".equals(((FileProcessor.Room) e[1]).building) ? 0 : 1)
+                .thenComparingInt(e ->
+                        roomNumberSortKey(((FileProcessor.Room) e[1]).roomNumber))
+                .thenComparing(e -> ((FileProcessor.Room) e[1]).roomNumber));
+
+        // テーブルモデル作成（備考列のみ編集可能）
+        String[] columnNames = {"建物", "部屋番号", "担当", "部屋タイプ", "エコ", "備考"};
+        DefaultTableModel remarksModel = new DefaultTableModel(columnNames, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 5;  // 備考列のみ編集可能
+            }
+        };
+
+        for (Object[] entry : roomEntries) {
+            String staffName = (String) entry[0];
+            FileProcessor.Room room = (FileProcessor.Room) entry[1];
+            String ecoDisplay = "";
+            if (room.isEcoClean) {
+                ecoDisplay = "エコドア".equals(room.ecoStatus) ? "エコドア入室禁止" : "エコ清掃";
+            }
+            remarksModel.addRow(new Object[]{
+                    room.building,
+                    room.roomNumber,
+                    staffName,
+                    room.roomType,
+                    ecoDisplay,
+                    roomRemarksMap.getOrDefault(room.roomNumber, "")
+            });
+        }
+
+        JTable remarksTable = new JTable(remarksModel);
+        remarksTable.setRowHeight(22);
+        // フォーカスが外れたら編集内容を確定する（OKボタン押下時の入力漏れ防止）
+        remarksTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
+        remarksTable.getColumnModel().getColumn(0).setPreferredWidth(60);
+        remarksTable.getColumnModel().getColumn(1).setPreferredWidth(70);
+        remarksTable.getColumnModel().getColumn(2).setPreferredWidth(100);
+        remarksTable.getColumnModel().getColumn(3).setPreferredWidth(70);
+        remarksTable.getColumnModel().getColumn(4).setPreferredWidth(110);
+        remarksTable.getColumnModel().getColumn(5).setPreferredWidth(250);
+
+        JScrollPane scrollPane = new JScrollPane(remarksTable);
+        scrollPane.setPreferredSize(new Dimension(650, 450));
+
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
+        panel.add(new JLabel("備考を入力してください（空欄にすると備考を削除します）"),
+                BorderLayout.NORTH);
+        panel.add(scrollPane, BorderLayout.CENTER);
+
+        int result = JOptionPane.showConfirmDialog(this, panel, "備考設定",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+        if (result == JOptionPane.OK_OPTION) {
+            // 編集中のセルがあれば確定
+            if (remarksTable.isEditing()) {
+                remarksTable.getCellEditor().stopCellEditing();
+            }
+            // 備考マップへ反映
+            for (int i = 0; i < remarksModel.getRowCount(); i++) {
+                String roomNumber = (String) remarksModel.getValueAt(i, 1);
+                Object remarkObj = remarksModel.getValueAt(i, 5);
+                String remark = remarkObj != null ? remarkObj.toString().trim() : "";
+                if (remark.isEmpty()) {
+                    roomRemarksMap.remove(roomNumber);
+                } else {
+                    roomRemarksMap.put(roomNumber, remark);
+                }
+            }
+            // ★修正: 備考は担当階・部屋詳細には表示しないため、テーブル更新は不要
+        }
+    }
+
+    /**
+     * ★新規: 部屋番号の数値ソートキー（数字以外は除去。数値化できない場合は最後尾）
+     */
+    private static int roomNumberSortKey(String roomNumber) {
+        try {
+            String numericPart = roomNumber.replaceAll("[^0-9]", "");
+            return numericPart.isEmpty() ? Integer.MAX_VALUE : Integer.parseInt(numericPart);
+        } catch (Exception e) {
+            return Integer.MAX_VALUE;
+        }
     }
 
     /**
@@ -1396,6 +1519,13 @@ public class AssignmentEditorGUI extends JFrame {
                         isMain = fi.isMain;
                     } else {
                         isMain = (floorKey <= 20);  // フォールバック
+                    }
+
+                    // ★★★本館ツイン統合: 本館はS/T区別なしのため、ツインをシングル等へ合算
+                    //   （手動割り当てダイアログの本館はS欄にまとめて入力する仕様に合わせる）
+                    if (isMain && twinCount > 0) {
+                        singleCount += twinCount;
+                        twinCount = 0;
                     }
 
                     ManualFloorAssignmentDialog.FloorAssign fa =
@@ -3191,15 +3321,23 @@ public class AssignmentEditorGUI extends JFrame {
             cellStay.setCellValue("連泊");
         }
 
-        // D列: エコ
+        // D列: エコ／備考
         Cell cellEco = row.createCell(3);
+        String ecoText = "";
         if (room.isEcoClean) {
-            if ("エコドア".equals(room.ecoStatus)) {
-                cellEco.setCellValue("エコドア入室禁止");
-            } else {
-                cellEco.setCellValue("エコ清掃");
-            }
+            ecoText = "エコドア".equals(room.ecoStatus) ? "エコドア入室禁止" : "エコ清掃";
         }
+        String remark = roomRemarksMap.get(room.roomNumber);  // ★新規: 備考取得
+        boolean hasRemark = (remark != null && !remark.isEmpty());
+
+        if (!ecoText.isEmpty() && hasRemark) {
+            cellEco.setCellValue(ecoText + "／" + remark);  // ★新規: 併記
+        } else if (!ecoText.isEmpty()) {
+            cellEco.setCellValue(ecoText);                  // 従来どおり
+        } else if (hasRemark) {
+            cellEco.setCellValue(remark);                   // ★新規: 備考のみ
+        }
+        // どちらもない場合は従来どおり空セル
     }
 
     private boolean isAtSetBoundary(int row) {

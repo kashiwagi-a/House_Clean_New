@@ -118,8 +118,14 @@ public class RoomAssignmentCPSATOptimizer {
     }
 
     // ツイン判定
+    // ★★★本館ツイン統合: 本館はツイン区別を廃止したため常に false を返す。
+    // これにより本館のツイン部屋('T')は、変数生成・シングル供給制約・目標制約・解の抽出の
+    // すべてで通常部屋（xVars）として扱われ、本館のツイン変数(twinVars)・ツイン供給制約・
+    // ツイン目標制約は生成されない（各使用箇所は isMain との AND 条件のため別館には影響しない）。
+    // 本館ツインの実際の割り当ては部屋番号割り振り段階（RoomNumberAssigner）で
+    // 部屋番号順に自然に決まり、「1人1部屋まで」に正規化される。
     private static boolean isMainTwin(String roomType) {
-        return "T".equals(roomType) || "TW".equals(roomType) || "ツイン".equals(roomType);
+        return false;
     }
 
     private static boolean isAnnexTwin(String roomType) {
@@ -475,6 +481,25 @@ public class RoomAssignmentCPSATOptimizer {
     /**
      * メイン最適化メソッド（未割当情報を含む結果を返す）
      */
+    /**
+     * ★★★本館ツイン統合: config.roomDistribution 内の本館ツイン数をシングル等へ合算して0にする。
+     * 通常は NormalRoomDistributionDialog 側で正規化済みのため何もしないが、
+     * 旧データや別経路で本館ツイン数が残っていた場合の防御的正規化。
+     * （本館合計・換算は不変。別館ツインには一切触れない）
+     */
+    private static void normalizeMainTwinInConfig(AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
+        if (config == null || config.roomDistribution == null) return;
+        for (NormalRoomDistributionDialog.StaffDistribution dist : config.roomDistribution.values()) {
+            if (dist != null && dist.mainTwinAssignedRooms != 0) {
+                LOGGER.info(String.format("本館ツイン統合の正規化: %s 本館T=%d をシングル等へ合算",
+                        dist.staffName, dist.mainTwinAssignedRooms));
+                dist.mainSingleAssignedRooms += dist.mainTwinAssignedRooms;
+                dist.mainTwinAssignedRooms = 0;
+                dist.updateTotal();
+            }
+        }
+    }
+
     public static OptimizationResultWithUnassigned optimizeWithUnassigned(
             AdaptiveRoomOptimizer.BuildingData buildingData,
             AdaptiveRoomOptimizer.AdaptiveLoadConfig config) {
@@ -482,6 +507,9 @@ public class RoomAssignmentCPSATOptimizer {
         LOGGER.info("=== CP-SATソルバーによる最適化を開始 ===");
         LOGGER.info("大浴清掃スタッフを含む全スタッフをCP-SATで統合最適化します。");
         LOGGER.info("（大浴清掃スタッフはmaxFloors=1制約により1フロアのみ担当）");
+
+        // ★★★本館ツイン統合: 旧データ互換のための防御的正規化
+        normalizeMainTwinInConfig(config);
 
         // 全スタッフ（大浴清掃スタッフ含む）をCP-SATで最適化
         List<AdaptiveRoomOptimizer.StaffAssignment> assignments =
@@ -519,6 +547,9 @@ public class RoomAssignmentCPSATOptimizer {
 
         LOGGER.info("=== CP-SATソルバーによる複数解最適化を開始（最大" + MAX_SOLUTIONS_TO_KEEP + "解）===");
         LOGGER.info("大浴清掃スタッフを含む全スタッフをCP-SATで統合最適化します。");
+
+        // ★★★本館ツイン統合: 旧データ互換のための防御的正規化
+        normalizeMainTwinInConfig(config);
 
         // 全スタッフ（大浴清掃スタッフ含む）をCP-SATで複数解最適化
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> allAssignmentsList =

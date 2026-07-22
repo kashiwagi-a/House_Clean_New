@@ -10,14 +10,35 @@ import java.util.logging.Logger;
  *
  * ★修正: リネン庫担当フロアのみ部屋番号を大きい順に割り当て
  * （リネン庫担当でないフロアは通常の昇順を維持）
+ *
+ * ★★★本館ツイン統合:
+ * - 本館フロアは部屋タイプ（S/T等）を区別せず、部屋番号順にそのまま割り当てる
+ *   （本館ツインは各フロアの最大番号のため、リネン庫担当フロアでは降順ルールにより
+ *    リネン庫担当が自然にツインを先頭で取得する）
+ * - 割り当て後、本館ツインを2室以上持つスタッフを検出し、同一フロア内で
+ *   ツイン⇔シングルの1対1交換を行い「1人1部屋まで」に正規化する
+ *   （部屋数・担当階・エコ数は一切変化しないため、スタッフ間の均等性は保たれる）
+ * - 交換相手がいない場合は2室を許容し、警告リスト（getTwinWarnings）へ記録する
+ * - 別館は従来どおり部屋タイプ別に厳密に割り当てる（変更なし）
  */
 public class RoomNumberAssigner {
     private static final Logger LOGGER = Logger.getLogger(RoomNumberAssigner.class.getName());
 
     private final FileProcessor.CleaningData cleaningData;
 
+    // ★★★本館ツイン統合: 正規化しきれなかった場合の警告（呼び出し元がログ・画面表示に使用）
+    private final List<String> twinWarnings = new ArrayList<>();
+
     public RoomNumberAssigner(FileProcessor.CleaningData cleaningData) {
         this.cleaningData = cleaningData;
+    }
+
+    /**
+     * ★★★本館ツイン統合: 直近の assignDetailedRooms で発生したツイン警告を返す。
+     * 空リストなら全スタッフが本館ツイン1室以下に収まっている。
+     */
+    public List<String> getTwinWarnings() {
+        return new ArrayList<>(twinWarnings);
     }
 
     /**
@@ -29,6 +50,9 @@ public class RoomNumberAssigner {
             List<AdaptiveRoomOptimizer.StaffAssignment> assignments) {
 
         Map<String, List<FileProcessor.Room>> result = new HashMap<>();
+
+        // ★★★本館ツイン統合: 前回実行分の警告をクリア
+        twinWarnings.clear();
 
         // 清掃対象の全部屋をプール
         List<FileProcessor.Room> availableRooms = new ArrayList<>(cleaningData.roomsToClean);
@@ -52,6 +76,9 @@ public class RoomNumberAssigner {
         // ★新規: 未割り当てに連泊部屋が残っている場合、割り当て済みの非連泊部屋と入れ替えて救済
         // （連泊部屋は必ず清掃が必要なため、未割り当てに残すのはチェックアウト等の部屋のみとする）
         rescueStayoverRooms(assignments, result, availableRooms);
+
+        // ★★★本館ツイン統合: 本館ツインを2室以上持つスタッフを同一フロア内交換で解消（1人1部屋まで）
+        normalizeMainTwins(assignments, result);
 
         if (!availableRooms.isEmpty()) {
             long stayoverLeft = availableRooms.stream()
@@ -121,23 +148,43 @@ public class RoomNumberAssigner {
             }
 
             // 各部屋タイプについて割り当て（エコ部屋を除外）
-            for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
-                String roomType = entry.getKey();
-                int count = entry.getValue();
-
-                // ★修正: ソート済みのfloorRoomsから順番に取得
-                List<FileProcessor.Room> typeRooms = new ArrayList<>();
+            // ★★★本館ツイン統合: 本館フロアはタイプ（S/T等）を区別せず、ソート順にそのまま取得する。
+            //   本館ツインは各フロアの最大番号のため、リネン庫担当フロア（降順）では
+            //   リネン庫担当が自然にツインを先頭で取得する。別館は従来どおりタイプ別に厳密。
+            boolean isMainFloor = "本館".equals(floorRooms.get(0).building);
+            if (isMainFloor) {
+                int normalCount = allocation.roomCounts.values().stream()
+                        .mapToInt(Integer::intValue).sum();
+                List<FileProcessor.Room> pickedRooms = new ArrayList<>();
                 int assigned = 0;
                 for (FileProcessor.Room room : floorRooms) {
-                    if (assigned >= count) break;
-                    if (!room.isEco && mapRoomType(room.roomType).equals(roomType)) {
-                        typeRooms.add(room);
+                    if (assigned >= normalCount) break;
+                    if (!room.isEco) {
+                        pickedRooms.add(room);
                         assigned++;
                     }
                 }
+                assignedRooms.addAll(pickedRooms);
+                floorRooms.removeAll(pickedRooms);
+            } else {
+                for (Map.Entry<String, Integer> entry : allocation.roomCounts.entrySet()) {
+                    String roomType = entry.getKey();
+                    int count = entry.getValue();
 
-                assignedRooms.addAll(typeRooms);
-                floorRooms.removeAll(typeRooms);
+                    // ★修正: ソート済みのfloorRoomsから順番に取得
+                    List<FileProcessor.Room> typeRooms = new ArrayList<>();
+                    int assigned = 0;
+                    for (FileProcessor.Room room : floorRooms) {
+                        if (assigned >= count) break;
+                        if (!room.isEco && mapRoomType(room.roomType).equals(roomType)) {
+                            typeRooms.add(room);
+                            assigned++;
+                        }
+                    }
+
+                    assignedRooms.addAll(typeRooms);
+                    floorRooms.removeAll(typeRooms);
+                }
             }
 
             // エコ部屋の割り当て（allocation.ecoRoomsの数だけ）
@@ -302,6 +349,174 @@ public class RoomNumberAssigner {
                 }
             }
         }
+    }
+
+    // ============================================================
+    // ★★★本館ツイン統合: ツイン正規化（1人1部屋まで）
+    // ============================================================
+
+    /**
+     * 本館ツイン（通常清掃・非ECO）を2室以上持つスタッフを検出し、
+     * 同一フロア内で「ツイン ⇔ シングル等」の1対1交換を行って1室以下に正規化する。
+     *
+     * 交換条件（受け手側）:
+     *  - 同じフロアに通常清掃部屋（非ECO・非ツイン）を1室以上持っていること
+     *  - 本館ツインをまだ1室も持っていないこと（交換後も1人1部屋を維持）
+     * 交換は同一フロア・1対1のため、全スタッフの部屋数・担当階・エコ数は不変
+     * （スタッフ間の清掃数の均等性への影響はゼロ）。
+     *
+     * 手放す優先順位:
+     *  - リネン庫担当は、リネン庫担当フロア以外のツインを先に手放す
+     *    （リネン庫フロアのツインは降順ルール上の自然な1室目のため優先的に残す）
+     *  - 受け手が見つからないツインは飛ばし、渡せるツインから渡す
+     *
+     * どうしても解消できない場合（同一フロアに交換相手が存在しない等）は
+     * 2室以上を許容し、twinWarnings に警告を記録して処理を継続する。
+     */
+    private void normalizeMainTwins(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            Map<String, List<FileProcessor.Room>> result) {
+
+        Set<String> modifiedStaffNames = new HashSet<>();
+
+        for (AdaptiveRoomOptimizer.StaffAssignment giver : assignments) {
+            List<FileProcessor.Room> giverRooms = result.get(giver.staff.name);
+            if (giverRooms == null) continue;
+
+            List<FileProcessor.Room> twins = collectMainTwins(giverRooms);
+            if (twins.size() <= 1) continue;
+
+            LOGGER.info(String.format("本館ツイン正規化: %s が本館ツイン%d室を保持 → 同一フロア内交換を試行",
+                    giver.staff.name, twins.size()));
+
+            // 手放す候補の優先順位付け
+            Set<Integer> linenFloorSet = new HashSet<>(giver.getLinenClosetFloors());
+            List<FileProcessor.Room> giveCandidates = new ArrayList<>(twins);
+            giveCandidates.sort((a, b) -> {
+                boolean aLinen = linenFloorSet.contains(a.floor);
+                boolean bLinen = linenFloorSet.contains(b.floor);
+                if (aLinen != bLinen) return aLinen ? 1 : -1; // 非リネン庫フロアのツインを先に手放す
+                return Integer.compare(b.floor, a.floor);      // 同条件なら上の階のツインから手放す
+            });
+
+            for (FileProcessor.Room twin : giveCandidates) {
+                if (collectMainTwins(giverRooms).size() <= 1) break; // 1室以下になったら終了
+
+                boolean swapped = trySwapTwinWithSameFloorStaff(
+                        giver, twin, assignments, result, modifiedStaffNames);
+                if (!swapped) {
+                    LOGGER.info(String.format("  %d階のツイン%s: 交換相手なし（スキップ）",
+                            twin.floor, twin.roomNumber));
+                }
+            }
+
+            // 解消できたか最終確認
+            List<FileProcessor.Room> remaining = collectMainTwins(giverRooms);
+            if (remaining.size() > 1) {
+                String floorsText = remaining.stream()
+                        .map(r -> r.floor + "階" + r.roomNumber)
+                        .collect(Collectors.joining(", "));
+                String warn = String.format(
+                        "%s: 本館ツインを%d室保持したままです（%s）。同一フロアに交換可能なスタッフ"
+                                + "（ツイン0かつ非ECO通常部屋あり）が見つかりませんでした（許容・警告のみ）",
+                        giver.staff.name, remaining.size(), floorsText);
+                twinWarnings.add(warn);
+                LOGGER.warning("本館ツイン警告: " + warn);
+            }
+        }
+
+        // 交換が発生したスタッフの部屋リストを再ソート（従来と同じソート規則を適用）
+        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
+            if (modifiedStaffNames.contains(assignment.staff.name)) {
+                List<FileProcessor.Room> staffRooms = result.get(assignment.staff.name);
+                if (staffRooms != null) {
+                    sortAssignedRooms(assignment, staffRooms);
+                }
+            }
+        }
+
+        if (twinWarnings.isEmpty()) {
+            LOGGER.info("本館ツイン正規化: 全スタッフが本館ツイン1室以下です");
+        }
+    }
+
+    /**
+     * ★★★本館ツイン統合: 指定ツイン1室を、同一フロアの受け手候補のシングル等と1対1交換する。
+     * 受け手候補が複数いる場合は、返してもらう部屋番号が最大（＝ツインに最も近く、
+     * 双方の部屋の連続性が保たれやすい）スタッフを採用する。成功時 true。
+     */
+    private boolean trySwapTwinWithSameFloorStaff(
+            AdaptiveRoomOptimizer.StaffAssignment giver,
+            FileProcessor.Room twin,
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            Map<String, List<FileProcessor.Room>> result,
+            Set<String> modifiedStaffNames) {
+
+        AdaptiveRoomOptimizer.StaffAssignment bestReceiver = null;
+        FileProcessor.Room bestGiveBack = null;
+
+        for (AdaptiveRoomOptimizer.StaffAssignment receiver : assignments) {
+            if (receiver.staff.name.equals(giver.staff.name)) continue;
+            List<FileProcessor.Room> receiverRooms = result.get(receiver.staff.name);
+            if (receiverRooms == null) continue;
+
+            // 受け手条件1: 本館ツインをまだ1室も持っていない（交換後も1人1部屋を維持）
+            if (!collectMainTwins(receiverRooms).isEmpty()) continue;
+
+            // 受け手条件2: 同一フロアに非ECO・非ツインの通常部屋を持つ
+            //   → その中で最大番号の部屋を返してもらう（連続性維持）
+            FileProcessor.Room giveBack = null;
+            for (FileProcessor.Room room : receiverRooms) {
+                if (room.floor != twin.floor) continue;
+                if (room.isEco) continue;
+                if (isMainTwinRoom(room)) continue;
+                if (giveBack == null
+                        || extractRoomNumber(room.roomNumber) > extractRoomNumber(giveBack.roomNumber)) {
+                    giveBack = room;
+                }
+            }
+            if (giveBack == null) continue;
+
+            if (bestGiveBack == null
+                    || extractRoomNumber(giveBack.roomNumber) > extractRoomNumber(bestGiveBack.roomNumber)) {
+                bestReceiver = receiver;
+                bestGiveBack = giveBack;
+            }
+        }
+
+        if (bestReceiver == null) return false;
+
+        List<FileProcessor.Room> giverRooms = result.get(giver.staff.name);
+        List<FileProcessor.Room> receiverRooms = result.get(bestReceiver.staff.name);
+
+        giverRooms.remove(twin);
+        giverRooms.add(bestGiveBack);
+        receiverRooms.remove(bestGiveBack);
+        receiverRooms.add(twin);
+
+        modifiedStaffNames.add(giver.staff.name);
+        modifiedStaffNames.add(bestReceiver.staff.name);
+
+        LOGGER.info(String.format("  %d階: ツイン%s(%s) ⇔ シングル等%s(%s) を交換",
+                twin.floor, twin.roomNumber, giver.staff.name,
+                bestGiveBack.roomNumber, bestReceiver.staff.name));
+        return true;
+    }
+
+    /** ★★★本館ツイン統合: 部屋リストから本館の通常清掃ツイン（非ECO）のみ抽出 */
+    private List<FileProcessor.Room> collectMainTwins(List<FileProcessor.Room> rooms) {
+        List<FileProcessor.Room> twins = new ArrayList<>();
+        for (FileProcessor.Room room : rooms) {
+            if (isMainTwinRoom(room)) twins.add(room);
+        }
+        return twins;
+    }
+
+    /** ★★★本館ツイン統合: 本館の通常清掃ツイン（非ECO）判定 */
+    private boolean isMainTwinRoom(FileProcessor.Room room) {
+        return "本館".equals(room.building)
+                && !room.isEco
+                && "T".equals(mapRoomType(room.roomType));
     }
 
     /**

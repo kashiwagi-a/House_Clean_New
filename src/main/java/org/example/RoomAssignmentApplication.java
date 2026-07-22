@@ -765,6 +765,10 @@ public class RoomAssignmentApplication extends JFrame {
                 RoomNumberAssigner assigner = new RoomNumberAssigner(cleaningData);
                 manualDetailed = assigner.assignDetailedRooms(manualAssignments);
                 appendLog("手動割り当ての部屋番号確定が完了しました。");
+                // ★★★本館ツイン統合: 1人1部屋に収まらなかった場合の警告を表示（許容・警告のみ）
+                for (String warn : assigner.getTwinWarnings()) {
+                    appendLog("【本館ツイン警告】" + warn);
+                }
             } catch (Exception ex) {
                 appendLog("手動割り当ての部屋番号確定に失敗しましたが続行します: " + ex.getMessage());
             }
@@ -853,6 +857,10 @@ public class RoomAssignmentApplication extends JFrame {
                         RoomNumberAssigner assigner = new RoomNumberAssigner(cleaningData);
                         detailedAssignments = assigner.assignDetailedRooms(multiResult.getAssignments(0));
                         appendLog("部屋番号の詳細割り当てが完了しました。");
+                        // ★★★本館ツイン統合: 1人1部屋に収まらなかった場合の警告を表示（許容・警告のみ）
+                        for (String warn : assigner.getTwinWarnings()) {
+                            appendLog("【本館ツイン警告】" + warn);
+                        }
                     } catch (Exception ex) {
                         appendLog("部屋番号の詳細割り当てに失敗しましたが、処理を続行します: " + ex.getMessage());
                     }

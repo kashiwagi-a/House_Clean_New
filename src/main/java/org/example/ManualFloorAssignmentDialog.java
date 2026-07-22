@@ -21,10 +21,15 @@ import java.util.stream.Collectors;
  * リアルタイム更新される。
  *
  * ハードゲート（OK可能条件）:
- *   - 各スタッフ: 本館S/T合計＝本館S/T上限、別館S/T合計＝別館S/T上限（建物は階で自動判定）
+ *   - 各スタッフ: 本館合計＝本館上限（★★★本館ツイン統合: S/Tの区別なし。T欄は使わずSにまとめて入力）、
+ *                 別館S/T合計＝別館S/T上限（建物は階で自動判定）
  *   - 各スタッフ: Eco合計＝Eco総数（このダイアログ内で入力）
- *   - 各階の入力 ≤ その階の在庫（S/T/Eco別）
+ *   - 各階の入力 ≤ その階の在庫（本館はS在庫にツインを含めた合計、別館はS/T/Eco別）
  *   - リネン庫: 同じ階を複数スタッフがリネン庫担当に指定しない（ダブり禁止）
+ *
+ * ★★★本館ツイン統合: 本館はツイン区別を廃止したため、在庫(FloorInv)は本館ツインを
+ * シングル等在庫(singleAvail)へ合算し、本館の twinAvail は常に0。本館フロアの入力は
+ * すべてS欄で行う（T欄への入力は検証エラーで案内する）。別館は従来どおり。
  *
  * ※このダイアログは「使ったときだけ」手動レイアウトを確定する。使わなければ従来のCP-SAT自動フローのまま。
  */
@@ -437,8 +442,8 @@ public class ManualFloorAssignmentDialog extends JDialog {
         boolean hasMain = staffHasMain(name);
         boolean hasAnnex = staffHasAnnex(name);
         if (hasMain) {
-            sb.append(chip("本館S", mainS, capMainS));
-            sb.append(chip("本館T", mainT, capMainT));
+            // ★★★本館ツイン統合: 本館はS/T区別なしの合計チップ1つ
+            sb.append(chip("本館", mainS + mainT, capMainS + capMainT));
         }
         if (hasAnnex) {
             sb.append(chip("別館S", annexS, capAnnexS));
@@ -484,23 +489,35 @@ public class ManualFloorAssignmentDialog extends JDialog {
             int capMainT = dist != null ? dist.mainTwinAssignedRooms : 0;
             int capAnnexS = dist != null ? dist.annexSingleAssignedRooms : 0;
             int capAnnexT = dist != null ? dist.annexTwinAssignedRooms : 0;
-            if (mainS != capMainS) errors.add(String.format("%s: 本館S 合計%d ≠ 上限%d", name, mainS, capMainS));
-            if (mainT != capMainT) errors.add(String.format("%s: 本館T 合計%d ≠ 上限%d", name, mainT, capMainT));
+            // ★★★本館ツイン統合: 本館はS/T区別なしの合計で照合する
+            if (mainS + mainT != capMainS + capMainT)
+                errors.add(String.format("%s: 本館 合計%d ≠ 上限%d", name, mainS + mainT, capMainS + capMainT));
             if (annexS != capAnnexS) errors.add(String.format("%s: 別館S 合計%d ≠ 上限%d", name, annexS, capAnnexS));
             if (annexT != capAnnexT) errors.add(String.format("%s: 別館T 合計%d ≠ 上限%d", name, annexT, capAnnexT));
             // ★Eco上限の一致チェックは撤廃（Ecoは各階の実在庫超過のみ下で検証）
         }
 
         // 在庫超過
+        // ★★★本館ツイン統合: 本館フロアはS在庫にツインを含めた合計と比較（T欄入力もSと同じ在庫を消費）
         for (Map.Entry<Integer, Integer> en : usedSingle.entrySet()) {
             FloorInv fi = inventory.get(en.getKey());
-            if (fi != null && en.getValue() > fi.singleAvail)
-                errors.add(String.format("%s: S合計%d が在庫%dを超過", fi.label(), en.getValue(), fi.singleAvail));
+            if (fi == null) continue;
+            int used = en.getValue()
+                    + (fi.isMain ? usedTwin.getOrDefault(en.getKey(), 0) : 0);
+            if (used > fi.singleAvail)
+                errors.add(String.format("%s: %s合計%d が在庫%dを超過",
+                        fi.label(), fi.isMain ? "通常室" : "S", used, fi.singleAvail));
         }
         for (Map.Entry<Integer, Integer> en : usedTwin.entrySet()) {
             FloorInv fi = inventory.get(en.getKey());
-            if (fi != null && en.getValue() > fi.twinAvail)
+            if (fi == null || en.getValue() <= 0) continue;
+            if (fi.isMain) {
+                // ★★★本館ツイン統合: 本館フロアはT欄不要（案内のみ。在庫消費は上のS合算で検証済み）
+                errors.add(String.format("%s: 本館はツイン区別なしのため、T欄ではなくS欄にまとめて入力してください",
+                        fi.label()));
+            } else if (en.getValue() > fi.twinAvail) {
                 errors.add(String.format("%s: T合計%d が在庫%dを超過", fi.label(), en.getValue(), fi.twinAvail));
+            }
         }
         for (Map.Entry<Integer, Integer> en : usedEco.entrySet()) {
             FloorInv fi = inventory.get(en.getKey());
@@ -749,9 +766,13 @@ public class ManualFloorAssignmentDialog extends JDialog {
             if (room.isEcoClean) continue; // 通常室のみ（Ecoは ecoRooms 側で別カウント）
             int floor = room.floor;
             String mapped = mapType(room.roomType);
-            if ("T".equals(mapped)) {
+            boolean isMainRoom = "本館".equals(room.building);
+            if ("T".equals(mapped) && !isMainRoom) {
+                // 別館ツインのみ別管理（従来どおり）
                 floorTwinAvail.merge(floor, 1, Integer::sum);
             } else {
+                // ★★★本館ツイン統合: 本館ツインはシングル等の在庫として扱い、
+                //   "T" カテゴリのまま貪欲割付の対象に含める（本館は区別なしのため）
                 floorSingleTypes.computeIfAbsent(floor, k -> new LinkedHashMap<>())
                         .merge(mapped, 1, Integer::sum);
             }
@@ -833,7 +854,8 @@ public class ManualFloorAssignmentDialog extends JDialog {
         return result;
     }
 
-    /** 階別在庫(FloorInv)を清掃データから構築（ダイアログへ渡す用）。floorKey は Room.floor をそのまま使用 */
+    /** 階別在庫(FloorInv)を清掃データから構築（ダイアログへ渡す用）。floorKey は Room.floor をそのまま使用
+     *  ★★★本館ツイン統合: 本館のツイン部屋はシングル等在庫(singleAvail)へ合算する（本館 twinAvail=0） */
     public static Map<Integer, FloorInv> buildInventory(FileProcessor.CleaningData cleaningData) {
         Map<Integer, int[]> agg = new HashMap<>();   // floorKey -> [single, twin, eco]
         Map<Integer, Boolean> isMainMap = new HashMap<>();
@@ -842,14 +864,14 @@ public class ManualFloorAssignmentDialog extends JDialog {
             for (FileProcessor.Room room : cleaningData.mainRooms) {
                 int[] a = agg.computeIfAbsent(room.floor, k -> new int[3]);
                 isMainMap.put(room.floor, true);
-                accumulate(a, room);
+                accumulate(a, room, true);
             }
         }
         if (cleaningData.annexRooms != null) {
             for (FileProcessor.Room room : cleaningData.annexRooms) {
                 int[] a = agg.computeIfAbsent(room.floor, k -> new int[3]);
                 isMainMap.putIfAbsent(room.floor, false);
-                accumulate(a, room);
+                accumulate(a, room, false);
             }
         }
 
@@ -864,11 +886,16 @@ public class ManualFloorAssignmentDialog extends JDialog {
         return inv;
     }
 
-    private static void accumulate(int[] a, FileProcessor.Room room) {
+    private static void accumulate(int[] a, FileProcessor.Room room, boolean isMain) {
         if (room.isEcoClean) {
             a[2]++; // eco
         } else if ("T".equals(mapType(room.roomType))) {
-            a[1]++; // twin
+            if (isMain) {
+                // ★★★本館ツイン統合: 本館ツインはシングル等在庫へ合算（区別なし）
+                a[0]++;
+            } else {
+                a[1]++; // twin（別館のみ）
+            }
         } else {
             a[0]++; // single等
         }

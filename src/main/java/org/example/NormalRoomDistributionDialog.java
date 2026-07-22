@@ -22,6 +22,13 @@ import com.google.ortools.sat.*;
  * 5. ツイン部屋の均等分配ロジック追加
  * 6. ★★ECO部屋の均等配分機能追加（換算係数0.2）
  * 7. ★★「清掃割り当て調整」画面から戻る機能追加（初期パターン指定版コンストラクタ）
+ * 8. ★★★本館ツイン統合（新アーキテクチャ）:
+ *    - 本館は「シングル等」「ツイン」の区別を廃止し、画面上は「本館」1列（合計値）のみ表示
+ *    - 本館のツイン配分はこの画面では行わない（mainTwinAssignedRooms は常に0、
+ *      合計は mainSingleAssignedRooms に一本化）
+ *    - 本館ツインの実際の割り当ては部屋番号割り振り段階（RoomNumberAssigner）で
+ *      部屋番号順に自然に決まり、「1人1部屋まで」に正規化される
+ *    - 別館は従来どおり2列（シングル等/ツイン）＋ツイン均等配分を維持
  */
 public class NormalRoomDistributionDialog extends JDialog {
 
@@ -333,7 +340,10 @@ public class NormalRoomDistributionDialog extends JDialog {
 
         if (initialPattern != null && !initialPattern.isEmpty()) {
             this.currentPattern = deepCopyPattern(initialPattern);
-            for (String label : PATTERN_LABELS) patternMap.put(label, deepCopyPattern(initialPattern));
+            // ★★★本館ツイン統合: 復帰データに本館ツイン数が入っていても（調整画面の実部屋集計等）、
+            //   本館は区別なしのためシングル等へ合算して正規化する（合計・換算は不変）
+            normalizeMainTwinIntoSingle(this.currentPattern);
+            for (String label : PATTERN_LABELS) patternMap.put(label, deepCopyPattern(this.currentPattern));
             this.defaultPatternLabel = PAT_1B;
         } else {
             calculateDistributionPatterns();
@@ -454,16 +464,17 @@ public class NormalRoomDistributionDialog extends JDialog {
         selectHeaderLabel.setPreferredSize(new Dimension(SELECT_COLUMN_WIDTH, 25));
         headerPanel.add(selectHeaderLabel, BorderLayout.WEST);
 
-        JPanel headerCells = new JPanel(new GridLayout(1, 12));  // ★★変更: 11→12列（ECO上限列追加）
+        JPanel headerCells = new JPanel(new GridLayout(1, 11));  // ★★★変更: 12→11列（本館S/Tを「本館」1列に統合）
         headerCells.setOpaque(false);
 
         // ECO列・通常合計列を削除（ECOはCP-SATが自動配分）
         // ★★追加: ECO上限列（CP-SATのECO自動配分に対する上限。空欄=制限なし）
+        // ★★★本館ツイン統合: 「本館S」「本館T」を「本館」1列（合計値）に統合
         String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "ECO上限", "指定階",
-                "本館S", "本館T",
+                "本館",
                 "別館S", "別館T",
                 "換算合計"};
-        int[] widths = {100, 100, 50, 55, 70, 60, 100, 80, 80, 80, 80, 100};
+        int[] widths = {100, 100, 50, 55, 70, 60, 100, 80, 80, 80, 100};
 
         for (int i = 0; i < headers.length; i++) {
             JLabel headerLabel = new JLabel(headers[i], JLabel.CENTER);
@@ -575,7 +586,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             rowContainer.add(selectPanel, BorderLayout.WEST);
 
             // 従来の列部分（スタッフ名〜換算合計）。既存リスナーはこのrowPanelを参照する
-            JPanel rowPanel = new JPanel(new GridLayout(1, 12));  // ★★変更: 11→12列（ECO上限列追加）
+            JPanel rowPanel = new JPanel(new GridLayout(1, 11));  // ★★★変更: 12→11列（本館S/T統合）
 
             // スタッフ名（★★追加: ドラッグで行の並べ替えが可能）
             JLabel nameLabel = new JLabel(staff.staffName, JLabel.CENTER);
@@ -677,37 +688,26 @@ public class NormalRoomDistributionDialog extends JDialog {
             floorPanel.add(floorField);
             rowPanel.add(floorPanel);
 
-            // 本館シングル等スピナー
-            JPanel mainSinglePanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
-            mainSinglePanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
-            SpinnerNumberModel mainSingleModel = new SpinnerNumberModel(staff.mainSingleAssignedRooms, 0, 99, 1);
-            JSpinner mainSingleSpinner = new JSpinner(mainSingleModel);
-            mainSingleSpinner.setPreferredSize(new Dimension(55, 25));
-            applyZeroAsBlankFormatter(mainSingleSpinner);
-            mainSingleSpinner.addChangeListener(e -> {
-                staff.mainSingleAssignedRooms = (int) mainSingleSpinner.getValue();
+            // ★★★本館ツイン統合: 「本館」合計スピナー（シングル等＋ツインの合計を1列で扱う）
+            //   内部的には mainSingleAssignedRooms に合計を集約し、mainTwinAssignedRooms は常に0とする。
+            //   （本館ツインの実配分は部屋番号割り振り段階で部屋番号順に決まる）
+            JPanel mainTotalPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
+            mainTotalPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            SpinnerNumberModel mainTotalModel = new SpinnerNumberModel(
+                    staff.mainSingleAssignedRooms + staff.mainTwinAssignedRooms, 0, 99, 1);
+            JSpinner mainTotalSpinner = new JSpinner(mainTotalModel);
+            mainTotalSpinner.setPreferredSize(new Dimension(55, 25));
+            applyZeroAsBlankFormatter(mainTotalSpinner);
+            mainTotalSpinner.addChangeListener(e -> {
+                // 合計値をシングル等へ一本化（ツインは常に0＝区別なし）
+                staff.mainSingleAssignedRooms = (int) mainTotalSpinner.getValue();
+                staff.mainTwinAssignedRooms = 0;
                 staff.updateTotal();
                 updateRowDisplay(rowPanel, staff);
                 updateSummary();
             });
-            mainSinglePanel.add(mainSingleSpinner);
-            rowPanel.add(mainSinglePanel);
-
-            // 本館ツイン('T'/'NT')スピナー
-            JPanel mainTwinPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
-            mainTwinPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
-            SpinnerNumberModel mainTwinModel = new SpinnerNumberModel(staff.mainTwinAssignedRooms, 0, 99, 1);
-            JSpinner mainTwinSpinner = new JSpinner(mainTwinModel);
-            mainTwinSpinner.setPreferredSize(new Dimension(55, 25));
-            applyZeroAsBlankFormatter(mainTwinSpinner);
-            mainTwinSpinner.addChangeListener(e -> {
-                staff.mainTwinAssignedRooms = (int) mainTwinSpinner.getValue();
-                staff.updateTotal();
-                updateRowDisplay(rowPanel, staff);
-                updateSummary();
-            });
-            mainTwinPanel.add(mainTwinSpinner);
-            rowPanel.add(mainTwinPanel);
+            mainTotalPanel.add(mainTotalSpinner);
+            rowPanel.add(mainTotalPanel);
 
             // 別館シングル等スピナー
             JPanel annexSinglePanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
@@ -759,9 +759,9 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private void updateRowDisplay(JPanel rowPanel, StaffDistribution staff) {
         Component[] components = rowPanel.getComponents();
-        // 換算合計更新（★★変更: ECO上限列追加により 12列グリッド内の index 11 に移動）
-        if (components.length > 11) {
-            ((JLabel)components[11]).setText(String.valueOf((int) staff.getConvertedTotal()));
+        // 換算合計更新（★★★変更: 本館S/T統合により 11列グリッド内の index 10 に移動）
+        if (components.length > 10) {
+            ((JLabel)components[10]).setText(String.valueOf((int) staff.getConvertedTotal()));
         }
     }
 
@@ -1127,15 +1127,12 @@ public class NormalRoomDistributionDialog extends JDialog {
         }
 
         // 部屋数の不一致チェック（警告として処理）
-        if (assignedMainSingle != totalMainSingleRooms) {
-            warnings.add(String.format("本館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
-                    assignedMainSingle, totalMainSingleRooms,
-                    assignedMainSingle - totalMainSingleRooms));
-        }
-        if (assignedMainTwin != totalMainTwinRooms) {
-            warnings.add(String.format("本館ツイン: 割当%d室 ≠ 実際%d室 (差分%d)",
-                    assignedMainTwin, totalMainTwinRooms,
-                    assignedMainTwin - totalMainTwinRooms));
+        // ★★★本館ツイン統合: 本館はシングル/ツインの区別なしで「合計」で照合する
+        int assignedMainTotal = assignedMainSingle + assignedMainTwin;
+        if (assignedMainTotal != totalMainRooms) {
+            warnings.add(String.format("本館: 割当%d室 ≠ 実際%d室 (差分%d)",
+                    assignedMainTotal, totalMainRooms,
+                    assignedMainTotal - totalMainRooms));
         }
         if (assignedAnnexSingle != totalAnnexSingleRooms) {
             warnings.add(String.format("別館シングル等: 割当%d室 ≠ 実際%d室 (差分%d)",
@@ -2216,9 +2213,14 @@ public class NormalRoomDistributionDialog extends JDialog {
      * CP-SAT/ヒューリスティック両方の結果に一度だけ適用する。
      * 基礎分 floor(総ツイン/人数) を全員に均等配分し、余りはリライアンス用（業者）が
      * 優先吸収する。これにより通常スタッフ同士のツイン数が揃う。
+     *
+     * ★★★本館ツイン統合: 本館側の事前ツイン配分は廃止（totalTwin=0で呼び出し、
+     * 全室シングル等として初期化のみ行う）。本館ツインの実配分は部屋番号割り振り段階
+     * （RoomNumberAssigner）で部屋番号順に自然に決まり「1人1部屋まで」に正規化される。
+     * 別館は従来どおり均等配分を行う（換算膨張・業者吸収の仕組みを維持）。
      */
     private void distributeTwins(Map<String, StaffDistribution> pattern) {
-        allocateTwins(pattern, true, totalMainTwinRooms);
+        allocateTwins(pattern, true, 0);  // ★★★本館: ツイン事前配分なし（初期化のみ）
         allocateTwins(pattern, false, totalAnnexTwinRooms);
     }
 
@@ -2563,14 +2565,15 @@ public class NormalRoomDistributionDialog extends JDialog {
             linenInfo = String.format(" | リネン庫: %d/%d", totalLinenFloorCount, totalFloors);
         }
 
-        String mainSingleText = formatWithColor(totalAssignedMainSingle, totalMainSingleRooms, "S");
-        String mainTwinText = formatWithColor(totalAssignedMainTwin, totalMainTwinRooms, "T");
+        // ★★★本館ツイン統合: 本館は合計表記（区別なし）、別館は従来どおりS+T表記
+        String mainTotalText = formatWithColor(
+                totalAssignedMainSingle + totalAssignedMainTwin, totalMainRooms, "");
         String annexSingleText = formatWithColor(totalAssignedAnnexSingle, totalAnnexSingleRooms, "S");
         String annexTwinText = formatWithColor(totalAssignedAnnexTwin, totalAnnexTwinRooms, "T");
 
         String summaryText = String.format(
-                "<html>割当: 本館%s+%s, 別館%s+%s | 換算合計: %d%s</html>",
-                mainSingleText, mainTwinText,
+                "<html>割当: 本館%s, 別館%s+%s | 換算合計: %d%s</html>",
+                mainTotalText,
                 annexSingleText, annexTwinText,
                 (int) totalConvertedRooms, linenInfo
         );
@@ -2680,6 +2683,22 @@ public class NormalRoomDistributionDialog extends JDialog {
 
     private void resetPattern() {
         applySelectedPattern();
+    }
+
+    /**
+     * ★★★本館ツイン統合: パターン内の本館ツイン数をシングル等へ合算して0にする。
+     * 本館合計（mainAssignedRooms）・換算合計（ツイン1部屋=換算1.0のため）は変化しない。
+     * 復帰データや旧データとの互換のための正規化。
+     */
+    private void normalizeMainTwinIntoSingle(Map<String, StaffDistribution> pattern) {
+        if (pattern == null) return;
+        for (StaffDistribution d : pattern.values()) {
+            if (d.mainTwinAssignedRooms != 0) {
+                d.mainSingleAssignedRooms += d.mainTwinAssignedRooms;
+                d.mainTwinAssignedRooms = 0;
+                d.updateTotal();
+            }
+        }
     }
 
     private Map<String, StaffDistribution> deepCopyPattern(Map<String, StaffDistribution> original) {

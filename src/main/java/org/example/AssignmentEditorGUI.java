@@ -599,8 +599,25 @@ public class AssignmentEditorGUI extends JFrame {
             assignRoomNumbers();
         }
 
+        // ★残し部屋(事前設定): メイン画面で除外された部屋を「未割り当て発の残し部屋」として引き継ぐ
+        seedPreExcludedRooms();
+
         initializeGUI();
         loadAssignmentData();
+    }
+
+    /**
+     * ★残し部屋(事前設定): メイン画面で除外された部屋を「未割り当て発の残し部屋」に登録する
+     * これにより未割り当てダイアログでの解除・手動割り当てと、
+     * 出力Excelの「残し部屋」ブロックへの出力（既存ロジック）が可能になる
+     */
+    private void seedPreExcludedRooms() {
+        if (processingResult != null && processingResult.cleaningDataObj != null
+                && processingResult.cleaningDataObj.preExcludedRooms != null) {
+            for (FileProcessor.Room room : processingResult.cleaningDataObj.preExcludedRooms) {
+                unassignedExcludedRooms.add(room.roomNumber);
+            }
+        }
     }
 
     /**
@@ -983,6 +1000,9 @@ public class AssignmentEditorGUI extends JFrame {
         // 残し部屋をリセット
         excludedRooms.clear();
         unassignedExcludedRooms.clear();  // ★新規: 未割り当て発の残し部屋もリセット
+
+        // ★残し部屋(事前設定): 事前除外部屋は解切り替え後も残し部屋として維持する
+        seedPreExcludedRooms();
 
         // テーブルを更新
         loadAssignmentData();
@@ -2118,6 +2138,9 @@ public class AssignmentEditorGUI extends JFrame {
         this.staffDataMap = newStaffDataMap;
         this.excludedRooms.clear();  // 残し部屋設定をクリア
         this.unassignedExcludedRooms.clear();  // ★新規: 未割り当て発の残し部屋もクリア
+
+        // ★残し部屋(事前設定): 事前除外部屋はリセット後も残し部屋として維持する
+        seedPreExcludedRooms();
     }
 
     protected void assignRoomNumbers() {
@@ -3173,10 +3196,17 @@ public class AssignmentEditorGUI extends JFrame {
 
             if (!allExcludedRoomNumbers.isEmpty() && processingResult.cleaningDataObj != null) {
                 // Roomオブジェクトを収集（roomsToCleanから参照）し、通常清掃とEcoに分類
+                // ★残し部屋(事前設定): 事前除外部屋はroomsToCleanに含まれないため、検索対象に追加する
+                List<FileProcessor.Room> excludedSearchPool =
+                        new ArrayList<>(processingResult.cleaningDataObj.roomsToClean);
+                if (processingResult.cleaningDataObj.preExcludedRooms != null) {
+                    excludedSearchPool.addAll(processingResult.cleaningDataObj.preExcludedRooms);
+                }
+
                 List<FileProcessor.Room> excludedNormalRooms = new ArrayList<>();
                 List<FileProcessor.Room> excludedEcoRooms = new ArrayList<>();
 
-                for (FileProcessor.Room room : processingResult.cleaningDataObj.roomsToClean) {
+                for (FileProcessor.Room room : excludedSearchPool) {
                     if (allExcludedRoomNumbers.contains(room.roomNumber)) {
                         if (room.isEcoClean) {
                             excludedEcoRooms.add(room);
@@ -3384,6 +3414,12 @@ public class AssignmentEditorGUI extends JFrame {
         // 全清掃対象部屋を取得
         List<FileProcessor.Room> allRooms = new ArrayList<>(processingResult.cleaningDataObj.roomsToClean);
 
+        // ★残し部屋(事前設定): 事前除外部屋も母集団に含める
+        // （未割り当てダイアログで残し部屋から解除された場合に、未割り当てとして表示するため）
+        if (processingResult.cleaningDataObj.preExcludedRooms != null) {
+            allRooms.addAll(processingResult.cleaningDataObj.preExcludedRooms);
+        }
+
         // 割り当て済み部屋番号を収集
         Set<String> assignedRoomNumbers = new HashSet<>();
         for (StaffData staff : staffDataMap.values()) {
@@ -3427,6 +3463,14 @@ public class AssignmentEditorGUI extends JFrame {
             for (FileProcessor.Room room : processingResult.cleaningDataObj.roomsToClean) {
                 if (unassignedExcludedRooms.contains(room.roomNumber)) {
                     unassignedExcludedRoomList.add(room);
+                }
+            }
+            // ★残し部屋(事前設定): 事前除外部屋はroomsToCleanに含まれないため、別途収集する
+            if (processingResult.cleaningDataObj.preExcludedRooms != null) {
+                for (FileProcessor.Room room : processingResult.cleaningDataObj.preExcludedRooms) {
+                    if (unassignedExcludedRooms.contains(room.roomNumber)) {
+                        unassignedExcludedRoomList.add(room);
+                    }
                 }
             }
         }

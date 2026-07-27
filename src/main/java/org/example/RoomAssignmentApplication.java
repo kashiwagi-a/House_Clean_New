@@ -34,6 +34,7 @@ public class RoomAssignmentApplication extends JFrame {
     private JButton selectDateButton;
     private JButton brokenRoomSettingsButton;
     private JButton pendingRoomSettingsButton;
+    private JButton excludedRoomSettingsButton;  // ★残し部屋(事前設定): 残し部屋設定ボタン
     private JButton processButton;
     private JButton viewResultsButton;
 
@@ -48,6 +49,9 @@ public class RoomAssignmentApplication extends JFrame {
     private Map<Integer, ManualFloorAssignmentDialog.FloorInv> pendingManualInventory = new HashMap<>();
 
     private Set<String> selectedBrokenRoomsForCleaning = new HashSet<>();
+
+    // ★残し部屋(事前設定): メイン画面で選択された残し部屋（清掃対象から除外する部屋）
+    private Set<String> preExcludedRooms = new HashSet<>();
 
     // ★★追加: 割り振り画面で「スタッフ選択に戻る」が押されたか
     private boolean distributionBackRequested = false;
@@ -319,6 +323,16 @@ public class RoomAssignmentApplication extends JFrame {
         pendingRoomSettingsButton.setEnabled(false);
         panel.add(pendingRoomSettingsButton);
 
+        // ★残し部屋(事前設定): 残し部屋設定ボタン（調整画面の残し部屋設定ボタンと同系色）
+        excludedRoomSettingsButton = new JButton("残し部屋設定");
+        excludedRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
+        excludedRoomSettingsButton.setPreferredSize(new Dimension(150, 35));
+        excludedRoomSettingsButton.setBackground(new Color(255, 200, 100));
+        excludedRoomSettingsButton.setForeground(Color.BLACK);
+        excludedRoomSettingsButton.addActionListener(this::openExcludedRoomSettings);
+        excludedRoomSettingsButton.setEnabled(false);
+        panel.add(excludedRoomSettingsButton);
+
         processButton = new JButton("処理実行");
         processButton.setFont(new Font("MS Gothic", Font.BOLD, 14));
         processButton.setPreferredSize(new Dimension(120, 35));
@@ -373,6 +387,49 @@ public class RoomAssignmentApplication extends JFrame {
         }
     }
 
+    /**
+     * ★残し部屋(事前設定): 残し部屋設定ダイアログを開く
+     */
+    private void openExcludedRoomSettings(ActionEvent e) {
+        if (selectedRoomFile == null) {
+            JOptionPane.showMessageDialog(this,
+                    "部屋データファイルを先に選択してください。",
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        try {
+            PreExcludedRoomSelectionDialog dialog = new PreExcludedRoomSelectionDialog(this, selectedRoomFile);
+            dialog.setVisible(true);
+
+            if (dialog.getDialogResult()) {
+                preExcludedRooms = dialog.getSelectedExcludedRooms();
+
+                appendLog("残し部屋設定が完了しました:");
+                appendLog("  清掃対象から除外する残し部屋: " + preExcludedRooms.size() + "室");
+
+                if (!preExcludedRooms.isEmpty()) {
+                    for (String roomNumber : preExcludedRooms) {
+                        appendLog("    " + roomNumber);
+                    }
+                    excludedRoomSettingsButton.setBackground(new Color(34, 139, 34));
+                    excludedRoomSettingsButton.setForeground(Color.BLACK);
+                    excludedRoomSettingsButton.setText("残し部屋設定済み");
+                } else {
+                    excludedRoomSettingsButton.setBackground(new Color(255, 200, 100));
+                    excludedRoomSettingsButton.setForeground(Color.BLACK);
+                    excludedRoomSettingsButton.setText("残し部屋設定");
+                }
+            }
+
+        } catch (Exception ex) {
+            LOGGER.severe("残し部屋設定ダイアログでエラー: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this,
+                    "残し部屋設定でエラーが発生しました: " + ex.getMessage(),
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
     private void selectRoomFile(ActionEvent e) {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
@@ -396,6 +453,13 @@ public class RoomAssignmentApplication extends JFrame {
             brokenRoomSettingsButton.setText("故障・未販売設定");
             brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
             selectedBrokenRoomsForCleaning.clear();
+
+            // ★残し部屋(事前設定): ファイル変更時は残し部屋設定もリセット
+            excludedRoomSettingsButton.setText("残し部屋設定");
+            excludedRoomSettingsButton.setBackground(new Color(255, 200, 100));
+            excludedRoomSettingsButton.setForeground(Color.BLACK);
+            preExcludedRooms.clear();
+            System.clearProperty("preExcludedRooms");
 
             updateButtonStates();
         }
@@ -566,6 +630,8 @@ public class RoomAssignmentApplication extends JFrame {
         processButton.setEnabled(canProcess);
         brokenRoomSettingsButton.setEnabled(selectedRoomFile != null);
         pendingRoomSettingsButton.setEnabled(selectedRoomFile != null && selectedEcoDataFile != null);
+        // ★残し部屋(事前設定): 部屋データファイル選択後に有効化
+        excludedRoomSettingsButton.setEnabled(selectedRoomFile != null);
     }
 
     private void processData(ActionEvent e) {
@@ -613,12 +679,30 @@ public class RoomAssignmentApplication extends JFrame {
             System.clearProperty("selectedBrokenRooms");
         }
 
+        // ★残し部屋(事前設定): 残し部屋のシステムプロパティを設定/クリア
+        if (!preExcludedRooms.isEmpty()) {
+            String preExcludedRoomsStr = String.join(",", preExcludedRooms);
+            System.setProperty("preExcludedRooms", preExcludedRoomsStr);
+            appendLog("残し部屋(清掃対象から除外)を設定: " + preExcludedRooms.size() + "室");
+        } else {
+            System.clearProperty("preExcludedRooms");
+        }
+
         // 1. 部屋データの読み込み
         appendLog("部屋データを読み込み中...");
         final FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
         appendLog(String.format("部屋データ読み込み完了: 本館%d室, 別館%d室, エコ%d室, 故障%d室",
                 cleaningData.totalMainRooms, cleaningData.totalAnnexRooms,
                 cleaningData.ecoRooms.size(), cleaningData.totalBrokenRooms));
+
+        // ★残し部屋(事前設定): 除外結果のログ出力
+        if (!cleaningData.preExcludedRooms.isEmpty()) {
+            appendLog(String.format("残し部屋(事前設定)により%d室を清掃対象から除外しました:",
+                    cleaningData.preExcludedRooms.size()));
+            for (FileProcessor.Room room : cleaningData.preExcludedRooms) {
+                appendLog("    " + room.roomNumber + " (" + room.roomType + ", " + room.building + ")");
+            }
+        }
 
         // エコ清掃警告チェック
         if (!cleaningData.ecoWarnings.isEmpty()) {

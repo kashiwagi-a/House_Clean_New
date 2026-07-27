@@ -32,17 +32,20 @@ public class FileProcessor {
         public final int totalBrokenRooms;
         public final List<String> ecoWarnings;  // ★追加: エコ清掃警告リスト
         public final List<Room> unsoldRooms;    // ★ウォークイン用: 未販売部屋（状態0、故障部屋・清掃対象追加済みは含まない）
+        public final List<Room> preExcludedRooms;  // ★残し部屋(事前設定): メイン画面で清掃対象から除外されたチェックアウト部屋
 
-        // ★ウォークイン対応: 未販売部屋リスト付きコンストラクタ
+        // ★残し部屋(事前設定)対応: 事前除外部屋リスト付きコンストラクタ（マスター）
         public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
                             List<Room> ecoRooms, List<Room> brokenRooms,
-                            List<String> ecoWarnings, List<Room> unsoldRooms) {
+                            List<String> ecoWarnings, List<Room> unsoldRooms,
+                            List<Room> preExcludedRooms) {
             this.mainRooms = mainRooms;
             this.annexRooms = annexRooms;
             this.ecoRooms = ecoRooms;
             this.brokenRooms = brokenRooms;
             this.ecoWarnings = ecoWarnings != null ? ecoWarnings : new ArrayList<>();
             this.unsoldRooms = unsoldRooms != null ? unsoldRooms : new ArrayList<>();
+            this.preExcludedRooms = preExcludedRooms != null ? preExcludedRooms : new ArrayList<>();
 
             // 清掃対象の全部屋リストを作成
             this.roomsToClean = new ArrayList<>();
@@ -52,6 +55,13 @@ public class FileProcessor {
             this.totalMainRooms = mainRooms.size();
             this.totalAnnexRooms = annexRooms.size();
             this.totalBrokenRooms = brokenRooms.size();
+        }
+
+        // ★ウォークイン対応: 未販売部屋リスト付きコンストラクタ（後方互換: 事前除外なし）
+        public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
+                            List<Room> ecoRooms, List<Room> brokenRooms,
+                            List<String> ecoWarnings, List<Room> unsoldRooms) {
+            this(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, unsoldRooms, new ArrayList<>());
         }
 
         // 後方互換性のためのコンストラクタ（unsoldRoomsなし）
@@ -183,6 +193,7 @@ public class FileProcessor {
         List<Room> brokenRooms = new ArrayList<>();
         List<String> ecoWarnings = new ArrayList<>();  // ★追加: 警告リスト
         List<Room> unsoldRooms = new ArrayList<>();    // ★ウォークイン用: 未販売部屋（状態0）記録リスト
+        List<Room> preExcludedRooms = new ArrayList<>();  // ★残し部屋(事前設定): 除外された部屋の記録リスト
 
         // ★追加: 全部屋のマップを作成（部屋番号 → Room オブジェクト）
         Map<String, Room> allRoomsMap = new HashMap<>();
@@ -198,16 +209,25 @@ public class FileProcessor {
         // ★追加: 未チェックイン部屋の設定を取得
         Map<String, String[]> pendingRoomSettings = getPendingRoomSettings();
 
+        // ★残し部屋(事前設定): メイン画面で設定された残し部屋の部屋番号を取得
+        Set<String> preExcludedRoomNumbers = getPreExcludedRoomNumbers();
+
         // ★デバッグ用カウンター
         int totalLinesProcessed = 0;
         int emptyRoomNumbers = 0;
         int brokenRoomsSkipped = 0;
         int cleaningStatusSkipped = 0;
+        int preExcludedSkipped = 0;  // ★残し部屋(事前設定)による除外数
         int successfullyAdded = 0;
 
         if (!selectedBrokenRooms.isEmpty()) {
             LOGGER.info("清掃対象として選択された故障部屋: " + selectedBrokenRooms.size() + "室");
             selectedBrokenRooms.forEach(room -> LOGGER.info("  - " + room));
+        }
+
+        if (!preExcludedRoomNumbers.isEmpty()) {
+            LOGGER.info("残し部屋(事前設定)として選択された部屋: " + preExcludedRoomNumbers.size() + "室");
+            preExcludedRoomNumbers.forEach(room -> LOGGER.info("  - " + room));
         }
 
         try (BufferedReader reader = new BufferedReader(new FileReader(file, java.nio.charset.StandardCharsets.UTF_8))) {
@@ -334,6 +354,20 @@ public class FileProcessor {
                 // 全部屋マップに追加
                 allRoomsMap.put(roomNumber, room);
 
+                // ★残し部屋(事前設定): チェックアウト部屋（状態2）のみ清掃対象から除外する
+                // ※連泊（状態3）等は安全のため除外対象外とし、警告のみ出力して清掃対象として処理を続行
+                if (preExcludedRoomNumbers.contains(roomNumber)) {
+                    if ("2".equals(roomStatus)) {
+                        preExcludedRooms.add(room);
+                        preExcludedSkipped++;
+                        LOGGER.info("★残し部屋(事前設定): 清掃対象から除外: " + roomNumber + " (" + roomType + ")");
+                        continue;
+                    } else {
+                        LOGGER.warning("残し部屋(事前設定)の部屋 " + roomNumber +
+                                " はチェックアウト（状態2）ではないため除外しません (状態: " + roomStatus + ")");
+                    }
+                }
+
                 // 別館か本館かを判定して対応するリストに追加
                 if (isAnnexRoom(roomNumber)) {
                     LOGGER.info("★成功: 別館部屋を追加: " + roomNumber + " (状態: " + roomStatus + ")" +
@@ -406,8 +440,9 @@ public class FileProcessor {
             LOGGER.info("  - 部屋番号が空: " + emptyRoomNumbers + "行");
             LOGGER.info("  - 故障部屋（未選択）: " + brokenRoomsSkipped + "室");
             LOGGER.info("  - 清掃状態による除外: " + cleaningStatusSkipped + "室");
+            LOGGER.info("  - 残し部屋(事前設定)による除外: " + preExcludedSkipped + "室");
             LOGGER.info("成功追加: " + successfullyAdded + "室");
-            LOGGER.info("合計除外: " + (emptyRoomNumbers + brokenRoomsSkipped + cleaningStatusSkipped) + "室");
+            LOGGER.info("合計除外: " + (emptyRoomNumbers + brokenRoomsSkipped + cleaningStatusSkipped + preExcludedSkipped) + "室");
 
             // エコ清掃の本館・別館を分けて表示
             int ecoMainRooms = 0;
@@ -500,8 +535,9 @@ public class FileProcessor {
             LOGGER.info("  - エコ清掃: " + ecoRooms.size() + "室");
             LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）、4（清掃要）");
             LOGGER.info("  - 未販売部屋（ウォークイン候補）: " + unsoldRooms.size() + "室");
+            LOGGER.info("  - 残し部屋(事前設定): " + preExcludedRooms.size() + "室");
 
-            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, unsoldRooms);
+            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, unsoldRooms, preExcludedRooms);
 
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "部屋データの読み込み中にエラーが発生しました", e);
@@ -529,6 +565,29 @@ public class FileProcessor {
         }
 
         return selectedRooms;
+    }
+
+    /**
+     * ★残し部屋(事前設定): メイン画面で設定された残し部屋の部屋番号をSystemPropertyから取得する
+     * 形式: roomNumber,roomNumber,...
+     */
+    private static Set<String> getPreExcludedRoomNumbers() {
+        Set<String> excludedRooms = new HashSet<>();
+
+        String preExcludedRoomsStr = System.getProperty("preExcludedRooms");
+        if (preExcludedRoomsStr != null && !preExcludedRoomsStr.trim().isEmpty()) {
+            LOGGER.info("システムプロパティから残し部屋(事前設定)情報を取得: " + preExcludedRoomsStr);
+            String[] roomNumbers = preExcludedRoomsStr.split(",");
+            for (String roomNumber : roomNumbers) {
+                if (!roomNumber.trim().isEmpty()) {
+                    excludedRooms.add(roomNumber.trim());
+                }
+            }
+        } else {
+            LOGGER.info("残し部屋(事前設定)はありません");
+        }
+
+        return excludedRooms;
     }
 
     /**

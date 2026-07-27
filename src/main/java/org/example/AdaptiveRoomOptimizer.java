@@ -343,9 +343,81 @@ public class AdaptiveRoomOptimizer {
         return calculateConvertedScore(normalRooms, twinRooms, ecoRooms, linenFloors);
     }
 
+    // ★★リネン庫対象階: 「リネン庫フロア設定」で選択された対象階（未販売階を含む）
+    //   null = 未設定（従来動作: スタッフの清掃担当フロアのみを候補とする）
+    //   非null = 対象階のみを候補とし、清掃担当外の対象階はフェーズ2で割り振る
+    private static Set<Integer> linenTargetFloors = null;
+
+    /**
+     * ★★追加: リネン庫対象階を設定する（nullで従来動作に戻る）
+     */
+    public static void setLinenTargetFloors(Set<Integer> floors) {
+        linenTargetFloors = (floors != null) ? new HashSet<>(floors) : null;
+    }
+
+    /**
+     * ★★追加: 現在のリネン庫対象階を取得（未設定の場合はnull）
+     */
+    public static Set<Integer> getLinenTargetFloors() {
+        return linenTargetFloors != null ? new HashSet<>(linenTargetFloors) : null;
+    }
+
+    /**
+     * ★★追加: リネン庫割り当て結果の通知メッセージを構築する
+     * ・清掃担当外のフロア（未販売階など）をリネン庫担当した場合の通知
+     * ・要求階数に対して割り当てが不足した場合の警告
+     * ログ出力・処理完了時のダイアログ表示に使用する。
+     */
+    public static List<String> buildLinenFloorWarnings(List<StaffAssignment> assignments) {
+        List<String> warns = new ArrayList<>();
+        if (assignments == null) return warns;
+        for (StaffAssignment a : assignments) {
+            if (!a.isLinenClosetCleaning || a.linenClosetFloorCount <= 0) continue;
+            List<Integer> linen = a.getLinenClosetFloors();
+            Set<Integer> cleaning = new HashSet<>(a.floors);
+            List<Integer> external = new ArrayList<>();
+            for (int f : linen) {
+                if (!cleaning.contains(f)) external.add(f);
+            }
+            if (!external.isEmpty()) {
+                Collections.sort(external);
+                Set<Integer> total = new HashSet<>(cleaning);
+                total.addAll(linen);
+                warns.add(String.format("%s: 清掃担当外の%sをリネン庫担当します（移動フロア合計%d階）",
+                        a.staff.name, formatFloorListForDisplay(external), total.size()));
+            }
+            if (linen.size() < a.linenClosetFloorCount) {
+                warns.add(String.format("%s: リネン庫フロアが%d階分不足しています（要求%d階・割当%d階）",
+                        a.staff.name, a.linenClosetFloorCount - linen.size(),
+                        a.linenClosetFloorCount, linen.size()));
+            }
+        }
+        return warns;
+    }
+
+    /** ★★追加: フロア番号リストの表示用整形（別館は内部値+20を実階に変換） */
+    private static String formatFloorListForDisplay(List<Integer> floors) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < floors.size(); i++) {
+            if (i > 0) sb.append(",");
+            int f = floors.get(i);
+            if (f > 20) {
+                sb.append("別館").append(f - 20).append("F");
+            } else {
+                sb.append(f).append("F");
+            }
+        }
+        return sb.toString();
+    }
+
     /**
      * ★★追加: リネン庫担当フロアの割り当て後処理
      * 各リネン庫担当スタッフの清掃担当フロアから、重複なくリネン庫フロアを割り振る
+     * ★★変更: リネン庫対象階（linenTargetFloors）が設定されている場合は2段階方式:
+     *   フェーズ1: 自分の清掃担当階∩対象階の範囲で二部マッチング（従来ロジック・フロア数は増えない）
+     *   フェーズ2: 残った対象階（未販売階など）を、合計フロア数ができるだけ2階以内に収まるよう
+     *              優先順位を付けて割り振る（収まらない場合は許容し、通知メッセージで知らせる）
+     * 対象階が未設定（null）の場合は従来動作のまま。
      */
     public static void assignLinenClosetFloors(List<StaffAssignment> assignments) {
         // リネン庫担当スタッフを抽出
@@ -357,16 +429,34 @@ public class AdaptiveRoomOptimizer {
         }
         if (linenStaff.isEmpty()) return;
 
+        // ★★追加: 対象階のスナップショット（処理中の変更を防ぐ）
+        final Set<Integer> targetFloors = (linenTargetFloors != null)
+                ? new HashSet<>(linenTargetFloors) : null;
+
         LOGGER.info("=== リネン庫担当フロア割り当て開始 ===");
+        if (targetFloors != null) {
+            List<Integer> sortedTarget = new ArrayList<>(targetFloors);
+            Collections.sort(sortedTarget);
+            LOGGER.info("リネン庫対象階: " + formatFloorListForDisplay(sortedTarget)
+                    + "（" + targetFloors.size() + "階）");
+        }
 
         // --- 二部マッチングによる最適割り当て ---
         // スタッフが複数フロアを要求する場合に備え、スロット方式を採用
         // 例: スタッフAが2フロア必要 → スロット(A,0), (A,1) を作成
 
         // 全候補フロアを収集し、インデックス化
+        // ★★変更: 対象階設定時は「清掃担当階∩対象階」に加え、全対象階（未販売階等）も候補に含める
         Set<Integer> allFloorSet = new LinkedHashSet<>();
         for (StaffAssignment staff : linenStaff) {
-            allFloorSet.addAll(staff.floors);
+            for (int f : staff.floors) {
+                if (targetFloors == null || targetFloors.contains(f)) {
+                    allFloorSet.add(f);
+                }
+            }
+        }
+        if (targetFloors != null) {
+            allFloorSet.addAll(targetFloors);
         }
         List<Integer> allFloors = new ArrayList<>(allFloorSet);
         Collections.sort(allFloors);
@@ -417,6 +507,86 @@ public class AdaptiveRoomOptimizer {
             if (slotMatch[s] >= 0) {
                 staffIdxToFloors.computeIfAbsent(staffIdx, k -> new ArrayList<>())
                         .add(allFloors.get(slotMatch[s]));
+            }
+        }
+
+        // ★★追加: フェーズ2（対象階設定時のみ）
+        // フェーズ1で埋まらなかった残りの対象階（未販売階・他スタッフの清掃階など）を、
+        // リネン庫階数に残り枠があるスタッフへ割り振る。
+        // 優先順位: (1)清掃担当階＋リネン庫階の合計が2階以内に収まる組み合わせを最優先
+        //           (2)同条件なら合計フロア数が少なくなる組み合わせ
+        //           (3)同条件なら清掃担当階に近い階（|階差|が最小）
+        // どうしても2階に収まらない場合は許容する（エラーにしない）。
+        if (targetFloors != null) {
+            // 残り対象階（フェーズ1で未マッチのフロア）
+            List<Integer> remainingFloors = new ArrayList<>();
+            for (int fi = 0; fi < numFloors; fi++) {
+                if (floorMatch[fi] < 0) {
+                    remainingFloors.add(allFloors.get(fi));
+                }
+            }
+            Collections.sort(remainingFloors);
+
+            // スタッフごとの充足数と現在のフロア集合（清掃担当階＋割当済みリネン庫階）
+            int staffCount = linenStaff.size();
+            int[] filled = new int[staffCount];
+            List<Set<Integer>> currentFloorsPerStaff = new ArrayList<>();
+            for (int si = 0; si < staffCount; si++) {
+                List<Integer> phase1Floors = staffIdxToFloors.getOrDefault(si, new ArrayList<>());
+                filled[si] = phase1Floors.size();
+                Set<Integer> cf = new HashSet<>(linenStaff.get(si).floors);
+                cf.addAll(phase1Floors);  // フェーズ1割当は清掃担当階の部分集合だが念のため
+                currentFloorsPerStaff.add(cf);
+            }
+
+            while (!remainingFloors.isEmpty()) {
+                int bestStaff = -1;
+                int bestFloor = -1;
+                long bestScore = Long.MAX_VALUE;
+
+                for (int si = 0; si < staffCount; si++) {
+                    if (filled[si] >= linenStaff.get(si).linenClosetFloorCount) continue;
+                    Set<Integer> cf = currentFloorsPerStaff.get(si);
+                    for (int f : remainingFloors) {
+                        int resulting = cf.contains(f) ? cf.size() : cf.size() + 1;
+                        int over = Math.max(0, resulting - 2);
+                        int dist = 0;
+                        if (!cf.isEmpty()) {
+                            int minDist = Integer.MAX_VALUE;
+                            for (int c : cf) {
+                                minDist = Math.min(minDist, Math.abs(c - f));
+                            }
+                            dist = minDist;
+                        }
+                        // 2フロア超過を最優先で回避 → 合計フロア数 → 近さ の順で評価
+                        long score = (long) over * 1_000_000L + (long) resulting * 10_000L + dist;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestStaff = si;
+                            bestFloor = f;
+                        }
+                    }
+                }
+
+                if (bestStaff < 0) {
+                    // 受け手なし（全スタッフの階数枠が充足済み）: 残り対象階にはリネン庫担当なし
+                    LOGGER.info("リネン庫担当の残り枠がないため、以下の対象階にはリネン庫担当を割り当てません: "
+                            + formatFloorListForDisplay(remainingFloors));
+                    break;
+                }
+
+                filled[bestStaff]++;
+                currentFloorsPerStaff.get(bestStaff).add(bestFloor);
+                staffIdxToFloors.computeIfAbsent(bestStaff, k -> new ArrayList<>()).add(bestFloor);
+                remainingFloors.remove(Integer.valueOf(bestFloor));
+
+                StaffAssignment bs = linenStaff.get(bestStaff);
+                boolean isExternal = !bs.floors.contains(bestFloor);
+                LOGGER.info(String.format("  フェーズ2: %s に %s を割り当て%s（合計%dフロア）",
+                        bs.staff.name,
+                        formatFloorListForDisplay(Collections.singletonList(bestFloor)),
+                        isExternal ? "（清掃担当外）" : "",
+                        currentFloorsPerStaff.get(bestStaff).size()));
             }
         }
 

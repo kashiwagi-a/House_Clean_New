@@ -46,6 +46,8 @@ public class RoomAssignmentApplication extends JFrame {
 
     // ★★追加: 階別の手動割り当て（任意機能）
     private Map<String, ManualFloorAssignmentDialog.StaffManual> lastManualLayout = null;
+    // ★★追加: リネン庫対象階の前回選択（同一セッション内でダイアログ再表示時に復元する）
+    private Set<Integer> lastLinenTargetFloors = null;
     private Map<Integer, ManualFloorAssignmentDialog.FloorInv> pendingManualInventory = new HashMap<>();
 
     private Set<String> selectedBrokenRoomsForCleaning = new HashSet<>();
@@ -995,6 +997,26 @@ public class RoomAssignmentApplication extends JFrame {
                         LOGGER.warning("未割当ECOチェックに失敗: " + ecoEx.getMessage());
                     }
 
+                    // ★★追加: リネン庫割り当ての通知
+                    //   清掃担当外の階（未販売階など）をリネン庫担当した場合や、
+                    //   リネン庫フロアが要求階数に対して不足した場合に知らせる
+                    try {
+                        List<String> linenWarns = AdaptiveRoomOptimizer.buildLinenFloorWarnings(
+                                multiResult.getAssignments(0));
+                        if (!linenWarns.isEmpty()) {
+                            for (String warn : linenWarns) {
+                                appendLog("【リネン庫】" + warn);
+                            }
+                            JOptionPane.showMessageDialog(RoomAssignmentApplication.this,
+                                    "リネン庫フロアの割り当てに関するお知らせ:\n\n" +
+                                            String.join("\n", linenWarns),
+                                    "リネン庫割り当ての通知", JOptionPane.WARNING_MESSAGE);
+                        }
+                    } catch (Exception linenEx) {
+                        // 通知計算の失敗は処理結果に影響させない
+                        LOGGER.warning("リネン庫割り当て通知の作成に失敗: " + linenEx.getMessage());
+                    }
+
                 } catch (Exception ex) {
                     String errorMsg = "最適化中にエラーが発生しました: " + ex.getMessage();
                     appendLog("エラー: " + errorMsg);
@@ -1052,6 +1074,10 @@ public class RoomAssignmentApplication extends JFrame {
         int totalAnnexSingleRooms = 0;
         int totalAnnexTwinRooms = 0;
 
+        // ★★追加: リネン庫対象階の選択肢用に、建物の全フロア（未販売階・故障・事前除外含む）を収集
+        Set<Integer> allMainFloorsForLinen = new HashSet<>();
+        Set<Integer> allAnnexFloorsForLinen = new HashSet<>();
+
         try {
             FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
 
@@ -1079,6 +1105,26 @@ public class RoomAssignmentApplication extends JFrame {
 
             // ★★追加: 階別在庫を構築（手動割り当ての階プルダウン・検証用）
             this.pendingManualInventory = ManualFloorAssignmentDialog.buildInventory(cleaningData);
+
+            // ★★追加: 建物の全フロアを収集（清掃対象・故障・未販売・事前除外の全部屋から）
+            //   未販売の階もリネン庫対象階として選択できるようにするため
+            List<List<FileProcessor.Room>> allRoomLists = Arrays.asList(
+                    cleaningData.mainRooms, cleaningData.annexRooms,
+                    cleaningData.brokenRooms, cleaningData.unsoldRooms,
+                    cleaningData.preExcludedRooms);
+            for (List<FileProcessor.Room> roomList : allRoomLists) {
+                if (roomList == null) continue;
+                for (FileProcessor.Room room : roomList) {
+                    if (room.floor <= 0) continue;
+                    if ("別館".equals(room.building)) {
+                        allAnnexFloorsForLinen.add(room.floor);
+                    } else {
+                        allMainFloorsForLinen.add(room.floor);
+                    }
+                }
+            }
+            appendLog(String.format("リネン庫対象階の候補: 本館%d階分, 別館%d階分（未販売階含む）",
+                    allMainFloorsForLinen.size(), allAnnexFloorsForLinen.size()));
 
         } catch (Exception e) {
             totalMainSingleRooms = mainRooms;
@@ -1116,6 +1162,15 @@ public class RoomAssignmentApplication extends JFrame {
             dialog.setAvailableFloors(mainFloors, annexFloors);
         }
 
+        // ★★追加: リネン庫対象階の選択肢（未販売階含む全フロア）を設定
+        //   デフォルトは全階。前回選択がある場合はそれを復元する。
+        if (!allMainFloorsForLinen.isEmpty() || !allAnnexFloorsForLinen.isEmpty()) {
+            dialog.setAllFloorsForLinen(allMainFloorsForLinen, allAnnexFloorsForLinen);
+            if (this.lastLinenTargetFloors != null) {
+                dialog.setLinenTargetFloors(this.lastLinenTargetFloors);
+            }
+        }
+
         // ★★追加: 階別在庫を手動割り当てダイアログへ渡す（階プルダウンの選択肢になる）
         dialog.setManualInventory(this.pendingManualInventory);
 
@@ -1130,6 +1185,16 @@ public class RoomAssignmentApplication extends JFrame {
         if (dialog.getDialogResult()) {
             appendLog("通常清掃部屋の割り振りパターンが設定されました");
             this.lastManualLayout = dialog.getManualLayout();  // ★★追加（未使用なら null）
+
+            // ★★追加: リネン庫対象階を保存し、最適化処理（CP-SAT・後処理）へ反映する
+            //   全フロア情報がない場合は null（従来動作）のまま
+            this.lastLinenTargetFloors = dialog.getLinenTargetFloors();
+            AdaptiveRoomOptimizer.setLinenTargetFloors(this.lastLinenTargetFloors);
+            if (this.lastLinenTargetFloors != null) {
+                appendLog(String.format("リネン庫対象階: %d階（未販売階を含む選択が可能）",
+                        this.lastLinenTargetFloors.size()));
+            }
+
             return dialog.getCurrentDistribution();
         } else {
             if (distributionBackRequested) {

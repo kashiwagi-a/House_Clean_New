@@ -81,6 +81,15 @@ public class NormalRoomDistributionDialog extends JDialog {
     private Set<Integer> availableAnnexFloors = new HashSet<>();
     private int totalAvailableFloors = 0;  // ★★追加: 売れている階の総数（リネン庫用）
 
+    // ★★追加: リネン庫対象階機能
+    //   建物の全フロア（未販売階含む）。別館は内部値（実階+20）で保持する。
+    private Set<Integer> allMainFloorsForLinen = new HashSet<>();
+    private Set<Integer> allAnnexFloorsForLinen = new HashSet<>();
+    //   選択中のリネン庫対象階（null=全フロア情報未設定→従来動作。設定時のデフォルトは全階）
+    private Set<Integer> linenTargetFloors = null;
+    //   ヘッダーの対象階数表示用ラベル
+    private JLabel linenTargetFloorsLabel;
+
     // ★★追加: 階別の手動割り当て（任意機能）
     private Map<Integer, ManualFloorAssignmentDialog.FloorInv> manualInventory = new HashMap<>();
     private Map<String, ManualFloorAssignmentDialog.StaffManual> manualLayout = null;
@@ -419,6 +428,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         availableFloorsLabel = new JLabel("");
         infoPanel.add(availableFloorsLabel);
 
+        // ★★追加: リネン庫対象階数表示 - setAllFloorsForLinen後に更新
+        linenTargetFloorsLabel = new JLabel("");
+        infoPanel.add(linenTargetFloorsLabel);
+
         JPanel selectorPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         selectorPanel.add(new JLabel("割り振りパターン:"));
         patternSelector = new JComboBox<>(PATTERN_LABELS);
@@ -618,9 +631,19 @@ public class NormalRoomDistributionDialog extends JDialog {
             rowPanel.add(linenCheckPanel);
 
             // ★★追加: リネン庫階数スピナー（最大値=売れている階数）
+            // ★★変更: リネン庫対象階が設定されている場合は対象階数を最大値にする
             JPanel linenFloorPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
             linenFloorPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
-            int maxLinenFloors = totalAvailableFloors > 0 ? totalAvailableFloors : 20;
+            int maxLinenFloors;
+            if (linenTargetFloors != null) {
+                maxLinenFloors = linenTargetFloors.size();  // 対象階数（0=対象階なし）
+            } else {
+                maxLinenFloors = totalAvailableFloors > 0 ? totalAvailableFloors : 20;  // 従来動作
+            }
+            // ★★追加: 対象階の変更で最大値が下がった場合は設定値も切り詰める（表示と実値の不一致防止）
+            if (linenTargetFloors != null && staff.linenClosetFloorCount > maxLinenFloors) {
+                staff.linenClosetFloorCount = maxLinenFloors;
+            }
             SpinnerNumberModel linenFloorModel = new SpinnerNumberModel(
                     Math.min(staff.linenClosetFloorCount, maxLinenFloors), 0, maxLinenFloors, 1);
             JSpinner linenFloorSpinner = new JSpinner(linenFloorModel);
@@ -1086,6 +1109,11 @@ public class NormalRoomDistributionDialog extends JDialog {
         manualButton.addActionListener(e -> openManualAssignment());
         panel.add(manualButton);
 
+        // ★★追加: リネン庫フロア設定ボタン（対象階の選択。デフォルトは全階）
+        JButton linenFloorButton = new JButton("リネン庫フロア設定");
+        linenFloorButton.addActionListener(e -> openLinenTargetFloorDialog());
+        panel.add(linenFloorButton);
+
         return panel;
     }
 
@@ -1156,7 +1184,24 @@ public class NormalRoomDistributionDialog extends JDialog {
                 totalLinenFloors += dist.linenClosetFloorCount;
             }
         }
-        if (totalAvailableFloors > 0 && totalLinenFloors > totalAvailableFloors) {
+        // ★★変更: リネン庫対象階が設定されている場合は対象階数との一致をチェック（(a)案）
+        //   超過だけでなく不足も警告する。ただしリネン庫担当が0人の日（totalLinenFloors=0）は
+        //   「リネン庫を割り振らない日」として警告しない。
+        if (linenTargetFloors != null) {
+            int linenTargetCount = linenTargetFloors.size();
+            if (totalLinenFloors > 0) {
+                if (totalLinenFloors > linenTargetCount) {
+                    warnings.add(String.format(
+                            "リネン庫担当の合計階数(%d)がリネン庫対象階数(%d)を超えています",
+                            totalLinenFloors, linenTargetCount));
+                } else if (totalLinenFloors < linenTargetCount) {
+                    warnings.add(String.format(
+                            "リネン庫担当の合計階数(%d)がリネン庫対象階数(%d)より少ないため、リネン庫を担当しない階が発生します",
+                            totalLinenFloors, linenTargetCount));
+                }
+            }
+        } else if (totalAvailableFloors > 0 && totalLinenFloors > totalAvailableFloors) {
+            // 従来動作（対象階未設定時）
             warnings.add(String.format("リネン庫担当の合計階数(%d)が売れている階数(%d)を超えています",
                     totalLinenFloors, totalAvailableFloors));
         }
@@ -2560,7 +2605,9 @@ public class NormalRoomDistributionDialog extends JDialog {
             }
         }
         String linenInfo = "";
-        int totalFloors = totalAvailableFloors > 0 ? totalAvailableFloors : 15;
+        // ★★変更: リネン庫対象階が設定されている場合は対象階数を分母にする
+        int totalFloors = (linenTargetFloors != null) ? linenTargetFloors.size()
+                : (totalAvailableFloors > 0 ? totalAvailableFloors : 15);
         if (totalLinenFloorCount > 0) {
             linenInfo = String.format(" | リネン庫: %d/%d", totalLinenFloorCount, totalFloors);
         }
@@ -2772,5 +2819,172 @@ public class NormalRoomDistributionDialog extends JDialog {
         }
         // ★★追加: フロア情報更新後にUIを再描画（リネン庫スピナー最大値を反映）
         updateDataPanel();
+    }
+
+    // =====================================================================
+    // ★★追加: リネン庫対象階機能
+    // =====================================================================
+
+    /**
+     * ★★追加: 建物の全フロア（未販売階を含む）を設定する。
+     * リネン庫対象階の選択肢になる。デフォルトの対象階は全階。
+     * @param mainFloors 本館の全フロア番号セット
+     * @param annexFloors 別館の全フロア番号セット（内部値: 実階+20）
+     */
+    public void setAllFloorsForLinen(Set<Integer> mainFloors, Set<Integer> annexFloors) {
+        this.allMainFloorsForLinen = mainFloors != null ? new HashSet<>(mainFloors) : new HashSet<>();
+        this.allAnnexFloorsForLinen = annexFloors != null ? new HashSet<>(annexFloors) : new HashSet<>();
+        Set<Integer> all = new HashSet<>(allMainFloorsForLinen);
+        all.addAll(allAnnexFloorsForLinen);
+        if (all.isEmpty()) {
+            this.linenTargetFloors = null;  // フロア情報なし → 従来動作
+        } else if (this.linenTargetFloors == null) {
+            this.linenTargetFloors = all;   // ★デフォルト: 全階
+        } else {
+            this.linenTargetFloors.retainAll(all);  // 存在しない階を除去
+        }
+        updateLinenTargetFloorsLabel();
+        updateDataPanel();
+    }
+
+    /**
+     * ★★追加: リネン庫対象階を外部から設定する（前回選択の復元用）。
+     * setAllFloorsForLinen の後に呼ぶこと。null指定は無視（デフォルト全階のまま）。
+     */
+    public void setLinenTargetFloors(Set<Integer> floors) {
+        if (floors == null) return;
+        Set<Integer> all = new HashSet<>(allMainFloorsForLinen);
+        all.addAll(allAnnexFloorsForLinen);
+        Set<Integer> sel = new HashSet<>(floors);
+        if (!all.isEmpty()) {
+            sel.retainAll(all);  // 選択肢に存在しない階を除去
+        }
+        this.linenTargetFloors = sel;
+        updateLinenTargetFloorsLabel();
+        updateDataPanel();
+    }
+
+    /**
+     * ★★追加: 選択中のリネン庫対象階を取得する。
+     * 全フロア情報が設定されていない場合は null（従来動作: 清掃担当フロアのみ候補）を返す。
+     */
+    public Set<Integer> getLinenTargetFloors() {
+        return linenTargetFloors != null ? new HashSet<>(linenTargetFloors) : null;
+    }
+
+    /** ★★追加: リネン庫対象階数（未設定時は0） */
+    private int getLinenTargetFloorCount() {
+        return linenTargetFloors != null ? linenTargetFloors.size() : 0;
+    }
+
+    /** ★★追加: ヘッダーのリネン庫対象階数表示を更新 */
+    private void updateLinenTargetFloorsLabel() {
+        if (linenTargetFloorsLabel == null) return;
+        if (linenTargetFloors == null) {
+            linenTargetFloorsLabel.setText("");
+            return;
+        }
+        int all = allMainFloorsForLinen.size() + allAnnexFloorsForLinen.size();
+        linenTargetFloorsLabel.setText(String.format(" | リネン庫対象: %d/%d階",
+                linenTargetFloors.size(), all));
+    }
+
+    /**
+     * ★★追加: リネン庫フロア設定ダイアログを開く。
+     * 建物の全フロア（未販売階含む）をチェックボックスで表示し、対象階を選択する。
+     * デフォルトは全階チェック済み。チェックを外した階にはリネン庫担当を割り振らない。
+     */
+    private void openLinenTargetFloorDialog() {
+        Set<Integer> all = new HashSet<>(allMainFloorsForLinen);
+        all.addAll(allAnnexFloorsForLinen);
+        if (all.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "フロア情報がまだ読み込まれていないため、リネン庫フロア設定を開けません。",
+                    "リネン庫フロア設定", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        JDialog dlg = new JDialog(this, "リネン庫フロア設定", true);
+        dlg.setLayout(new BorderLayout());
+
+        JLabel info = new JLabel("<html><div style='padding:8px;'>" +
+                "リネン庫清掃の対象階を選択してください（未販売の階も選択できます）。<br>" +
+                "デフォルトは全階です。チェックを外した階にはリネン庫担当を割り振りません。</div></html>");
+        dlg.add(info, BorderLayout.NORTH);
+
+        Map<Integer, JCheckBox> boxes = new LinkedHashMap<>();
+        JPanel center = new JPanel();
+        center.setLayout(new BoxLayout(center, BoxLayout.Y_AXIS));
+
+        Set<Integer> current = (linenTargetFloors != null) ? linenTargetFloors : all;
+
+        if (!allMainFloorsForLinen.isEmpty()) {
+            JPanel mainPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+            mainPanel.setBorder(BorderFactory.createTitledBorder("本館"));
+            List<Integer> mains = new ArrayList<>(allMainFloorsForLinen);
+            Collections.sort(mains);
+            for (int f : mains) {
+                JCheckBox cb = new JCheckBox(f + "階", current.contains(f));
+                boxes.put(f, cb);
+                mainPanel.add(cb);
+            }
+            center.add(mainPanel);
+        }
+        if (!allAnnexFloorsForLinen.isEmpty()) {
+            JPanel annexPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+            annexPanel.setBorder(BorderFactory.createTitledBorder("別館"));
+            List<Integer> annexes = new ArrayList<>(allAnnexFloorsForLinen);
+            Collections.sort(annexes);
+            for (int f : annexes) {
+                int actual = f > 20 ? f - 20 : f;  // 内部値→実階（別館2F=22等）
+                JCheckBox cb = new JCheckBox(actual + "階", current.contains(f));
+                boxes.put(f, cb);
+                annexPanel.add(cb);
+            }
+            center.add(annexPanel);
+        }
+
+        JScrollPane scroll = new JScrollPane(center);
+        scroll.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+        dlg.add(scroll, BorderLayout.CENTER);
+
+        JPanel buttons = new JPanel(new FlowLayout());
+        JButton selectAllButton = new JButton("全て選択");
+        selectAllButton.addActionListener(e -> boxes.values().forEach(cb -> cb.setSelected(true)));
+        buttons.add(selectAllButton);
+
+        JButton deselectAllButton = new JButton("全て解除");
+        deselectAllButton.addActionListener(e -> boxes.values().forEach(cb -> cb.setSelected(false)));
+        buttons.add(deselectAllButton);
+
+        JButton okButton = new JButton("OK");
+        okButton.addActionListener(e -> {
+            Set<Integer> selected = new HashSet<>();
+            for (Map.Entry<Integer, JCheckBox> en : boxes.entrySet()) {
+                if (en.getValue().isSelected()) {
+                    selected.add(en.getKey());
+                }
+            }
+            linenTargetFloors = selected;
+            updateLinenTargetFloorsLabel();
+            updateDataPanel();  // リネン庫階数スピナーの最大値・サマリーを更新
+            dlg.dispose();
+        });
+        buttons.add(okButton);
+
+        JButton cancelButton = new JButton("キャンセル");
+        cancelButton.addActionListener(e -> dlg.dispose());
+        buttons.add(cancelButton);
+
+        dlg.add(buttons, BorderLayout.SOUTH);
+
+        dlg.pack();
+        // 画面からはみ出さないよう高さを制限
+        Dimension size = dlg.getSize();
+        if (size.height > 500) {
+            dlg.setSize(size.width, 500);
+        }
+        dlg.setLocationRelativeTo(this);
+        dlg.setVisible(true);
     }
 }

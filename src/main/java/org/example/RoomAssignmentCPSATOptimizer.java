@@ -359,6 +359,13 @@ public class RoomAssignmentCPSATOptimizer {
         LinenDemandSplit split = new LinenDemandSplit();
         if (config == null || config.roomDistribution == null) return split;
 
+        // ★★追加: リネン庫対象階モード（対象階が設定されている場合）
+        //   このモードでは要求超過をエラーにせず、CP-SATに渡す「モデル内要求」を実現可能な範囲に
+        //   自動調整する。調整で削られた分は後処理（assignLinenClosetFloors のフェーズ2）が
+        //   残りの対象階（未販売階など）から割り振るため、要求そのものが失われることはない。
+        //   対象階が未設定（null）の場合は従来動作のまま（調整なし・従来どおりのエラー判定）。
+        final boolean externalAllowed = AdaptiveRoomOptimizer.getLinenTargetFloors() != null;
+
         List<AdaptiveRoomOptimizer.ExtendedStaffInfo> crossStaff = new ArrayList<>();
 
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo info : config.extendedStaffInfo) {
@@ -366,18 +373,51 @@ public class RoomAssignmentCPSATOptimizer {
             String name = info.staff.name;
             NormalRoomDistributionDialog.StaffDistribution dist = config.roomDistribution.get(name);
             if (dist == null) {
-                split.errors.add(String.format(
-                        "%s: 部屋割り振り設定がないためリネン庫フロアを確保できません", name));
+                if (externalAllowed) {
+                    // ★★対象階モード: モデル内要求0（全て後処理で対象階から割り振る）
+                    LOGGER.info(String.format(
+                            "リネン庫: %s は部屋割り振り設定がないため、全%d階分を後処理で対象階から割り振ります",
+                            name, info.linenClosetFloorCount));
+                } else {
+                    split.errors.add(String.format(
+                            "%s: 部屋割り振り設定がないためリネン庫フロアを確保できません", name));
+                }
                 continue;
             }
             int mainR = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
             int annexR = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
             int demand = info.linenClosetFloorCount;
 
+            // ★★追加: 対象階モードでは、モデル内要求を担当可能な最大フロア数までに制限
+            //   （緩和ステップまで考慮した上限。validateLinenClosetFeasibility と同じ値）
+            if (externalAllowed) {
+                AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(name);
+                boolean isVendor = pc != null && pc.constraintType != null
+                        && (pc.constraintType.contains("業者") || pc.constraintType.contains("リライアンス"));
+                boolean isBath = info.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE;
+                int maxPerBuilding;
+                if (isVendor)    maxPerBuilding = 5;
+                else if (isBath) maxPerBuilding = 2;
+                else             maxPerBuilding = 3;
+                if (demand > maxPerBuilding) {
+                    LOGGER.info(String.format(
+                            "リネン庫: %s の要求%d階分のうち、モデル内は%d階分に制限（残りは後処理で対象階から割り振り）",
+                            name, demand, maxPerBuilding));
+                    demand = maxPerBuilding;
+                }
+            }
+
             if (mainR == 0 && annexR == 0) {
-                split.errors.add(String.format(
-                        "%s: 通常室の割り振りがないためリネン庫フロア（%d階分）を確保できません",
-                        name, demand));
+                if (externalAllowed) {
+                    // ★★対象階モード: モデル内要求0（全て後処理で対象階から割り振る）
+                    LOGGER.info(String.format(
+                            "リネン庫: %s は通常室の割り振りがないため、全%d階分を後処理で対象階から割り振ります",
+                            name, info.linenClosetFloorCount));
+                } else {
+                    split.errors.add(String.format(
+                            "%s: 通常室の割り振りがないためリネン庫フロア（%d階分）を確保できません",
+                            name, demand));
+                }
             } else if (mainR > 0 && annexR == 0) {
                 split.mainDemand.put(name, demand);
             } else if (annexR > 0 && mainR == 0) {
@@ -392,9 +432,16 @@ public class RoomAssignmentCPSATOptimizer {
             String name = info.staff.name;
             int demand = info.linenClosetFloorCount;
             if (demand > 2) {
-                split.errors.add(String.format(
-                        "%s: 本館・別館の両方を担当するスタッフは各館1フロアまでのため、リネン庫は最大2階分です（要求: %d階分）",
-                        name, demand));
+                if (externalAllowed) {
+                    // ★★対象階モード: エラーにせず2階分に制限（残りは後処理で対象階から割り振り）
+                    LOGGER.info(String.format(
+                            "リネン庫: %s（本館・別館跨ぎ）の要求%d階分のうち、モデル内は2階分に制限（残りは後処理）",
+                            name, demand));
+                } else {
+                    split.errors.add(String.format(
+                            "%s: 本館・別館の両方を担当するスタッフは各館1フロアまでのため、リネン庫は最大2階分です（要求: %d階分）",
+                            name, demand));
+                }
                 demand = 2;
             }
             if (demand >= 2) {
@@ -413,7 +460,66 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
+        // ★★追加: 対象階モードでは、建物ごとのモデル内要求合計をリネン庫可能な階数
+        //   （売れている階∩対象階の数）以内に自動調整する。
+        //   削減は要求の大きいスタッフから順に1階分ずつ行う（削減分は後処理へ）。
+        if (externalAllowed) {
+            reduceDemandToCapacity(split.mainDemand, mainFloorCount, "本館");
+            reduceDemandToCapacity(split.annexDemand, annexFloorCount, "別館");
+        }
+
         return split;
+    }
+
+    /**
+     * ★★追加: 建物内でリネン庫のハード制約に使用できる階数を数える。
+     * リネン庫対象階が設定されている場合は「売れている階∩対象階」の数、
+     * 未設定（従来動作）の場合は売れている階数そのものを返す。
+     */
+    private static int countLinenTargetCapacity(List<AdaptiveRoomOptimizer.FloorInfo> floors) {
+        if (floors == null) return 0;
+        Set<Integer> target = AdaptiveRoomOptimizer.getLinenTargetFloors();
+        if (target == null) return floors.size();
+        int count = 0;
+        for (AdaptiveRoomOptimizer.FloorInfo fi : floors) {
+            if (target.contains(fi.floorNumber)) count++;
+        }
+        return count;
+    }
+
+    /**
+     * ★★追加: モデル内リネン庫要求の合計が建物のリネン庫可能階数を超える場合、
+     * 要求の大きいスタッフ（同数なら名前順）から1階分ずつ削減して収める。
+     * 削減された分は後処理（フェーズ2）で対象階から割り振られる。
+     */
+    private static void reduceDemandToCapacity(Map<String, Integer> demandMap,
+                                               int capacity, String buildingName) {
+        if (demandMap == null || capacity < 0) return;
+        int total = demandMap.values().stream().mapToInt(Integer::intValue).sum();
+        while (total > capacity) {
+            String target = null;
+            int maxDemand = -1;
+            List<String> names = new ArrayList<>(demandMap.keySet());
+            Collections.sort(names);  // 決定的な順序のため名前順
+            for (String name : names) {
+                int d = demandMap.get(name);
+                if (d > maxDemand) {
+                    maxDemand = d;
+                    target = name;
+                }
+            }
+            if (target == null || maxDemand <= 0) break;
+            int newVal = maxDemand - 1;
+            if (newVal <= 0) {
+                demandMap.remove(target);
+            } else {
+                demandMap.put(target, newVal);
+            }
+            total--;
+            LOGGER.info(String.format(
+                    "リネン庫: %sのモデル内要求合計が上限(%d階)を超えるため、%s の要求を%d階分に調整（残りは後処理）",
+                    buildingName, capacity, target, newVal));
+        }
     }
 
     /**
@@ -427,6 +533,15 @@ public class RoomAssignmentCPSATOptimizer {
 
         List<String> errors = new ArrayList<>();
         if (config == null || config.roomDistribution == null) return errors;
+
+        // ★★追加: リネン庫対象階モードでは事前エラーチェックを行わない。
+        //   売れている階数を超える要求や清掃担当を持たないスタッフの要求は、
+        //   computeLinenDemandSplit の自動調整と後処理（フェーズ2）が対象階から
+        //   割り振るため、処理を中止すべき致命的エラーにはならない。
+        //   （不足が生じた場合は処理完了時に通知メッセージで知らせる）
+        if (AdaptiveRoomOptimizer.getLinenTargetFloors() != null) {
+            return errors;
+        }
 
         LinenDemandSplit split = computeLinenDemandSplit(config, mainFloorCount, annexFloorCount);
         errors.addAll(split.errors);
@@ -637,8 +752,12 @@ public class RoomAssignmentCPSATOptimizer {
 
         // ★★追加: リネン庫担当フロアのハード制約用に、要求階数を本館・別館へ振り分け
         // 振り分けにエラーがある場合は制約を適用せず従来動作（後処理マッチングのみ）にフォールバック
+        // ★★変更: リネン庫対象階モードでは「売れている階∩対象階」の数を上限として渡す
+        //   （対象階が未設定の場合は従来どおり売れている階数そのもの）
         LinenDemandSplit linenSplit = computeLinenDemandSplit(
-                config, buildingData.mainFloors.size(), buildingData.annexFloors.size());
+                config,
+                countLinenTargetCapacity(buildingData.mainFloors),
+                countLinenTargetCapacity(buildingData.annexFloors));
         Map<String, Integer> mainLinenDemand;
         Map<String, Integer> annexLinenDemand;
         if (linenSplit.errors.isEmpty()) {
@@ -908,8 +1027,12 @@ public class RoomAssignmentCPSATOptimizer {
 
         // ★★追加: リネン庫担当フロアのハード制約用に、要求階数を本館・別館へ振り分け
         // 振り分けにエラーがある場合は制約を適用せず従来動作（後処理マッチングのみ）にフォールバック
+        // ★★変更: リネン庫対象階モードでは「売れている階∩対象階」の数を上限として渡す
+        //   （対象階が未設定の場合は従来どおり売れている階数そのもの）
         LinenDemandSplit linenSplit = computeLinenDemandSplit(
-                config, buildingData.mainFloors.size(), buildingData.annexFloors.size());
+                config,
+                countLinenTargetCapacity(buildingData.mainFloors),
+                countLinenTargetCapacity(buildingData.annexFloors));
         Map<String, Integer> mainLinenDemand;
         Map<String, Integer> annexLinenDemand;
         if (linenSplit.errors.isEmpty()) {
@@ -1534,6 +1657,9 @@ public class RoomAssignmentCPSATOptimizer {
         // 本制約により実現可能なレイアウトのみが解となるため、後処理のマッチングは必ず全要求を満たせる。
         Map<String, List<BoolVar>> floorLinenVars = new HashMap<>();  // floorNumber文字列 → 当該フロアのl変数群
         if (linenFloorDemand != null && !linenFloorDemand.isEmpty()) {
+            // ★★追加: リネン庫対象階が設定されている場合、対象外のフロアにはリネン庫変数を作らない
+            //   （対象階のみがリネン庫担当フロアの候補になる。未設定時は従来どおり全フロア）
+            final Set<Integer> linenTargetSet = AdaptiveRoomOptimizer.getLinenTargetFloors();
             for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
                 String staffName = staffInfo.staff.name;
                 Integer demand = linenFloorDemand.get(staffName);
@@ -1541,6 +1667,8 @@ public class RoomAssignmentCPSATOptimizer {
 
                 List<BoolVar> staffLinenVars = new ArrayList<>();
                 for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
+                    // ★★追加: 対象外フロアはリネン庫候補にしない
+                    if (linenTargetSet != null && !linenTargetSet.contains(floor.floorNumber)) continue;
                     String yVarName = String.format("y_%s_%d", staffName, floor.floorNumber);
                     BoolVar yVar = yVars.get(yVarName);
                     if (yVar == null) continue;

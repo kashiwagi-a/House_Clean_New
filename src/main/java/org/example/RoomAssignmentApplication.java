@@ -1863,7 +1863,7 @@ public class RoomAssignmentApplication extends JFrame {
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
-                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+                UIManager.sethLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
                 // デフォルトのルック&フィールを使用
             }

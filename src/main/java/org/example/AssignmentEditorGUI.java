@@ -7,6 +7,7 @@ import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.time.format.DateTimeFormatter;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import org.apache.poi.ss.usermodel.*;
@@ -1134,6 +1135,11 @@ public class AssignmentEditorGUI extends JFrame {
         JButton exportButton = new JButton("Excel出力");
         exportButton.addActionListener(e -> exportToExcel());
         buttonPanel.add(exportButton);
+
+        // ★新規: 清掃指示書（原本）のコピーへ「本日清掃」タブを出力するボタン
+        JButton instructionExportButton = new JButton("指示書出力");
+        instructionExportButton.addActionListener(e -> exportToInstructionTemplate());
+        buttonPanel.add(instructionExportButton);
 
         JButton finishButton = new JButton("完了");
         finishButton.addActionListener(e -> finishEditing());
@@ -3112,103 +3118,220 @@ public class AssignmentEditorGUI extends JFrame {
         try (XSSFWorkbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet(SHEET_NAME);
 
-            // ソート済みスタッフリストを取得
-            List<StaffData> sortedStaff = getSortedStaffList();
+            // シートへのデータ書き込み（共通処理・従来と同一の出力内容）
+            writeCleaningSheetData(workbook, sheet, true);
 
-            // エコ列スタイル（水色）
-            XSSFCellStyle ecoStyle = workbook.createCellStyle();
-            ecoStyle.setFillForegroundColor(new XSSFColor(new byte[]{(byte)173, (byte)216, (byte)230}, null));
-            ecoStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-            ecoStyle.setAlignment(HorizontalAlignment.CENTER);
+            // ファイルに保存
+            try (FileOutputStream fos = new FileOutputStream(filePath)) {
+                workbook.write(fos);
+            }
+        }
+    }
 
-            // 通常清掃列スタイル（薄緑）
-            XSSFCellStyle normalStyle = workbook.createCellStyle();
-            normalStyle.setFillForegroundColor(new XSSFColor(new byte[]{(byte)198, (byte)239, (byte)206}, null));
-            normalStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
-            normalStyle.setAlignment(HorizontalAlignment.CENTER);
+    /**
+     * ★新規: 「本日清掃」データをシートへ書き込む共通処理。
+     * 従来のcreateCleaningExcelFileの本体をそのまま抽出したもので、出力内容は従来と同一。
+     * @param workbook 書き込み先ワークブック（新規ブック／原本コピーの両方に対応）
+     * @param sheet 書き込み先シート
+     * @param adjustColumnWidths 列幅調整を行うか（新規ブック=true、原本コピー=false: 原本の列幅を維持）
+     */
+    private void writeCleaningSheetData(XSSFWorkbook workbook, Sheet sheet, boolean adjustColumnWidths) {
 
-            int currentRow = 0;  // 現在の行（0始まり）
+        // ソート済みスタッフリストを取得
+        List<StaffData> sortedStaff = getSortedStaffList();
 
-            for (StaffData staff : sortedStaff) {
-                // 担当者が変わる場合、次のセット境界に移動
-                if (!isAtSetBoundary(currentRow)) {
-                    currentRow = getNextSetBoundary(currentRow);
-                }
+        // エコ列スタイル（水色）
+        XSSFCellStyle ecoStyle = workbook.createCellStyle();
+        ecoStyle.setFillForegroundColor(new XSSFColor(new byte[]{(byte)173, (byte)216, (byte)230}, null));
+        ecoStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        ecoStyle.setAlignment(HorizontalAlignment.CENTER);
 
-                // 部屋を通常清掃とEcoに分類
-                List<FileProcessor.Room> normalRooms = new ArrayList<>();
-                List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+        // 通常清掃列スタイル（薄緑）
+        XSSFCellStyle normalStyle = workbook.createCellStyle();
+        normalStyle.setFillForegroundColor(new XSSFColor(new byte[]{(byte)198, (byte)239, (byte)206}, null));
+        normalStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        normalStyle.setAlignment(HorizontalAlignment.CENTER);
 
-                if (staff.detailedRoomsByFloor != null) {
-                    for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
-                        for (FileProcessor.Room room : rooms) {
-                            if (room.isEcoClean) {
-                                ecoRooms.add(room);
-                            } else {
-                                normalRooms.add(room);
-                            }
+        int currentRow = 0;  // 現在の行（0始まり）
+
+        for (StaffData staff : sortedStaff) {
+            // 担当者が変わる場合、次のセット境界に移動
+            if (!isAtSetBoundary(currentRow)) {
+                currentRow = getNextSetBoundary(currentRow);
+            }
+
+            // 部屋を通常清掃とEcoに分類
+            List<FileProcessor.Room> normalRooms = new ArrayList<>();
+            List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+
+            if (staff.detailedRoomsByFloor != null) {
+                for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                    for (FileProcessor.Room room : rooms) {
+                        if (room.isEcoClean) {
+                            ecoRooms.add(room);
+                        } else {
+                            normalRooms.add(room);
                         }
                     }
                 }
+            }
 
-                // 部屋番号順にソート
-                normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
-                ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
+            // 部屋番号順にソート
+            normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
+            ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
 
-                // スタッフの最初の行を記録（リネン担当階を書き込むため）
-                int staffFirstRow = currentRow;
+            // スタッフの最初の行を記録（リネン担当階を書き込むため）
+            int staffFirstRow = currentRow;
 
-                // 通常清掃部屋を出力
-                for (FileProcessor.Room room : normalRooms) {
+            // 通常清掃部屋を出力
+            for (FileProcessor.Room room : normalRooms) {
+                Row row = sheet.createRow(currentRow);
+                writeRoomData(row, staff.name, room);
+                currentRow++;
+            }
+
+            // Eco部屋がある場合、1行空けて出力
+            if (!ecoRooms.isEmpty()) {
+                if (!normalRooms.isEmpty()) {
+                    currentRow++;  // 空行
+                }
+                for (FileProcessor.Room room : ecoRooms) {
                     Row row = sheet.createRow(currentRow);
                     writeRoomData(row, staff.name, room);
                     currentRow++;
                 }
+            }
 
-                // Eco部屋がある場合、1行空けて出力
-                if (!ecoRooms.isEmpty()) {
-                    if (!normalRooms.isEmpty()) {
+            // E列: リネン担当階（スタッフの最初の行に出力）
+            if (staff.isLinenClosetCleaning && staff.linenClosetFloors != null
+                    && !staff.linenClosetFloors.isEmpty()) {
+                Row firstRow = sheet.getRow(staffFirstRow);
+                if (firstRow != null) {
+                    Cell cellLinen = firstRow.createCell(4);
+                    // 階番号をソートして "2,8F" 形式で出力
+                    List<Integer> sortedFloors = new ArrayList<>(staff.linenClosetFloors);
+                    Collections.sort(sortedFloors);
+                    StringBuilder floorSb = new StringBuilder();
+                    for (int i = 0; i < sortedFloors.size(); i++) {
+                        if (i > 0) floorSb.append(",");
+                        int f = sortedFloors.get(i);
+                        if (f > 20) {
+                            floorSb.append("別").append(f - 20);
+                        } else {
+                            floorSb.append(f);
+                        }
+                    }
+                    floorSb.append("F");
+                    cellLinen.setCellValue(floorSb.toString());
+                }
+            }
+
+            // スタッフ最初の行を取得（集計出力用）
+            Row firstRow = sheet.getRow(staffFirstRow);
+            if (firstRow == null) firstRow = sheet.createRow(staffFirstRow);
+
+            // F〜I列: エコ部屋タイプ別カウント（水色）
+            {
+                int ecoS = 0, ecoT = 0, ecoD = 0, ecoFD = 0;
+                for (FileProcessor.Room room : ecoRooms) {
+                    switch (room.roomType) {
+                        case "S": case "NS": case "ANS": case "ABF": case "AKS": ecoS++; break;
+                        case "T": case "NT": case "ANT": case "ADT": ecoT++; break;
+                        case "D": case "ND": case "AND": ecoD++; break;
+                        case "FD": ecoFD++; break;
+                    }
+                }
+                if (ecoS > 0)  { Cell c = firstRow.createCell(5); c.setCellValue(ecoS);  c.setCellStyle(ecoStyle); }
+                if (ecoT > 0)  { Cell c = firstRow.createCell(6); c.setCellValue(ecoT);  c.setCellStyle(ecoStyle); }
+                if (ecoD > 0)  { Cell c = firstRow.createCell(7); c.setCellValue(ecoD);  c.setCellStyle(ecoStyle); }
+                if (ecoFD > 0) { Cell c = firstRow.createCell(8); c.setCellValue(ecoFD); c.setCellStyle(ecoStyle); }
+            }
+
+            // J〜M列: 通常清掃部屋タイプ別カウント（薄緑）
+            {
+                int normS = 0, normT = 0, normD = 0, normFD = 0;
+                for (FileProcessor.Room room : normalRooms) {
+                    switch (room.roomType) {
+                        case "S": case "NS": case "ANS": case "ABF": case "AKS": normS++; break;
+                        case "T": case "NT": case "ANT": case "ADT": normT++; break;
+                        case "D": case "ND": case "AND": normD++; break;
+                        case "FD": normFD++; break;
+                    }
+                }
+                if (normS > 0)  { Cell c = firstRow.createCell(9);  c.setCellValue(normS);  c.setCellStyle(normalStyle); }
+                if (normT > 0)  { Cell c = firstRow.createCell(10); c.setCellValue(normT);  c.setCellStyle(normalStyle); }
+                if (normD > 0)  { Cell c = firstRow.createCell(11); c.setCellValue(normD);  c.setCellStyle(normalStyle); }
+                if (normFD > 0) { Cell c = firstRow.createCell(12); c.setCellValue(normFD); c.setCellStyle(normalStyle); }
+            }
+        }
+
+        // ★新規: 残し部屋ブロックの出力（全スタッフの後・最終セット）
+        // 対象: 残し部屋設定(excludedRooms) + 未割り当て発(unassignedExcludedRooms) の両方
+        Set<String> allExcludedRoomNumbers = new HashSet<>(excludedRooms);
+        allExcludedRoomNumbers.addAll(unassignedExcludedRooms);
+
+        if (!allExcludedRoomNumbers.isEmpty() && processingResult.cleaningDataObj != null) {
+            // Roomオブジェクトを収集（roomsToCleanから参照）し、通常清掃とEcoに分類
+            // ★残し部屋(事前設定): 事前除外部屋はroomsToCleanに含まれないため、検索対象に追加する
+            List<FileProcessor.Room> excludedSearchPool =
+                    new ArrayList<>(processingResult.cleaningDataObj.roomsToClean);
+            if (processingResult.cleaningDataObj.preExcludedRooms != null) {
+                excludedSearchPool.addAll(processingResult.cleaningDataObj.preExcludedRooms);
+            }
+
+            List<FileProcessor.Room> excludedNormalRooms = new ArrayList<>();
+            List<FileProcessor.Room> excludedEcoRooms = new ArrayList<>();
+
+            for (FileProcessor.Room room : excludedSearchPool) {
+                if (allExcludedRoomNumbers.contains(room.roomNumber)) {
+                    if (room.isEcoClean) {
+                        excludedEcoRooms.add(room);
+                    } else {
+                        excludedNormalRooms.add(room);
+                    }
+                }
+            }
+
+            if (!excludedNormalRooms.isEmpty() || !excludedEcoRooms.isEmpty()) {
+                // 次のセット境界に移動（スタッフ出力と同じ規則）
+                if (!isAtSetBoundary(currentRow)) {
+                    currentRow = getNextSetBoundary(currentRow);
+                }
+
+                // 部屋番号順にソート
+                excludedNormalRooms.sort(Comparator.comparing(r -> r.roomNumber));
+                excludedEcoRooms.sort(Comparator.comparing(r -> r.roomNumber));
+
+                // ブロックの最初の行を記録（集計出力用）
+                int excludedFirstRow = currentRow;
+
+                // 通常清掃部屋を出力（A列の担当名は「残し部屋」）
+                for (FileProcessor.Room room : excludedNormalRooms) {
+                    Row row = sheet.createRow(currentRow);
+                    writeRoomData(row, "残し部屋", room);
+                    currentRow++;
+                }
+
+                // Eco部屋がある場合、1行空けて出力（スタッフ出力と同形式）
+                if (!excludedEcoRooms.isEmpty()) {
+                    if (!excludedNormalRooms.isEmpty()) {
                         currentRow++;  // 空行
                     }
-                    for (FileProcessor.Room room : ecoRooms) {
+                    for (FileProcessor.Room room : excludedEcoRooms) {
                         Row row = sheet.createRow(currentRow);
-                        writeRoomData(row, staff.name, room);
+                        writeRoomData(row, "残し部屋", room);
                         currentRow++;
                     }
                 }
 
-                // E列: リネン担当階（スタッフの最初の行に出力）
-                if (staff.isLinenClosetCleaning && staff.linenClosetFloors != null
-                        && !staff.linenClosetFloors.isEmpty()) {
-                    Row firstRow = sheet.getRow(staffFirstRow);
-                    if (firstRow != null) {
-                        Cell cellLinen = firstRow.createCell(4);
-                        // 階番号をソートして "2,8F" 形式で出力
-                        List<Integer> sortedFloors = new ArrayList<>(staff.linenClosetFloors);
-                        Collections.sort(sortedFloors);
-                        StringBuilder floorSb = new StringBuilder();
-                        for (int i = 0; i < sortedFloors.size(); i++) {
-                            if (i > 0) floorSb.append(",");
-                            int f = sortedFloors.get(i);
-                            if (f > 20) {
-                                floorSb.append("別").append(f - 20);
-                            } else {
-                                floorSb.append(f);
-                            }
-                        }
-                        floorSb.append("F");
-                        cellLinen.setCellValue(floorSb.toString());
-                    }
-                }
-
-                // スタッフ最初の行を取得（集計出力用）
-                Row firstRow = sheet.getRow(staffFirstRow);
-                if (firstRow == null) firstRow = sheet.createRow(staffFirstRow);
+                // ブロック最初の行を取得（集計出力用）
+                Row excludedHeadRow = sheet.getRow(excludedFirstRow);
+                if (excludedHeadRow == null) excludedHeadRow = sheet.createRow(excludedFirstRow);
 
                 // F〜I列: エコ部屋タイプ別カウント（水色）
                 {
                     int ecoS = 0, ecoT = 0, ecoD = 0, ecoFD = 0;
-                    for (FileProcessor.Room room : ecoRooms) {
+                    for (FileProcessor.Room room : excludedEcoRooms) {
                         switch (room.roomType) {
                             case "S": case "NS": case "ANS": case "ABF": case "AKS": ecoS++; break;
                             case "T": case "NT": case "ANT": case "ADT": ecoT++; break;
@@ -3216,16 +3339,16 @@ public class AssignmentEditorGUI extends JFrame {
                             case "FD": ecoFD++; break;
                         }
                     }
-                    if (ecoS > 0)  { Cell c = firstRow.createCell(5); c.setCellValue(ecoS);  c.setCellStyle(ecoStyle); }
-                    if (ecoT > 0)  { Cell c = firstRow.createCell(6); c.setCellValue(ecoT);  c.setCellStyle(ecoStyle); }
-                    if (ecoD > 0)  { Cell c = firstRow.createCell(7); c.setCellValue(ecoD);  c.setCellStyle(ecoStyle); }
-                    if (ecoFD > 0) { Cell c = firstRow.createCell(8); c.setCellValue(ecoFD); c.setCellStyle(ecoStyle); }
+                    if (ecoS > 0)  { Cell c = excludedHeadRow.createCell(5); c.setCellValue(ecoS);  c.setCellStyle(ecoStyle); }
+                    if (ecoT > 0)  { Cell c = excludedHeadRow.createCell(6); c.setCellValue(ecoT);  c.setCellStyle(ecoStyle); }
+                    if (ecoD > 0)  { Cell c = excludedHeadRow.createCell(7); c.setCellValue(ecoD);  c.setCellStyle(ecoStyle); }
+                    if (ecoFD > 0) { Cell c = excludedHeadRow.createCell(8); c.setCellValue(ecoFD); c.setCellStyle(ecoStyle); }
                 }
 
                 // J〜M列: 通常清掃部屋タイプ別カウント（薄緑）
                 {
                     int normS = 0, normT = 0, normD = 0, normFD = 0;
-                    for (FileProcessor.Room room : normalRooms) {
+                    for (FileProcessor.Room room : excludedNormalRooms) {
                         switch (room.roomType) {
                             case "S": case "NS": case "ANS": case "ABF": case "AKS": normS++; break;
                             case "T": case "NT": case "ANT": case "ADT": normT++; break;
@@ -3233,113 +3356,16 @@ public class AssignmentEditorGUI extends JFrame {
                             case "FD": normFD++; break;
                         }
                     }
-                    if (normS > 0)  { Cell c = firstRow.createCell(9);  c.setCellValue(normS);  c.setCellStyle(normalStyle); }
-                    if (normT > 0)  { Cell c = firstRow.createCell(10); c.setCellValue(normT);  c.setCellStyle(normalStyle); }
-                    if (normD > 0)  { Cell c = firstRow.createCell(11); c.setCellValue(normD);  c.setCellStyle(normalStyle); }
-                    if (normFD > 0) { Cell c = firstRow.createCell(12); c.setCellValue(normFD); c.setCellStyle(normalStyle); }
+                    if (normS > 0)  { Cell c = excludedHeadRow.createCell(9);  c.setCellValue(normS);  c.setCellStyle(normalStyle); }
+                    if (normT > 0)  { Cell c = excludedHeadRow.createCell(10); c.setCellValue(normT);  c.setCellStyle(normalStyle); }
+                    if (normD > 0)  { Cell c = excludedHeadRow.createCell(11); c.setCellValue(normD);  c.setCellStyle(normalStyle); }
+                    if (normFD > 0) { Cell c = excludedHeadRow.createCell(12); c.setCellValue(normFD); c.setCellStyle(normalStyle); }
                 }
             }
+        }
 
-            // ★新規: 残し部屋ブロックの出力（全スタッフの後・最終セット）
-            // 対象: 残し部屋設定(excludedRooms) + 未割り当て発(unassignedExcludedRooms) の両方
-            Set<String> allExcludedRoomNumbers = new HashSet<>(excludedRooms);
-            allExcludedRoomNumbers.addAll(unassignedExcludedRooms);
-
-            if (!allExcludedRoomNumbers.isEmpty() && processingResult.cleaningDataObj != null) {
-                // Roomオブジェクトを収集（roomsToCleanから参照）し、通常清掃とEcoに分類
-                // ★残し部屋(事前設定): 事前除外部屋はroomsToCleanに含まれないため、検索対象に追加する
-                List<FileProcessor.Room> excludedSearchPool =
-                        new ArrayList<>(processingResult.cleaningDataObj.roomsToClean);
-                if (processingResult.cleaningDataObj.preExcludedRooms != null) {
-                    excludedSearchPool.addAll(processingResult.cleaningDataObj.preExcludedRooms);
-                }
-
-                List<FileProcessor.Room> excludedNormalRooms = new ArrayList<>();
-                List<FileProcessor.Room> excludedEcoRooms = new ArrayList<>();
-
-                for (FileProcessor.Room room : excludedSearchPool) {
-                    if (allExcludedRoomNumbers.contains(room.roomNumber)) {
-                        if (room.isEcoClean) {
-                            excludedEcoRooms.add(room);
-                        } else {
-                            excludedNormalRooms.add(room);
-                        }
-                    }
-                }
-
-                if (!excludedNormalRooms.isEmpty() || !excludedEcoRooms.isEmpty()) {
-                    // 次のセット境界に移動（スタッフ出力と同じ規則）
-                    if (!isAtSetBoundary(currentRow)) {
-                        currentRow = getNextSetBoundary(currentRow);
-                    }
-
-                    // 部屋番号順にソート
-                    excludedNormalRooms.sort(Comparator.comparing(r -> r.roomNumber));
-                    excludedEcoRooms.sort(Comparator.comparing(r -> r.roomNumber));
-
-                    // ブロックの最初の行を記録（集計出力用）
-                    int excludedFirstRow = currentRow;
-
-                    // 通常清掃部屋を出力（A列の担当名は「残し部屋」）
-                    for (FileProcessor.Room room : excludedNormalRooms) {
-                        Row row = sheet.createRow(currentRow);
-                        writeRoomData(row, "残し部屋", room);
-                        currentRow++;
-                    }
-
-                    // Eco部屋がある場合、1行空けて出力（スタッフ出力と同形式）
-                    if (!excludedEcoRooms.isEmpty()) {
-                        if (!excludedNormalRooms.isEmpty()) {
-                            currentRow++;  // 空行
-                        }
-                        for (FileProcessor.Room room : excludedEcoRooms) {
-                            Row row = sheet.createRow(currentRow);
-                            writeRoomData(row, "残し部屋", room);
-                            currentRow++;
-                        }
-                    }
-
-                    // ブロック最初の行を取得（集計出力用）
-                    Row excludedHeadRow = sheet.getRow(excludedFirstRow);
-                    if (excludedHeadRow == null) excludedHeadRow = sheet.createRow(excludedFirstRow);
-
-                    // F〜I列: エコ部屋タイプ別カウント（水色）
-                    {
-                        int ecoS = 0, ecoT = 0, ecoD = 0, ecoFD = 0;
-                        for (FileProcessor.Room room : excludedEcoRooms) {
-                            switch (room.roomType) {
-                                case "S": case "NS": case "ANS": case "ABF": case "AKS": ecoS++; break;
-                                case "T": case "NT": case "ANT": case "ADT": ecoT++; break;
-                                case "D": case "ND": case "AND": ecoD++; break;
-                                case "FD": ecoFD++; break;
-                            }
-                        }
-                        if (ecoS > 0)  { Cell c = excludedHeadRow.createCell(5); c.setCellValue(ecoS);  c.setCellStyle(ecoStyle); }
-                        if (ecoT > 0)  { Cell c = excludedHeadRow.createCell(6); c.setCellValue(ecoT);  c.setCellStyle(ecoStyle); }
-                        if (ecoD > 0)  { Cell c = excludedHeadRow.createCell(7); c.setCellValue(ecoD);  c.setCellStyle(ecoStyle); }
-                        if (ecoFD > 0) { Cell c = excludedHeadRow.createCell(8); c.setCellValue(ecoFD); c.setCellStyle(ecoStyle); }
-                    }
-
-                    // J〜M列: 通常清掃部屋タイプ別カウント（薄緑）
-                    {
-                        int normS = 0, normT = 0, normD = 0, normFD = 0;
-                        for (FileProcessor.Room room : excludedNormalRooms) {
-                            switch (room.roomType) {
-                                case "S": case "NS": case "ANS": case "ABF": case "AKS": normS++; break;
-                                case "T": case "NT": case "ANT": case "ADT": normT++; break;
-                                case "D": case "ND": case "AND": normD++; break;
-                                case "FD": normFD++; break;
-                            }
-                        }
-                        if (normS > 0)  { Cell c = excludedHeadRow.createCell(9);  c.setCellValue(normS);  c.setCellStyle(normalStyle); }
-                        if (normT > 0)  { Cell c = excludedHeadRow.createCell(10); c.setCellValue(normT);  c.setCellStyle(normalStyle); }
-                        if (normD > 0)  { Cell c = excludedHeadRow.createCell(11); c.setCellValue(normD);  c.setCellStyle(normalStyle); }
-                        if (normFD > 0) { Cell c = excludedHeadRow.createCell(12); c.setCellValue(normFD); c.setCellStyle(normalStyle); }
-                    }
-                }
-            }
-
-            // 列幅を調整
+        // 列幅を調整（新規ブック作成時のみ。原本コピーでは原本の列幅を維持）
+        if (adjustColumnWidths) {
             sheet.setColumnWidth(0, 12 * 256);  // A: 担当
             sheet.setColumnWidth(1, 8 * 256);   // B: 部屋番号
             sheet.setColumnWidth(2, 6 * 256);   // C: 連泊
@@ -3353,9 +3379,156 @@ public class AssignmentEditorGUI extends JFrame {
             sheet.setColumnWidth(10, 5 * 256);  // K: 通T
             sheet.setColumnWidth(11, 5 * 256);  // L: 通D
             sheet.setColumnWidth(12, 5 * 256);  // M: 通FD
+        }
+    }
 
-            // ファイルに保存
-            try (FileOutputStream fos = new FileOutputStream(filePath)) {
+    /**
+     * ★新規: 清掃指示書（原本）のコピーへ「本日清掃」タブを出力する。
+     * ・原本ファイルは自動検出（見つからない場合のみ手動選択にフォールバック）
+     * ・原本自体は変更せず、「清掃指示書_yyyyMMdd.xlsm」として原本と同じフォルダに出力
+     */
+    private void exportToInstructionTemplate() {
+        // 1) 原本テンプレートを自動検出
+        java.io.File templateFile = findInstructionTemplateFile();
+
+        // 見つからない場合は手動選択にフォールバック
+        if (templateFile == null) {
+            JOptionPane.showMessageDialog(this,
+                    "清掃指示書の原本（清掃指示書（原本）.xlsm）が見つかりませんでした。\n" +
+                            "ファイルを手動で選択してください。\n\n" +
+                            "※選択したファイルの場所は記憶され、次回からは自動で使用されます。",
+                    "原本の選択", JOptionPane.INFORMATION_MESSAGE);
+
+            JFileChooser fileChooser = new JFileChooser();
+            fileChooser.setDialogTitle("清掃指示書の原本（.xlsm）を選択");
+            fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
+                    "Excelマクロ有効ブック (*.xlsm)", "xlsm"));
+            fileChooser.setAcceptAllFileFilterUsed(false);
+            if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+                return;
+            }
+            templateFile = fileChooser.getSelectedFile();
+        }
+
+        // 確定した原本パスを記憶（次回以降はダイアログなしで自動使用）
+        AppSettings.getInstance().setPath(
+                AppSettings.KEY_INSTRUCTION_TEMPLATE, templateFile.getAbsolutePath());
+
+        try {
+            // 2) 日付付き出力ファイル名を生成（既存のExcel出力と同じ日付ロジック）
+            String dateStr;
+            if (processingResult.optimizationResult != null &&
+                    processingResult.optimizationResult.targetDate != null) {
+                dateStr = processingResult.optimizationResult.targetDate
+                        .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+            } else {
+                dateStr = java.time.LocalDate.now()
+                        .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+            }
+
+            String fileName = "清掃指示書_" + dateStr + ".xlsm";
+            String filePath = templateFile.getParent() + java.io.File.separator + fileName;
+
+            // 3) ファイルが既に存在する場合は確認
+            java.io.File outputFile = new java.io.File(filePath);
+            if (outputFile.exists()) {
+                int result = JOptionPane.showConfirmDialog(this,
+                        "ファイルが既に存在します。上書きしますか？\n" + fileName,
+                        "確認", JOptionPane.YES_NO_OPTION);
+                if (result != JOptionPane.YES_OPTION) {
+                    return;
+                }
+            }
+
+            // 4) 原本を読み込み→「本日清掃」タブへ書き込み→コピーとして保存（原本は変更しない）
+            createInstructionExcelFromTemplate(templateFile, filePath);
+            statusLabel.setText("清掃指示書を作成しました: " + filePath);
+
+            JOptionPane.showMessageDialog(this,
+                    "清掃指示書を作成しました:\n" + filePath +
+                            "\n\n※原本ファイルは変更していません。",
+                    "出力完了", JOptionPane.INFORMATION_MESSAGE);
+
+        } catch (IOException e) {
+            JOptionPane.showMessageDialog(this,
+                    "ファイル出力中にエラーが発生しました: " + e.getMessage(),
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    /**
+     * ★新規: 清掃指示書の原本（.xlsm）を探す。
+     * 探索順:
+     *   1) 前回選択して記憶されたパス（AppSettings経由の設定ファイル）
+     *   2) デスクトップ／ドキュメント／作業フォルダーにある既定名
+     *      「清掃指示書（原本）.xlsm」のファイル
+     * 見つからなければ null を返す（呼び出し元で手動選択にフォールバックする）。
+     * @return 見つかったファイル。見つからなければ null
+     */
+    private java.io.File findInstructionTemplateFile() {
+        final String EXACT_NAME = "清掃指示書（原本）.xlsm";
+
+        // 1) 前回記憶されたパスを最優先で確認
+        java.io.File saved = AppSettings.getInstance()
+                .getExistingFile(AppSettings.KEY_INSTRUCTION_TEMPLATE);
+        if (saved != null) {
+            return saved;
+        }
+
+        // 2) よく使うフォルダから既定ファイル名で探す（補助的な探索）
+        String userHome = System.getProperty("user.home");
+        String[] searchDirs = {
+                userHome + java.io.File.separator + "Desktop",
+                userHome + java.io.File.separator + "Documents",
+                System.getProperty("user.dir")
+        };
+        for (String dirPath : searchDirs) {
+            java.io.File cand = new java.io.File(dirPath, EXACT_NAME);
+            if (cand.exists() && cand.isFile()) {
+                return cand;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * ★新規: 原本（.xlsm）を読み込み、「本日清掃」シートのデータを差し替えて
+     * 別ファイル（コピー）として保存する。原本自体・数式・マクロには触れない。
+     * ★★新規: コピー側の本館【原本】・別館【原本】（キー受け渡し書）のA列へ
+     * 担当者名を自動記入する（B列ラベル・他の列・結合セル・列幅は変更しない）。
+     */
+    private void createInstructionExcelFromTemplate(java.io.File templateFile, String outputPath) throws IOException {
+        final String SHEET_NAME = "本日清掃";
+
+        try (FileInputStream fis = new FileInputStream(templateFile);
+             XSSFWorkbook workbook = new XSSFWorkbook(fis)) {
+
+            Sheet sheet = workbook.getSheet(SHEET_NAME);
+            if (sheet == null) {
+                throw new IOException("原本に「" + SHEET_NAME + "」シートが見つかりません: "
+                        + templateFile.getName());
+            }
+
+            // 「本日清掃」タブの既存データのみクリア（他シートの数式は座標参照のため影響なし）
+            clearSheetData(sheet);
+
+            // シートへのデータ書き込み（共通処理・従来のExcel出力と同一内容）
+            // ※原本の列幅を維持するため adjustColumnWidths=false
+            writeCleaningSheetData(workbook, sheet, false);
+
+            // ★★新規: 本館【原本】・別館【原本】（キー受け渡し書）のA列へ担当者名を書き込み
+            //   万一失敗しても、従来の清掃指示書出力（本日清掃タブ＋保存）は必ず継続する
+            try {
+                writeKeyHandoverSheets(workbook);
+            } catch (Exception e) {
+                System.err.println("キー受け渡し書への担当者名書き込みに失敗しました: " + e.getMessage());
+            }
+
+            // 開いたときに「本 通常」など参照側の数式を再計算させる
+            workbook.setForceFormulaRecalculation(true);
+
+            // コピーとして保存（.xlsmのまま保存することでマクロも保持される）
+            try (FileOutputStream fos = new FileOutputStream(outputPath)) {
                 workbook.write(fos);
             }
         }
@@ -3373,6 +3546,222 @@ public class AssignmentEditorGUI extends JFrame {
                 sheet.removeRow(row);
             }
         }
+    }
+
+    // =========================================================================
+    // ★★新規: キー受け渡し書（本館【原本】・別館【原本】）への担当者名 自動記入
+    // =========================================================================
+
+    /** キー受け渡し書のシート名（本館） */
+    private static final String KEY_HANDOVER_SHEET_MAIN = "本館【原本】";
+
+    /** キー受け渡し書のシート名（別館） */
+    private static final String KEY_HANDOVER_SHEET_ANNEX = "別館【原本】";
+
+    /**
+     * キー受け渡し書のB列ラベル判定パターン。
+     * 例:「2F　1　リ」「10F　3」（全角スペースは半角に正規化してから判定する）
+     *   group(1)=階数, group(2)=枠番号, group(3)=リネン枠マーク「リ」（任意・判定には枠番号1を使用）
+     * 「大浴場」「通行用ｶｰﾄﾞｷｰ」「清掃場所」「本館/別館」「注意書き」には一致しないため、
+     * それらの行には何も書き込まれない。
+     */
+    private static final java.util.regex.Pattern KEY_HANDOVER_LABEL_PATTERN =
+            java.util.regex.Pattern.compile("^(\\d{1,2})F\\s+(\\d)\\s*(リ)?$");
+
+    /**
+     * 本館【原本】・別館【原本】の両シートのA列へ担当者名を書き込む。
+     * 記入ルール:
+     *   枠1（〇F 1 リ）: その階のリネン庫担当者（その階の清掃なしでリネン庫のみ担当の人も含む）。
+     *                    リネン庫担当がいない階は空欄のまま。
+     *   枠2・枠3       : リネン庫担当者以外でその階を清掃するスタッフ（並びはgetSortedStaffList()順）。
+     *                    枠に入り切らないスタッフは記入しない（あぶれ）。
+     *   ピンク塗り     : 名前を記入したセルのうち、そのスタッフが大浴場担当
+     *                    （NORMAL/湯抜きあり）の場合のみ、凡例（本館A8）と同じ色で塗りつぶす。
+     *
+     * @param workbook 原本のコピーとして開いたワークブック
+     */
+    private void writeKeyHandoverSheets(XSSFWorkbook workbook) {
+        XSSFColor bathColor = resolveBathLegendColor(workbook);
+
+        // ピンク塗りスタイルのキャッシュ（元スタイルindex → 塗りつぶし追加済みスタイル）
+        // セルスタイルはワークブック単位のため、両シートで共有してスタイルの増殖を防ぐ
+        Map<Integer, XSSFCellStyle> bathStyleCache = new HashMap<>();
+
+        writeKeyHandoverSheet(workbook, KEY_HANDOVER_SHEET_MAIN, false, bathColor, bathStyleCache);
+        writeKeyHandoverSheet(workbook, KEY_HANDOVER_SHEET_ANNEX, true, bathColor, bathStyleCache);
+    }
+
+    /**
+     * キー受け渡し書1シート分の書き込み処理。
+     * B列のラベル（結合セルの左上）を走査し、パターンに一致した行のA列セルにのみ名前を書き込む。
+     * B列ラベル自体・C列以降・結合セル構造・列幅には一切触れない。
+     *
+     * @param workbook       書き込み先ワークブック
+     * @param sheetName      シート名（本館【原本】または別館【原本】）
+     * @param isAnnex        別館か（true: floorKey = 実階+20 で照合する）
+     * @param bathColor      大浴場担当セルの塗りつぶし色
+     * @param bathStyleCache ピンク塗りスタイルのキャッシュ（両シート共有）
+     */
+    private void writeKeyHandoverSheet(XSSFWorkbook workbook, String sheetName, boolean isAnnex,
+                                       XSSFColor bathColor, Map<Integer, XSSFCellStyle> bathStyleCache) {
+        Sheet sheet = workbook.getSheet(sheetName);
+        if (sheet == null) {
+            // シートが無い場合はスキップ（清掃指示書自体の出力は継続させる）
+            System.err.println("キー受け渡し書シートが見つからないためスキップします: " + sheetName);
+            return;
+        }
+
+        List<StaffData> sortedStaff = getSortedStaffList();
+
+        for (int r = 0; r <= sheet.getLastRowNum(); r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+
+            // B列（index=1）のラベルを判定（3行結合セルの値は左上セルにのみ入っている）
+            Cell labelCell = row.getCell(1);
+            if (labelCell == null || labelCell.getCellType() != CellType.STRING) continue;
+
+            String label = labelCell.getStringCellValue();
+            if (label == null) continue;
+
+            // 全角スペースを半角に正規化してからパターン判定
+            String normalized = label.replace('\u3000', ' ').trim();
+            java.util.regex.Matcher m = KEY_HANDOVER_LABEL_PATTERN.matcher(normalized);
+            if (!m.matches()) continue;
+
+            int floor = Integer.parseInt(m.group(1));
+            int slot = Integer.parseInt(m.group(2));
+            int floorKey = isAnnex ? floor + 20 : floor;   // 別館は実階+20が内部キー
+
+            // その階のリネン庫担当者（枠1用。枠2/3の除外判定にも使用）
+            StaffData linenStaff = findLinenStaffForFloor(floorKey, sortedStaff);
+
+            StaffData target;
+            if (slot == 1) {
+                // 枠1（リ枠）: リネン庫担当者。いない階は空欄のまま（枠2から記入される）
+                target = linenStaff;
+            } else {
+                // 枠2・枠3: リネン庫担当者以外でその階を清掃するスタッフ
+                List<StaffData> cleaners = findCleaningStaffForFloor(floorKey, sortedStaff, linenStaff);
+                int idx = slot - 2;   // 枠2→0番目、枠3→1番目
+                target = (idx >= 0 && idx < cleaners.size()) ? cleaners.get(idx) : null;
+                // 4人以上いる場合、枠に入り切らないスタッフは記入しない（あぶれてOKの仕様）
+            }
+
+            if (target == null || target.name == null || target.name.isEmpty()) continue;
+
+            // A列（index=0）の結合セル左上に名前を書き込む
+            Cell nameCell = row.getCell(0, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+            nameCell.setCellValue(target.name);
+
+            // 大浴場担当（NORMAL/湯抜きあり）のスタッフのみセルをピンクで塗りつぶす
+            if (target.bathCleaningType != null &&
+                    target.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+                applyBathStaffFill(workbook, nameCell, bathColor, bathStyleCache);
+            }
+        }
+    }
+
+    /**
+     * 指定階（floorKey）のリネン庫担当者を返す。
+     * その階を清掃しない（リネン庫のみ担当の）スタッフも対象。
+     * 通常は1階につき1名だが、万一複数いる場合はgetSortedStaffList()順の先頭を返す。
+     *
+     * @return リネン庫担当者。いない場合は null
+     */
+    private StaffData findLinenStaffForFloor(int floorKey, List<StaffData> sortedStaff) {
+        for (StaffData staff : sortedStaff) {
+            if (staff.linenClosetFloors != null && staff.linenClosetFloors.contains(floorKey)) {
+                return staff;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 指定階（floorKey）を清掃するスタッフの一覧を返す（getSortedStaffList()順）。
+     * 枠1に入るリネン庫担当者は除外する。
+     *
+     * @param linenStaff 枠1に記入するリネン庫担当者（除外対象。nullの場合は除外なし）
+     */
+    private List<StaffData> findCleaningStaffForFloor(int floorKey, List<StaffData> sortedStaff,
+                                                      StaffData linenStaff) {
+        List<StaffData> result = new ArrayList<>();
+        for (StaffData staff : sortedStaff) {
+            if (staff == linenStaff) continue;
+            if (staffCleansFloor(staff, floorKey)) {
+                result.add(staff);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * スタッフが指定階（floorKey）の清掃を担当しているか判定する。
+     * 部屋番号割り当て済みの詳細データ（detailedRoomsByFloor）を優先し、
+     * 未生成の場合のみ担当階リスト（floors）で判定するフォールバックを持つ。
+     */
+    private boolean staffCleansFloor(StaffData staff, int floorKey) {
+        if (staff.detailedRoomsByFloor != null && !staff.detailedRoomsByFloor.isEmpty()) {
+            List<FileProcessor.Room> rooms = staff.detailedRoomsByFloor.get(floorKey);
+            return rooms != null && !rooms.isEmpty();
+        }
+        // フォールバック: 詳細部屋データ未生成の場合は担当階リストで判定
+        return staff.floors != null && staff.floors.contains(floorKey);
+    }
+
+    /**
+     * 大浴場担当スタッフの名前セルにピンクの塗りつぶしを適用する。
+     * セルの既存スタイルを複製（cloneStyleFrom）して塗りつぶしのみ追加するため、
+     * 罫線・フォント・配置などの原本の書式はそのまま維持される。
+     * 同じ元スタイルに対する複製はキャッシュから再利用し、スタイルの増殖を防ぐ。
+     */
+    private void applyBathStaffFill(XSSFWorkbook workbook, Cell cell, XSSFColor bathColor,
+                                    Map<Integer, XSSFCellStyle> bathStyleCache) {
+        CellStyle baseStyle = cell.getCellStyle();
+        int baseIndex = (baseStyle != null) ? baseStyle.getIndex() : -1;
+
+        XSSFCellStyle bathStyle = bathStyleCache.get(baseIndex);
+        if (bathStyle == null) {
+            bathStyle = workbook.createCellStyle();
+            if (baseStyle != null) {
+                bathStyle.cloneStyleFrom(baseStyle);
+            }
+            bathStyle.setFillForegroundColor(bathColor);
+            bathStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            bathStyleCache.put(baseIndex, bathStyle);
+        }
+        cell.setCellStyle(bathStyle);
+    }
+
+    /**
+     * 大浴場担当のピンク色を取得する。
+     * 本館【原本】の凡例セルA8（「ピンク色 大浴場担当」）の塗りつぶし色をそのまま使用し、
+     * 取得できない場合のみ凡例と同じRGB（FF66FF）にフォールバックする。
+     */
+    private XSSFColor resolveBathLegendColor(XSSFWorkbook workbook) {
+        try {
+            Sheet mainSheet = workbook.getSheet(KEY_HANDOVER_SHEET_MAIN);
+            if (mainSheet != null) {
+                Row legendRow = mainSheet.getRow(7);   // 8行目（セルA8）
+                if (legendRow != null) {
+                    Cell legendCell = legendRow.getCell(0);   // A列
+                    if (legendCell != null && legendCell.getCellStyle() instanceof XSSFCellStyle) {
+                        XSSFCellStyle style = (XSSFCellStyle) legendCell.getCellStyle();
+                        if (style.getFillPattern() == FillPatternType.SOLID_FOREGROUND) {
+                            XSSFColor color = style.getFillForegroundColorColor();
+                            if (color != null) {
+                                return color;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("凡例セル(A8)のピンク色取得に失敗したため既定色を使用します: " + e.getMessage());
+        }
+        // フォールバック: 原本の凡例と同じRGB（ARGB=FFFF66FF）
+        return new XSSFColor(new byte[]{(byte) 0xFF, (byte) 0x66, (byte) 0xFF}, null);
     }
 
     /**

@@ -446,10 +446,16 @@ public class RoomAssignmentApplication extends JFrame {
             }
         });
 
+        // ★フォルダー自動検出: 記憶されたデータフォルダーを開いた状態で始める
+        applyRememberedDataFolder(fileChooser);
+
         if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             selectedRoomFile = fileChooser.getSelectedFile();
             selectRoomFileButton.setText(selectedRoomFile.getName());
             appendLog("部屋データファイルを選択しました: " + selectedRoomFile.getName());
+
+            // ★フォルダー自動検出: 選択したファイルの親フォルダーを記憶
+            rememberDataFolder(selectedRoomFile);
 
             brokenRoomSettingsButton.setEnabled(true);
             brokenRoomSettingsButton.setText("故障・未販売設定");
@@ -481,10 +487,17 @@ public class RoomAssignmentApplication extends JFrame {
             }
         });
 
+        // ★フォルダー自動検出: 記憶されたデータフォルダーを開いた状態で始める
+        applyRememberedDataFolder(fileChooser);
+
         if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             selectedShiftFile = fileChooser.getSelectedFile();
             selectShiftFileButton.setText(selectedShiftFile.getName());
             appendLog("シフトファイルを選択しました: " + selectedShiftFile.getName());
+
+            // ★フォルダー自動検出: 選択したファイルの親フォルダーを記憶
+            rememberDataFolder(selectedShiftFile);
+
             updateButtonStates();
         }
     }
@@ -509,10 +522,26 @@ public class RoomAssignmentApplication extends JFrame {
             }
         });
 
-        // デフォルトで hotel_cleaning.db を探す
-        File currentDir = new File(System.getProperty("user.dir"));
-        File defaultDb = new File(currentDir, "hotel_cleaning.db");
-        if (defaultDb.exists()) {
+        // ★フォルダー自動検出: 記憶されたデータフォルダーを開いた状態で始める
+        applyRememberedDataFolder(fileChooser);
+
+        // デフォルトで hotel_cleaning.db を探す（記憶フォルダー優先、無ければ従来通り作業フォルダー）
+        File dataFolder = AppSettings.getInstance().getExistingFolder(AppSettings.KEY_DATA_FOLDER);
+        File defaultDb = null;
+        if (dataFolder != null) {
+            File cand = new File(dataFolder, "hotel_cleaning.db");
+            if (cand.exists()) {
+                defaultDb = cand;
+            }
+        }
+        if (defaultDb == null) {
+            File currentDir = new File(System.getProperty("user.dir"));
+            File cand = new File(currentDir, "hotel_cleaning.db");
+            if (cand.exists()) {
+                defaultDb = cand;
+            }
+        }
+        if (defaultDb != null) {
             fileChooser.setSelectedFile(defaultDb);
         }
 
@@ -521,7 +550,37 @@ public class RoomAssignmentApplication extends JFrame {
             selectedEcoDataFile = fileChooser.getSelectedFile();
             selectEcoDataButton.setText(selectedEcoDataFile.getName());
             appendLog("エコ清掃データベースを選択しました: " + selectedEcoDataFile.getName());
+
+            // ★フォルダー自動検出: 選択したファイルの親フォルダーを記憶
+            rememberDataFolder(selectedEcoDataFile);
+
             updateButtonStates();
+        }
+    }
+
+    /**
+     * ★フォルダー自動検出: 記憶されたデータフォルダーがあれば、
+     * ファイル選択ダイアログの初期表示フォルダーとして設定する。
+     * （部屋状態CSV・シフトxlsx・エコDBは同一フォルダーに置く運用のため共通で使用）
+     */
+    private void applyRememberedDataFolder(JFileChooser fileChooser) {
+        File dataFolder = AppSettings.getInstance().getExistingFolder(AppSettings.KEY_DATA_FOLDER);
+        if (dataFolder != null) {
+            fileChooser.setCurrentDirectory(dataFolder);
+        }
+    }
+
+    /**
+     * ★フォルダー自動検出: 選択されたファイルの親フォルダーをデータフォルダーとして記憶する。
+     * 次回以降、3つのファイル選択ダイアログはすべてこのフォルダーを開いた状態で始まる。
+     */
+    private void rememberDataFolder(File selectedFile) {
+        if (selectedFile == null) {
+            return;
+        }
+        File parent = selectedFile.getParentFile();
+        if (parent != null && parent.isDirectory()) {
+            AppSettings.getInstance().setPath(AppSettings.KEY_DATA_FOLDER, parent.getAbsolutePath());
         }
     }
 

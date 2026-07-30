@@ -514,11 +514,11 @@ public class RoomNumberAssigner {
 
     /** ★★★本館ツイン統合: 本館の通常清掃ツイン（非ECO）判定 */
     private boolean isMainTwinRoom(FileProcessor.Room room) {
+        String mapped = mapRoomType(room.roomType);
         return "本館".equals(room.building)
                 && !room.isEco
-                && "T".equals(mapRoomType(room.roomType));
+                && ("T".equals(mapped) || "FD".equals(mapped));
     }
-
     /**
      * ★新規: 部屋番号から数値部分を抽出
      */

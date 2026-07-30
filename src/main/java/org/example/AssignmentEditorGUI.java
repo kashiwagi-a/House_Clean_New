@@ -1131,10 +1131,7 @@ public class AssignmentEditorGUI extends JFrame {
 
         buttonPanel.add(Box.createHorizontalStrut(20));
 
-        // 既存ボタン
-        JButton exportButton = new JButton("Excel出力");
-        exportButton.addActionListener(e -> exportToExcel());
-        buttonPanel.add(exportButton);
+        // ★削除: 「Excel出力」ボタンは「指示書出力」に一本化したため削除
 
         // ★新規: 清掃指示書（原本）のコピーへ「本日清掃」タブを出力するボタン
         JButton instructionExportButton = new JButton("指示書出力");
@@ -3060,77 +3057,13 @@ public class AssignmentEditorGUI extends JFrame {
         repaint();
     }
 
-    // ★変更不要：既存のまま
-    private void exportToExcel() {
-        // フォルダ選択ダイアログ
-        JFileChooser folderChooser = new JFileChooser();
-        folderChooser.setDialogTitle("出力先フォルダを選択");
-        folderChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-        folderChooser.setAcceptAllFileFilterUsed(false);
-
-        if (folderChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                String folderPath = folderChooser.getSelectedFile().getAbsolutePath();
-
-                // ファイル名を生成（日付付き）
-                String dateStr = "";
-                if (processingResult.optimizationResult != null &&
-                        processingResult.optimizationResult.targetDate != null) {
-                    dateStr = processingResult.optimizationResult.targetDate
-                            .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-                } else {
-                    dateStr = java.time.LocalDate.now()
-                            .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-                }
-
-                String fileName = "本日清掃_" + dateStr + ".xlsx";
-                String filePath = folderPath + java.io.File.separator + fileName;
-
-                // ファイルが既に存在する場合は確認
-                java.io.File outputFile = new java.io.File(filePath);
-                if (outputFile.exists()) {
-                    int result = JOptionPane.showConfirmDialog(this,
-                            "ファイルが既に存在します。上書きしますか？\n" + fileName,
-                            "確認", JOptionPane.YES_NO_OPTION);
-                    if (result != JOptionPane.YES_OPTION) {
-                        return;
-                    }
-                }
-
-                createCleaningExcelFile(filePath);
-                statusLabel.setText("Excelファイルを作成しました: " + filePath);
-
-                JOptionPane.showMessageDialog(this,
-                        "ファイルを作成しました:\n" + filePath,
-                        "出力完了", JOptionPane.INFORMATION_MESSAGE);
-
-            } catch (IOException e) {
-                JOptionPane.showMessageDialog(this,
-                        "ファイル出力中にエラーが発生しました: " + e.getMessage(),
-                        "エラー", JOptionPane.ERROR_MESSAGE);
-            }
-        }
-    }
-
-    private void createCleaningExcelFile(String filePath) throws IOException {
-        final String SHEET_NAME = "本日清掃";
-
-        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
-            Sheet sheet = workbook.createSheet(SHEET_NAME);
-
-            // シートへのデータ書き込み（共通処理・従来と同一の出力内容）
-            writeCleaningSheetData(workbook, sheet, true);
-
-            // ファイルに保存
-            try (FileOutputStream fos = new FileOutputStream(filePath)) {
-                workbook.write(fos);
-            }
-        }
-    }
+    // ★削除: 「Excel出力」機能（exportToExcel / createCleaningExcelFile）は
+    //   「指示書出力」（exportToInstructionTemplate）に一本化したため削除。
+    //   「本日清掃」データの書き込み本体は writeCleaningSheetData として存続している。
 
     /**
      * ★新規: 「本日清掃」データをシートへ書き込む共通処理。
-     * 従来のcreateCleaningExcelFileの本体をそのまま抽出したもので、出力内容は従来と同一。
+     * 従来の「Excel出力」機能（createCleaningExcelFile・削除済み）の本体をそのまま抽出したもので、出力内容は従来と同一。
      * @param workbook 書き込み先ワークブック（新規ブック／原本コピーの両方に対応）
      * @param sheet 書き込み先シート
      * @param adjustColumnWidths 列幅調整を行うか（新規ブック=true、原本コピー=false: 原本の列幅を維持）

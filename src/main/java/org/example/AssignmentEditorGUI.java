@@ -57,6 +57,39 @@ public class AssignmentEditorGUI extends JFrame {
     private JLabel solutionIndexLabel;
     private JPanel solutionNavigationPanel;
 
+    // ★★解ごと編集保持: 解インデックス → 編集状態スナップショット
+    // 解切り替え時に現在の編集状態（部屋移動・部屋交換・スタッフ入れ替え・残し部屋等）を
+    // 自動保存し、その解に戻った際に復元する。残し部屋も解ごとに保持する。
+    // 再最適化・手動割り当て反映時は解一式が入れ替わるため全クリアする。
+    private final Map<Integer, SolutionEditState> solutionEditStates = new HashMap<>();
+
+    /**
+     * ★★解ごと編集保持: 1つの解の編集状態スナップショット
+     * コンテナ（リスト・マップ・セット）はコピーして保持する。
+     * 中身のオブジェクト（StaffData・Room等）は参照共有だが、解切り替え時の
+     * 従来の再構築処理は毎回新しいStaffData・部屋リストを生成するため、
+     * 他の解の操作によってスナップショットの中身が書き換わることはない。
+     */
+    private static class SolutionEditState {
+        final List<AdaptiveRoomOptimizer.StaffAssignment> assignments;
+        final Map<String, StaffData> staffData;
+        final Map<String, List<FileProcessor.Room>> detailedRooms;
+        final Set<String> excluded;
+        final Set<String> unassignedExcluded;
+
+        SolutionEditState(List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+                          Map<String, StaffData> staffData,
+                          Map<String, List<FileProcessor.Room>> detailedRooms,
+                          Set<String> excluded,
+                          Set<String> unassignedExcluded) {
+            this.assignments = new ArrayList<>(assignments);
+            this.staffData = new HashMap<>(staffData);
+            this.detailedRooms = new HashMap<>(detailedRooms);
+            this.excluded = new HashSet<>(excluded);
+            this.unassignedExcluded = new HashSet<>(unassignedExcluded);
+        }
+    }
+
     // ★修正: 部屋タイプ別のポイント（ECOは削除）
     private static final Map<String, Double> ROOM_POINTS = new HashMap<>() {{
         put("S", 1.0);
@@ -185,7 +218,8 @@ public class AssignmentEditorGUI extends JFrame {
          */
         private boolean isTwinRoom(String roomType) {
             return "T".equals(roomType) || "NT".equals(roomType) ||
-                    "ANT".equals(roomType) || "ADT".equals(roomType);
+                    "ANT".equals(roomType) || "ADT".equals(roomType) ||
+                    "FD".equals(roomType) || "NFD".equals(roomType);
         }
 
         /**
@@ -953,9 +987,11 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * ★追加: 前の解を表示
+     * ★★解ごと編集保持: 切り替え前に現在の解の編集状態を自動保存する
      */
     private void showPreviousSolution() {
         if (currentSolutionIndex > 0) {
+            saveCurrentSolutionEdits();
             currentSolutionIndex--;
             switchToSolution(currentSolutionIndex);
         }
@@ -963,12 +999,29 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * ★追加: 次の解を表示
+     * ★★解ごと編集保持: 切り替え前に現在の解の編集状態を自動保存する
      */
     private void showNextSolution() {
         if (currentSolutionIndex < processingResult.totalSolutionCount - 1) {
+            saveCurrentSolutionEdits();
             currentSolutionIndex++;
             switchToSolution(currentSolutionIndex);
         }
+    }
+
+    /**
+     * ★★解ごと編集保持: 現在表示中の解の編集状態をスナップショットとして保存する。
+     * 部屋移動・部屋交換・スタッフ入れ替え・残し部屋（通常／未割り当て発）が保存対象。
+     * 備考（roomRemarksMap）は従来どおり全解共通のため保存対象外。
+     */
+    private void saveCurrentSolutionEdits() {
+        if (currentAssignments == null || staffDataMap == null
+                || detailedRoomAssignments == null) {
+            return;
+        }
+        solutionEditStates.put(currentSolutionIndex, new SolutionEditState(
+                currentAssignments, staffDataMap, detailedRoomAssignments,
+                excludedRooms, unassignedExcludedRooms));
     }
 
     /**
@@ -983,27 +1036,41 @@ public class AssignmentEditorGUI extends JFrame {
         currentSolutionIndex = solutionIndex;
         processingResult.setCurrentSolutionIndex(solutionIndex);
 
-        // 新しい解のassignmentsを取得
-        List<AdaptiveRoomOptimizer.StaffAssignment> newAssignments =
-                processingResult.multiOptimizationResult.getAssignments(solutionIndex);
+        // ★★解ごと編集保持: 保存済みの編集状態があれば復元する。
+        // 復元時は再構築・部屋番号再割り当て・残し部屋クリアをスキップする
+        // （実行すると保存した編集内容が消えるため）。
+        SolutionEditState saved = solutionEditStates.get(solutionIndex);
+        if (saved != null) {
+            currentAssignments = new ArrayList<>(saved.assignments);
+            staffDataMap = new HashMap<>(saved.staffData);
+            detailedRoomAssignments = new HashMap<>(saved.detailedRooms);
+            excludedRooms = new HashSet<>(saved.excluded);
+            unassignedExcludedRooms = new HashSet<>(saved.unassignedExcluded);
+        } else {
+            // 初回表示: 従来どおりの作り直し（既存動作のまま）
 
-        // currentAssignmentsを更新
-        currentAssignments = new ArrayList<>(newAssignments);
+            // 新しい解のassignmentsを取得
+            List<AdaptiveRoomOptimizer.StaffAssignment> newAssignments =
+                    processingResult.multiOptimizationResult.getAssignments(solutionIndex);
 
-        // staffDataMapを再構築
-        rebuildStaffDataMap(newAssignments);
+            // currentAssignmentsを更新
+            currentAssignments = new ArrayList<>(newAssignments);
 
-        // 部屋番号を再割り当て
-        if (roomAssigner != null) {
-            assignRoomNumbers();
+            // staffDataMapを再構築
+            rebuildStaffDataMap(newAssignments);
+
+            // 部屋番号を再割り当て
+            if (roomAssigner != null) {
+                assignRoomNumbers();
+            }
+
+            // 残し部屋をリセット
+            excludedRooms.clear();
+            unassignedExcludedRooms.clear();  // ★新規: 未割り当て発の残し部屋もリセット
+
+            // ★残し部屋(事前設定): 事前除外部屋は解切り替え後も残し部屋として維持する
+            seedPreExcludedRooms();
         }
-
-        // 残し部屋をリセット
-        excludedRooms.clear();
-        unassignedExcludedRooms.clear();  // ★新規: 未割り当て発の残し部屋もリセット
-
-        // ★残し部屋(事前設定): 事前除外部屋は解切り替え後も残し部屋として維持する
-        seedPreExcludedRooms();
 
         // テーブルを更新
         loadAssignmentData();
@@ -1939,6 +2006,8 @@ public class AssignmentEditorGUI extends JFrame {
             }
 
             // 11. 複数解ナビゲーションを更新
+            // ★★解ごと編集保持: 解一式が新しくなったため編集スナップショットを全クリア
+            solutionEditStates.clear();
             currentSolutionIndex = 0;
             updateNavigationButtons();
 
@@ -2072,6 +2141,8 @@ public class AssignmentEditorGUI extends JFrame {
             if (roomAssigner != null) {
                 assignRoomNumbers();
             }
+            // ★★解ごと編集保持: 解一式が入れ替わったため編集スナップショットを全クリア
+            solutionEditStates.clear();
             currentSolutionIndex = 0;
             updateNavigationButtons();
             refreshTable();

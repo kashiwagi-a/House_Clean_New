@@ -883,6 +883,29 @@ public class RoomAssignmentCPSATOptimizer {
             return Double.compare(scoreA, scoreB);
         });
 
+        // ★★ツイン回避: 「リネン庫付き大浴スタッフがツイン清掃あり本館フロアを担当しない」解を
+        // 先頭（解1）へ移動する。解2以降は従来どおり換算ばらつき昇順のままのため、
+        // 解2は「ポイント差が最小の解」（従来の解1相当）になる。
+        // 完全回避の解がない場合は違反数が最小の解を先頭にする。
+        Set<Integer> mainTwinFloors = collectMainTwinFloors(buildingData);
+        if (!mainTwinFloors.isEmpty() && allCombinations.size() > 1) {
+            int bestIdx = 0;
+            int bestViolations = Integer.MAX_VALUE;
+            for (int i = 0; i < allCombinations.size(); i++) {
+                int v = countLinenBathTwinFloorViolations(allCombinations.get(i), mainTwinFloors);
+                if (v < bestViolations) {
+                    bestViolations = v;
+                    bestIdx = i;
+                }
+                if (bestViolations == 0) break;  // ばらつき昇順で最初に見つかる完全回避解が最良
+            }
+            if (bestIdx > 0) {
+                allCombinations.add(0, allCombinations.remove(bestIdx));
+            }
+            LOGGER.info(String.format(
+                    "ツイン回避ソート: 解1のツインあり階担当数=%d（0=完全回避）", bestViolations));
+        }
+
         // 上位maxSolutions件を返す
         List<List<AdaptiveRoomOptimizer.StaffAssignment>> combined =
                 allCombinations.subList(0, Math.min(maxSolutions, allCombinations.size()));
@@ -2060,6 +2083,33 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
+        // === ★★ツイン回避: リネン庫付き大浴清掃スタッフの「ツイン清掃あり本館フロア」担当ペナルティ ===
+        // リネン庫担当フロアは部屋番号の大きい順に割り当てられるため、本館ツイン（各階の最大番号）を
+        // リネン庫付き大浴スタッフが先頭で取得してしまう。その日ツイン清掃のない本館フロアを優先させる。
+        // ソフト制約（重み5）: 通常室全室(1000)・ECO全室(100)・大浴1フロア維持(10)より弱く、
+        // スコア均等化(1)より強い。ツインなし階で成立する解がない日は従来と同等の解になる。
+        List<BoolVar> linenBathTwinFloorVars = new ArrayList<>();
+        {
+            Set<Integer> twinFloors = collectMainTwinFloors(buildingData);
+            if (!twinFloors.isEmpty()) {
+                for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+                    if (staffInfo.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
+                    if (!staffInfo.isLinenClosetCleaning || staffInfo.linenClosetFloorCount <= 0) continue;
+                    String staffName = staffInfo.staff.name;
+                    for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
+                        if (!twinFloors.contains(floor.floorNumber)) continue;
+                        String yVarName = String.format("y_%s_%d", staffName, floor.floorNumber);
+                        if (yVars.containsKey(yVarName)) {
+                            linenBathTwinFloorVars.add(yVars.get(yVarName));
+                            LOGGER.info(String.format(
+                                    "ツイン回避ペナルティ: %s × 本館%dF（ツイン清掃あり）",
+                                    staffName, floor.floorNumber));
+                        }
+                    }
+                }
+            }
+        }
+
         // === スコア均等化: 建物ごとに通常清掃スタッフ間の換算スコア差を最小化 ===
         // スコア = 通常室 × 5 + ECO室 × 1（ECO5室 ≒ 通常室1室の換算）
         // 対象①: 制限なし（非大浴場）スタッフ（本館・別館それぞれ）
@@ -2221,8 +2271,9 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // === 目的関数: シングル優先（重み1000）+ 大浴2フロア目ペナルティ（重み10）+ ECO未割当（重み100）+ スコア均等化（重み1） ===
-        // 優先順位: 通常室全室埋める > ECO全室埋める > 大浴1フロア維持 > スコア均等化
+        // === 目的関数: シングル優先（重み1000）+ 大浴2フロア目ペナルティ（重み10）+ ECO未割当（重み100）
+        //     + ★★ツイン回避（重み5）+ スコア均等化（重み1） ===
+        // 優先順位: 通常室全室埋める > ECO全室埋める > 大浴1フロア維持 > ツイン回避 > スコア均等化
         LinearExprBuilder objectiveBuilder = LinearExpr.newBuilder();
         boolean hasObjective = false;
         for (IntVar sv : shortageVars) {
@@ -2235,6 +2286,10 @@ public class RoomAssignmentCPSATOptimizer {
         }
         for (IntVar ev : ecoShortageVars) {
             objectiveBuilder.addTerm(ev, 100);  // 1→100: ECO全室埋めをスコア均等化より優先
+            hasObjective = true;
+        }
+        for (BoolVar tv : linenBathTwinFloorVars) {
+            objectiveBuilder.addTerm(tv, 5);    // ★★ツイン回避（大浴1フロア維持より弱く、均等化より強い）
             hasObjective = true;
         }
         for (IntVar rv : scoreRangeVars) {
@@ -2581,6 +2636,68 @@ public class RoomAssignmentCPSATOptimizer {
         double min = scores.stream().mapToDouble(Double::doubleValue).min().orElse(0);
         double max = scores.stream().mapToDouble(Double::doubleValue).max().orElse(0);
         return max - min;
+    }
+
+    /**
+     * ★★ツイン回避: 部屋タイプ（生データの型コード）が本館ツイン系（T/FD系）か判定する。
+     * RoomNumberAssigner.mapRoomType の T/FD 判定と同一の型コードを対象とする。
+     * ※isMainTwin(=常にfalse)は「モデル内で本館ツインをシングル等と区別しない」ための
+     *   判定であり、本メソッドは実際のツイン型の有無を調べる用途（ペナルティ・ソート用）。
+     */
+    private static boolean isMainTwinRoomType(String roomType) {
+        if (roomType == null) return false;
+        switch (roomType.toUpperCase()) {
+            case "T":
+            case "NT":
+            case "ANT":
+            case "ADT":
+            case "ZT":
+            case "FD":
+            case "NFD":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * ★★ツイン回避: その日ツイン清掃（非ECO）がある本館フロアの階数集合を返す
+     * （FloorInfo.roomCountsはECO除外済みの通常清掃部屋のみのため、そのまま判定できる）
+     */
+    private static Set<Integer> collectMainTwinFloors(
+            AdaptiveRoomOptimizer.BuildingData buildingData) {
+        Set<Integer> floors = new HashSet<>();
+        for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
+            int twinSupply = floor.roomCounts.entrySet().stream()
+                    .filter(e -> isMainTwinRoomType(e.getKey()))
+                    .mapToInt(Map.Entry::getValue).sum();
+            if (twinSupply > 0) {
+                floors.add(floor.floorNumber);
+            }
+        }
+        return floors;
+    }
+
+    /**
+     * ★★ツイン回避: リネン庫付き大浴清掃スタッフが「ツイン清掃あり本館フロア」で
+     * 通常清掃部屋を1室以上持っている件数（違反数）を返す。0=完全回避。
+     */
+    private static int countLinenBathTwinFloorViolations(
+            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
+            Set<Integer> mainTwinFloors) {
+        int violations = 0;
+        for (AdaptiveRoomOptimizer.StaffAssignment sa : assignments) {
+            if (sa.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
+            if (!sa.isLinenClosetCleaning || sa.linenClosetFloorCount <= 0) continue;
+            for (Map.Entry<Integer, AdaptiveRoomOptimizer.RoomAllocation> e
+                    : sa.mainBuildingAssignments.entrySet()) {
+                if (!mainTwinFloors.contains(e.getKey())) continue;
+                int normalRooms = e.getValue().roomCounts.values().stream()
+                        .mapToInt(Integer::intValue).sum();
+                if (normalRooms > 0) violations++;
+            }
+        }
+        return violations;
     }
 
     private static List<AdaptiveRoomOptimizer.StaffAssignment> mergeMainAnnexAssignments(

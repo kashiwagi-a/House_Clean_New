@@ -29,6 +29,11 @@ public class RoomNumberAssigner {
     // ★★★本館ツイン統合: 正規化しきれなかった場合の警告（呼び出し元がログ・画面表示に使用）
     private final List<String> twinWarnings = new ArrayList<>();
 
+    // ★★必須清掃: 「必ず割り振る部屋」の部屋番号（AdaptiveRoomOptimizerの静的設定から取得）
+    //   空 = 未設定（従来動作と完全に同一）。
+    //   各フロア内でこれらの部屋を優先的に取得し、連泊救済の入れ替えでも未割り当てへ戻さない。
+    private Set<String> requiredRooms = new HashSet<>();
+
     public RoomNumberAssigner(FileProcessor.CleaningData cleaningData) {
         this.cleaningData = cleaningData;
     }
@@ -53,6 +58,12 @@ public class RoomNumberAssigner {
 
         // ★★★本館ツイン統合: 前回実行分の警告をクリア
         twinWarnings.clear();
+
+        // ★★必須清掃: 「必ず割り振る部屋」を取得（未設定時は空セット＝従来動作）
+        this.requiredRooms = AdaptiveRoomOptimizer.getRequiredCleaningRooms();
+        if (!requiredRooms.isEmpty()) {
+            LOGGER.info("必須清掃部屋: " + requiredRooms.size() + "室を各フロアで優先的に割り当てます");
+        }
 
         // 清掃対象の全部屋をプール
         List<FileProcessor.Room> availableRooms = new ArrayList<>(cleaningData.roomsToClean);
@@ -131,16 +142,26 @@ public class RoomNumberAssigner {
             }
 
             // ★修正: リネン庫担当フロアのみ部屋番号を大きい順にソート
+            // ★★必須清掃: 必須部屋を先頭に配置する。必須部屋グループ内・非必須グループ内の
+            //   並びは従来どおり（リネン庫担当フロア=降順、それ以外=昇順）を維持するため、
+            //   必須設定が空の場合の動作は従来と完全に同一。
+            //   （割り当て室数はCP-SATが決めた数のまま変わらず、どの部屋番号を取るかの優先順のみ変化）
             if (linenFloorSet.contains(floor)) {
-                // リネン庫担当フロア: 部屋番号の数値部分で降順ソート（大きい順）
+                // リネン庫担当フロア: 必須部屋優先 → 部屋番号の数値部分で降順ソート（大きい順）
                 floorRooms.sort((r1, r2) -> {
+                    boolean req1 = requiredRooms.contains(r1.roomNumber);
+                    boolean req2 = requiredRooms.contains(r2.roomNumber);
+                    if (req1 != req2) return req1 ? -1 : 1;  // 必須部屋を先頭へ
                     int num1 = extractRoomNumber(r1.roomNumber);
                     int num2 = extractRoomNumber(r2.roomNumber);
                     return Integer.compare(num2, num1); // 降順
                 });
             } else {
-                // 通常スタッフは部屋番号の昇順
+                // 通常スタッフ: 必須部屋優先 → 部屋番号の昇順
                 floorRooms.sort((r1, r2) -> {
+                    boolean req1 = requiredRooms.contains(r1.roomNumber);
+                    boolean req2 = requiredRooms.contains(r2.roomNumber);
+                    if (req1 != req2) return req1 ? -1 : 1;  // 必須部屋を先頭へ
                     int num1 = extractRoomNumber(r1.roomNumber);
                     int num2 = extractRoomNumber(r2.roomNumber);
                     return Integer.compare(num1, num2); // 昇順
@@ -297,6 +318,9 @@ public class RoomNumberAssigner {
 
                     // 連泊部屋同士の入れ替えは無意味なので対象外
                     if ("3".equals(candidate.roomStatus)) continue;
+                    // ★★必須清掃: 必須部屋は入れ替えで未割り当てへ戻さない
+                    //   （連泊部屋も必須部屋も「必ず清掃」のため、非必須の部屋と入れ替える）
+                    if (requiredRooms.contains(candidate.roomNumber)) continue;
                     // 同一階のみ（担当階を変えない）
                     if (candidate.floor != stayover.floor) continue;
                     // エコ区分は必ず一致（エコ数を変えない）
@@ -358,6 +382,10 @@ public class RoomNumberAssigner {
     /**
      * 本館ツイン（通常清掃・非ECO）を2室以上持つスタッフを検出し、
      * 同一フロア内で「ツイン ⇔ シングル等」の1対1交換を行って1室以下に正規化する。
+     *
+     * ★★必須清掃: この交換は「割り当て済みスタッフ同士」の1対1入れ替えのため、
+     * どちらの部屋も割り当て済みのまま維持される。必須清掃部屋が未割り当てへ
+     * 戻ることはないため、必須清掃機能への影響はない（ガード不要）。
      *
      * 交換条件（受け手側）:
      *  - 同じフロアに通常清掃部屋（非ECO・非ツイン）を1室以上持っていること

@@ -56,18 +56,18 @@ public class RoomAssignmentCPSATOptimizer {
 
     // フロアあたりの最大スタッフ数（初期値と上限）
     private static final int INITIAL_MAX_STAFF_PER_FLOOR = 2;
-    private static final int MAX_STAFF_PER_FLOOR_LIMIT   = 3;
+    private static final int MAX_STAFF_PER_FLOOR_LIMIT   = 4;
 
     /**
      * 段階的緩和設定クラス
      * 完全解が見つからない場合に段階的に制約を緩和するための設定を保持する。
      * 本館の緩和ステップ:
-     *   Step1:   制約なし（1フロア3人制限のみ、業者上限3フロア）
+     *   Step1:   制約なし（1フロア4人制限のみ、業者上限3フロア）
      *   Step1_5: 業者フロア上限を4に緩和
      *   Step2:   大浴清掃スタッフの1フロア制限を解除（→2フロアまで許可）
      *   Step3:   通常スタッフのうち1人だけ3フロアまで許可（最終手段）
      * 別館の緩和ステップ:
-     *   Step1:   制約なし（1フロア3人制限のみ、業者上限3フロア）
+     *   Step1:   制約なし（1フロア4人制限のみ、業者上限3フロア）
      *   Step1_5: 業者フロア上限を4に緩和
      *   Step2:   通常スタッフのうち1人だけ3フロアまで許可（最終手段）
      */
@@ -78,9 +78,13 @@ public class RoomAssignmentCPSATOptimizer {
         final boolean releaseBathFloorLimit;
         /** 通常スタッフのうち1人だけ3フロアまで許可するか（最終手段） */
         final boolean allowOneStaffThreeFloors;
+        /** ★Step1_7: 大浴清掃スタッフの2フロア目をECO専用に限定するか（通常清掃部屋は1フロアのみ） */
+        final boolean bathSecondFloorEcoOnly;
 
         static final RelaxationConfig STEP1       = new RelaxationConfig(3, false, false);
         static final RelaxationConfig STEP1_5     = new RelaxationConfig(4, false, false);
+        // ★Step1_7: 大浴2フロア許可、ただし2フロア目はECO専用（Step2の前段）
+        static final RelaxationConfig STEP1_7_MAIN = new RelaxationConfig(4, true, false, true);
         static final RelaxationConfig STEP2_MAIN  = new RelaxationConfig(4, true,  false);
         static final RelaxationConfig STEP3_MAIN  = new RelaxationConfig(4, true,  true);
         static final RelaxationConfig STEP2_ANNEX = new RelaxationConfig(4, false, true);
@@ -89,13 +93,21 @@ public class RoomAssignmentCPSATOptimizer {
         static final RelaxationConfig STEP3_ANNEX = new RelaxationConfig(5, false, true);
 
         RelaxationConfig(int vendorMaxFloors, boolean releaseBathFloorLimit, boolean allowOneStaffThreeFloors) {
+            this(vendorMaxFloors, releaseBathFloorLimit, allowOneStaffThreeFloors, false);
+        }
+
+        RelaxationConfig(int vendorMaxFloors, boolean releaseBathFloorLimit, boolean allowOneStaffThreeFloors,
+                         boolean bathSecondFloorEcoOnly) {
             this.vendorMaxFloors           = vendorMaxFloors;
             this.releaseBathFloorLimit     = releaseBathFloorLimit;
             this.allowOneStaffThreeFloors  = allowOneStaffThreeFloors;
+            this.bathSecondFloorEcoOnly    = bathSecondFloorEcoOnly;
         }
 
         @Override
         public String toString() {
+            if (bathSecondFloorEcoOnly)
+                return "Step1_7(大浴2F目ECO専用)";
             if (vendorMaxFloors == 3 && !releaseBathFloorLimit && !allowOneStaffThreeFloors)
                 return "Step1(業者3F制限)";
             if (vendorMaxFloors == 4 && !releaseBathFloorLimit && !allowOneStaffThreeFloors)
@@ -318,17 +330,53 @@ public class RoomAssignmentCPSATOptimizer {
         public final int shortage;
         public final int ecoShortage;
         public final Map<String, Integer> staffShortage;
+        // ★不足箇所表示: ECO不足の階→不足室数（不足のある階のみ）
+        public final Map<Integer, Integer> ecoShortageByFloor;
 
         public PartialSolutionResult(List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
                                      int totalAssigned, int totalTarget,
                                      Map<String, Integer> staffShortage,
-                                     int ecoShortage) {
+                                     int ecoShortage,
+                                     Map<Integer, Integer> ecoShortageByFloor) {
             this.assignments = assignments;
             this.totalAssignedRooms = totalAssigned;
             this.totalTargetRooms = totalTarget;
             this.shortage = totalTarget - totalAssigned;
             this.staffShortage = staffShortage;
             this.ecoShortage = ecoShortage;
+            this.ecoShortageByFloor = ecoShortageByFloor != null ? ecoShortageByFloor : new HashMap<>();
+        }
+    }
+
+    /**
+     * ★不足箇所表示: 部分解の不足内訳（どのスタッフ・どの階か）をログに出力する
+     * シングル不足はスタッフ×建物単位のため「スタッフ名＋担当階」、ECO不足は階単位でそのまま表示。
+     */
+    private static void logShortageDetails(PartialSolutionResult result) {
+        for (Map.Entry<String, Integer> entry : result.staffShortage.entrySet()) {
+            if (entry.getValue() == null || entry.getValue() <= 0) continue;
+
+            String floorsText = "不明";
+            for (AdaptiveRoomOptimizer.StaffAssignment a : result.assignments) {
+                if (a.staff.name.equals(entry.getKey())) {
+                    List<Integer> floors = new ArrayList<>(a.floors);
+                    Collections.sort(floors);
+                    StringBuilder sb = new StringBuilder();
+                    for (int f : floors) {
+                        if (sb.length() > 0) sb.append(",");
+                        sb.append(f).append("階");
+                    }
+                    if (sb.length() > 0) floorsText = sb.toString();
+                    break;
+                }
+            }
+            LOGGER.warning(String.format("  └ シングル不足: %s %d室（担当階: %s）",
+                    entry.getKey(), entry.getValue(), floorsText));
+        }
+        for (Map.Entry<Integer, Integer> entry : result.ecoShortageByFloor.entrySet()) {
+            if (entry.getValue() > 0) {
+                LOGGER.warning(String.format("  └ ECO不足: %d階 %d室", entry.getKey(), entry.getValue()));
+            }
         }
     }
 
@@ -795,6 +843,7 @@ public class RoomAssignmentCPSATOptimizer {
             if (mainSolutions.isEmpty()) {
                 RelaxationConfig[] relaxSteps = {
                         RelaxationConfig.STEP1_5,
+                        RelaxationConfig.STEP1_7_MAIN,  // ★Step1_7: 大浴2フロア目ECO専用
                         RelaxationConfig.STEP2_MAIN,
                         RelaxationConfig.STEP3_MAIN,
                         RelaxationConfig.STEP4_MAIN   // ★追加
@@ -1093,6 +1142,7 @@ public class RoomAssignmentCPSATOptimizer {
             if (mainResult.isEmpty()) {
                 RelaxationConfig[] relaxSteps = {
                         RelaxationConfig.STEP1_5,
+                        RelaxationConfig.STEP1_7_MAIN,  // ★Step1_7: 大浴2フロア目ECO専用
                         RelaxationConfig.STEP2_MAIN,
                         RelaxationConfig.STEP3_MAIN,
                         RelaxationConfig.STEP4_MAIN   // ★追加
@@ -1204,6 +1254,7 @@ public class RoomAssignmentCPSATOptimizer {
             LOGGER.warning("=== 完全な解が見つかりませんでした（最終手段まで試行済み）===");
             LOGGER.warning(String.format("最良の部分解を使用: 割り振り済み=%d室 / 目標=%d室（未割当=%d室）",
                     best.totalAssignedRooms, best.totalTargetRooms, best.shortage));
+            logShortageDetails(best);  // ★不足箇所表示: どのスタッフ・どの階で不足しているか
             return best.assignments;
         }
 
@@ -1306,6 +1357,7 @@ public class RoomAssignmentCPSATOptimizer {
             List<List<AdaptiveRoomOptimizer.StaffAssignment>> results = new ArrayList<>();
             for (int i = 0; i < Math.min(maxSolutions, ecoPartialResults.size()); i++) {
                 LOGGER.warning(String.format("  ECO部分解 %d: ECO shortage=%d", i + 1, ecoPartialResults.get(i).ecoShortage));
+                logShortageDetails(ecoPartialResults.get(i));  // ★不足箇所表示: どの階でECO不足か
                 results.add(ecoPartialResults.get(i).assignments);
             }
             return results;
@@ -1316,6 +1368,10 @@ public class RoomAssignmentCPSATOptimizer {
             partialResults.sort((a, b) -> Integer.compare(a.shortage, b.shortage));
             List<List<AdaptiveRoomOptimizer.StaffAssignment>> results = new ArrayList<>();
             for (int i = 0; i < Math.min(maxSolutions, partialResults.size()); i++) {
+                // ★不足箇所表示: 採用する部分解ごとに、どのスタッフ・どの階で不足しているかを表示
+                LOGGER.warning(String.format("  部分解 %d: シングルshortage=%d, ECO shortage=%d",
+                        i + 1, partialResults.get(i).shortage, partialResults.get(i).ecoShortage));
+                logShortageDetails(partialResults.get(i));
                 results.add(partialResults.get(i).assignments);
             }
             return results;
@@ -1754,10 +1810,11 @@ public class RoomAssignmentCPSATOptimizer {
             boolean isBathStaff = staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE;
             if (isBathStaff) {
                 if (relaxConfig.releaseBathFloorLimit) {
-                    // Step2以降: 大浴スタッフも最大2フロアまで許可
+                    // Step1_7/Step2以降: 大浴スタッフも最大2フロアまで許可
                     maxMainFloors  = Math.min(maxMainFloors, 2);
                     maxAnnexFloors = Math.min(maxAnnexFloors, 2);
-                    LOGGER.info(String.format("大浴スタッフ %s: フロア制限緩和（最大2フロア）", staffName));
+                    LOGGER.info(String.format("大浴スタッフ %s: フロア制限緩和（最大2フロア%s）", staffName,
+                            relaxConfig.bathSecondFloorEcoOnly ? "・2フロア目はECO専用" : ""));
                 } else {
                     // Step1: 大浴スタッフは1フロアのみ（業者設定を上書き）
                     maxMainFloors  = 1;
@@ -1978,6 +2035,8 @@ public class RoomAssignmentCPSATOptimizer {
         // ECOはフロアの供給制約（上のECO供給制約）の中でCP-SATが自由に配分する。
         // 目的関数では各フロアの未割当ECO室数を最小化する。
         List<IntVar> ecoShortageVars = new ArrayList<>();
+        // ★不足箇所表示: ECO不足の階を特定できるよう、階→shortage変数のマップも保持
+        Map<Integer, IntVar> floorEcoShortByFloor = new LinkedHashMap<>();
 
         for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
             if (floor.ecoRooms <= 0) continue;
@@ -2002,6 +2061,7 @@ public class RoomAssignmentCPSATOptimizer {
             model.addEquality(floorEcoShort, LinearExpr.newBuilder()
                     .add(floor.ecoRooms).addTerm(floorEcoSum, -1).build());
             ecoShortageVars.add(floorEcoShort);
+            floorEcoShortByFloor.put(floor.floorNumber, floorEcoShort);  // ★不足箇所表示
         }
 
         // staffEcoShortageVars は使わないが後続コードとの互換性のため空Mapを定義
@@ -2027,6 +2087,53 @@ public class RoomAssignmentCPSATOptimizer {
                     LinearExpr.sum(staffEcoList.toArray(new IntVar[0])),
                     dist.ecoUpperLimit);
             LOGGER.info(String.format("ECO上限制約: %s ECO合計 ≤ %d室", staffName, dist.ecoUpperLimit));
+        }
+
+        // === ★Step1_7: 大浴清掃スタッフの通常清掃部屋を1フロアに限定（2フロア目はECO専用） ===
+        // 「通常清掃（＋ECO）1フロア＋ECO専用のもう1フロア」の形のみを許可するハード制約。
+        // 通常清掃変数（シングル＋ツイン）が存在する階の数を建物ごとに1以下へ制限することで、
+        // y=2フロア目には自動的にECOしか置けなくなる。階番号・室数には依存しない汎用制約。
+        if (relaxConfig.bathSecondFloorEcoOnly && relaxConfig.releaseBathFloorLimit) {
+            for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+                if (staffInfo.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
+                String staffName = staffInfo.staff.name;
+
+                List<BoolVar> mainNormalFloorVars  = new ArrayList<>();
+                List<BoolVar> annexNormalFloorVars = new ArrayList<>();
+
+                for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
+                    // この階の通常清掃変数（シングル＋ツイン）を収集
+                    List<IntVar> normalVars = new ArrayList<>();
+                    for (String roomType : floor.roomCounts.keySet()) {
+                        String xVarName = String.format("x_%s_%d_%s", staffName, floor.floorNumber, roomType);
+                        if (xVars.containsKey(xVarName)) normalVars.add(xVars.get(xVarName));
+                    }
+                    String tVarName = String.format("t_%s_%d", staffName, floor.floorNumber);
+                    if (twinVars.containsKey(tVarName)) normalVars.add(twinVars.get(tVarName));
+                    if (normalVars.isEmpty()) continue;
+
+                    // hasNormal=0 ならこの階の通常清掃は0室（ECOのみ可）
+                    BoolVar hasNormal = model.newBoolVar(
+                            String.format("bath_normal_%s_%d", staffName, floor.floorNumber));
+                    int bigM = Math.max(1, floor.getTotalNormalRooms());
+                    model.addLessOrEqual(
+                            LinearExpr.sum(normalVars.toArray(new IntVar[0])),
+                            LinearExpr.term(hasNormal, bigM));
+
+                    if (floor.isMainBuilding) mainNormalFloorVars.add(hasNormal);
+                    else                      annexNormalFloorVars.add(hasNormal);
+                }
+
+                // 通常清掃部屋を置ける階は建物ごとに1つまで
+                if (mainNormalFloorVars.size() >= 2) {
+                    model.addLessOrEqual(
+                            LinearExpr.sum(mainNormalFloorVars.toArray(new BoolVar[0])), 1);
+                }
+                if (annexNormalFloorVars.size() >= 2) {
+                    model.addLessOrEqual(
+                            LinearExpr.sum(annexNormalFloorVars.toArray(new BoolVar[0])), 1);
+                }
+            }
         }
 
         // === 大浴清掃スタッフの2フロア目使用ペナルティ ===
@@ -2303,6 +2410,7 @@ public class RoomAssignmentCPSATOptimizer {
         // === イテレーティブ解探索（nogoodループ） ===
         List<PartialSolutionResult> results = new ArrayList<>();
         int maxIterations = maxSolutions + 10;  // 部分解も見つかるため余裕を持つ
+        int consecutivePartial = 0;  // ★早期打ち切り: 連続部分解カウンタ（FEASIBLE時間切れ対策）
 
         for (int iteration = 0; iteration < maxIterations; iteration++) {
             CpSolver solver = new CpSolver();
@@ -2334,6 +2442,7 @@ public class RoomAssignmentCPSATOptimizer {
 
             int totalAssigned = 0, totalTarget = 0;
             Map<String, Integer> staffShortage = new HashMap<>();
+            List<String> shortageDetails = new ArrayList<>();  // ★不足箇所表示: 詳細ログ行
 
             for (AdaptiveRoomOptimizer.ExtendedStaffInfo si : staffList) {
                 String sn = si.staff.name;
@@ -2356,16 +2465,89 @@ public class RoomAssignmentCPSATOptimizer {
                 int assigned = target - mainShort - annexShort;
                 totalAssigned += assigned;
                 staffShortage.put(sn, mainShort + annexShort);
+
+                // ★不足箇所表示: 不足のあるスタッフの詳細行（建物別内訳＋担当階）を組み立てる
+                if (mainShort + annexShort > 0) {
+                    String floorsText = "不明";
+                    for (AdaptiveRoomOptimizer.StaffAssignment a : assignments) {
+                        if (a.staff.name.equals(sn)) {
+                            List<Integer> floors = new ArrayList<>(a.floors);
+                            Collections.sort(floors);
+                            StringBuilder fb = new StringBuilder();
+                            for (int f : floors) {
+                                if (fb.length() > 0) fb.append(",");
+                                fb.append(f).append("階");
+                            }
+                            if (fb.length() > 0) floorsText = fb.toString();
+                            break;
+                        }
+                    }
+                    StringBuilder detail = new StringBuilder();
+                    if (mainShort > 0)  detail.append("本館").append(mainShort).append("室");
+                    if (annexShort > 0) {
+                        if (detail.length() > 0) detail.append("、");
+                        detail.append("別館").append(annexShort).append("室");
+                    }
+                    shortageDetails.add(String.format("  └ シングル不足: %s %s（担当階: %s）",
+                            sn, detail, floorsText));
+                }
             }
 
-            results.add(new PartialSolutionResult(assignments, totalAssigned, totalTarget, staffShortage, totalEcoShortage));
+            // ★不足箇所表示: ECO不足の階→不足室数を収集
+            Map<Integer, Integer> ecoShortageByFloor = new LinkedHashMap<>();
+            for (Map.Entry<Integer, IntVar> entry : floorEcoShortByFloor.entrySet()) {
+                int v = (int) solver.value(entry.getValue());
+                if (v > 0) ecoShortageByFloor.put(entry.getKey(), v);
+            }
+
+            results.add(new PartialSolutionResult(assignments, totalAssigned, totalTarget, staffShortage, totalEcoShortage, ecoShortageByFloor));
             LOGGER.info(String.format("統合割り振り: イテレーション%d - %s（シングルshortage=%d, ECO shortage=%d）",
                     iteration + 1,
                     (totalShortage == 0 && totalEcoShortage == 0) ? "完全解" : "部分解",
                     totalShortage, totalEcoShortage));
 
+            // ★不足箇所表示: 部分解の場合はどこで不足しているかを表示
+            for (String detail : shortageDetails) {
+                LOGGER.info(detail);
+            }
+            for (Map.Entry<Integer, Integer> entry : ecoShortageByFloor.entrySet()) {
+                LOGGER.info(String.format("  └ ECO不足: %d階 %d室", entry.getKey(), entry.getValue()));
+            }
+
             // 完全解の数をカウント（シングル+ECO両方0）
             long completeCount = results.stream().filter(r -> r.shortage == 0 && r.ecoShortage == 0).count();
+            boolean isPartial = (totalShortage > 0 || totalEcoShortage > 0);
+
+            // ★早期打ち切り(a): OPTIMALでシングル不足が出た場合、この制約下ではshortage=0の解が
+            // 存在しないことが実質確定している（シングル不足の重み1000は他の目的関数項より支配的）。
+            // 以降のnogood探索は無駄なため打ち切り、次の緩和ステップへ進む。
+            if (status == CpSolverStatus.OPTIMAL && totalShortage > 0) {
+                LOGGER.info("統合割り振り: この制約下では完全解が存在しないため探索を打ち切ります（次の緩和ステップへ）");
+                break;
+            }
+
+            // ★早期打ち切り(b): 完全解を1個以上確保済みで部分解が出始めた場合、
+            // 残りイテレーションも部分解で埋まる見込みが高いため多様性収集を終了する。
+            if (isPartial && completeCount >= 1) {
+                LOGGER.info(String.format(
+                        "統合割り振り: 完全解%d個を確保済みのため、部分解が出た時点で探索を終了します", completeCount));
+                break;
+            }
+
+            // ★早期打ち切り(c): 部分解が連続した場合（FEASIBLE時間切れでOPTIMAL証明が取れない日を含む）、
+            // nogoodループは解の多様性を集める仕組みであり完全解の発見可能性を上げるものではないため、
+            // 完全解の見込み薄と判断して次の緩和ステップへ進む。部分解はresultsに残るので
+            // 全ステップ失敗時の最良部分解フォールバックは従来どおり機能する。
+            if (isPartial) {
+                consecutivePartial++;
+                if (consecutivePartial >= 2) {
+                    LOGGER.info("統合割り振り: 部分解が連続したため探索を打ち切ります（次の緩和ステップへ）");
+                    break;
+                }
+            } else {
+                consecutivePartial = 0;
+            }
+
             if (completeCount >= maxSolutions) {
                 LOGGER.info(String.format("統合割り振り: 目標の%d個の完全解を取得、探索終了", maxSolutions));
                 break;

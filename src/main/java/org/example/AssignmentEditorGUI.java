@@ -637,6 +637,9 @@ public class AssignmentEditorGUI extends JFrame {
         // ★残し部屋(事前設定): メイン画面で除外された部屋を「未割り当て発の残し部屋」として引き継ぐ
         seedPreExcludedRooms();
 
+        // ★レイトアウト: メイン画面で設定されたレイトアウト部屋を備考に引き継ぐ
+        seedLateOutRemarks();
+
         initializeGUI();
         loadAssignmentData();
     }
@@ -651,6 +654,20 @@ public class AssignmentEditorGUI extends JFrame {
                 && processingResult.cleaningDataObj.preExcludedRooms != null) {
             for (FileProcessor.Room room : processingResult.cleaningDataObj.preExcludedRooms) {
                 unassignedExcludedRooms.add(room.roomNumber);
+            }
+        }
+    }
+
+    /**
+     * ★レイトアウト: メイン画面で設定されたレイトアウト部屋の備考を自動登録する
+     * roomRemarksMapは全解共通でクリアされないため、呼び出しはコンストラクタの1回のみ。
+     * （再呼び出しすると備考設定ダイアログでユーザーが削除した備考が復活してしまう）
+     */
+    private void seedLateOutRemarks() {
+        if (processingResult != null && processingResult.cleaningDataObj != null
+                && processingResult.cleaningDataObj.lateOutRooms != null) {
+            for (Map.Entry<String, String> entry : processingResult.cleaningDataObj.lateOutRooms.entrySet()) {
+                roomRemarksMap.putIfAbsent(entry.getKey(), entry.getValue() + "以降清掃");
             }
         }
     }

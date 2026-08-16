@@ -33,12 +33,13 @@ public class FileProcessor {
         public final List<String> ecoWarnings;  // ★追加: エコ清掃警告リスト
         public final List<Room> unsoldRooms;    // ★ウォークイン用: 未販売部屋（状態0、故障部屋・清掃対象追加済みは含まない）
         public final List<Room> preExcludedRooms;  // ★残し部屋(事前設定): メイン画面で清掃対象から除外されたチェックアウト部屋
+        public final Map<String, String> lateOutRooms;  // ★レイトアウト: 部屋番号 → アウト予定時刻
 
-        // ★残し部屋(事前設定)対応: 事前除外部屋リスト付きコンストラクタ（マスター）
+        // ★レイトアウト対応: レイトアウト設定付きコンストラクタ（マスター）
         public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
                             List<Room> ecoRooms, List<Room> brokenRooms,
                             List<String> ecoWarnings, List<Room> unsoldRooms,
-                            List<Room> preExcludedRooms) {
+                            List<Room> preExcludedRooms, Map<String, String> lateOutRooms) {
             this.mainRooms = mainRooms;
             this.annexRooms = annexRooms;
             this.ecoRooms = ecoRooms;
@@ -46,6 +47,7 @@ public class FileProcessor {
             this.ecoWarnings = ecoWarnings != null ? ecoWarnings : new ArrayList<>();
             this.unsoldRooms = unsoldRooms != null ? unsoldRooms : new ArrayList<>();
             this.preExcludedRooms = preExcludedRooms != null ? preExcludedRooms : new ArrayList<>();
+            this.lateOutRooms = lateOutRooms != null ? lateOutRooms : new HashMap<>();
 
             // 清掃対象の全部屋リストを作成
             this.roomsToClean = new ArrayList<>();
@@ -55,6 +57,14 @@ public class FileProcessor {
             this.totalMainRooms = mainRooms.size();
             this.totalAnnexRooms = annexRooms.size();
             this.totalBrokenRooms = brokenRooms.size();
+        }
+
+        // ★残し部屋(事前設定)対応: 後方互換コンストラクタ（レイトアウトなし）
+        public CleaningData(List<Room> mainRooms, List<Room> annexRooms,
+                            List<Room> ecoRooms, List<Room> brokenRooms,
+                            List<String> ecoWarnings, List<Room> unsoldRooms,
+                            List<Room> preExcludedRooms) {
+            this(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, unsoldRooms, preExcludedRooms, new HashMap<>());
         }
 
         // ★ウォークイン対応: 未販売部屋リスト付きコンストラクタ（後方互換: 事前除外なし）
@@ -537,7 +547,25 @@ public class FileProcessor {
             LOGGER.info("  - 未販売部屋（ウォークイン候補）: " + unsoldRooms.size() + "室");
             LOGGER.info("  - 残し部屋(事前設定): " + preExcludedRooms.size() + "室");
 
-            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, unsoldRooms, preExcludedRooms);
+            // ★レイトアウト: 設定を実際の清掃対象部屋に絞って格納（CSV差し替え等で対象外になった設定は警告）
+            Map<String, String> lateOutSettings = getLateOutRoomSettings();
+            Map<String, String> lateOutRooms = new HashMap<>();
+            if (!lateOutSettings.isEmpty()) {
+                Set<String> cleanableRoomNumbers = new HashSet<>();
+                mainRooms.forEach(r -> cleanableRoomNumbers.add(r.roomNumber));
+                annexRooms.forEach(r -> cleanableRoomNumbers.add(r.roomNumber));
+                for (Map.Entry<String, String> entry : lateOutSettings.entrySet()) {
+                    if (cleanableRoomNumbers.contains(entry.getKey())) {
+                        lateOutRooms.put(entry.getKey(), entry.getValue());
+                    } else {
+                        LOGGER.warning("レイトアウト設定された部屋が清掃対象に存在しないため無視します: "
+                                + entry.getKey() + " (" + entry.getValue() + ")");
+                    }
+                }
+                LOGGER.info("  - レイトアウト部屋: " + lateOutRooms.size() + "室");
+            }
+
+            return new CleaningData(mainRooms, annexRooms, ecoRooms, brokenRooms, ecoWarnings, unsoldRooms, preExcludedRooms, lateOutRooms);
 
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "部屋データの読み込み中にエラーが発生しました", e);
@@ -588,6 +616,36 @@ public class FileProcessor {
         }
 
         return excludedRooms;
+    }
+
+    /**
+     * ★レイトアウト: メイン画面で設定されたレイトアウト部屋の設定をSystemPropertyから取得する
+     * 形式: roomNumber=時刻;roomNumber=時刻;...
+     * （時刻に":"や","が含まれ得るため、エントリ区切りは";"、キー値区切りは最初の"="を使用）
+     * 戻り値: Map<部屋番号, アウト予定時刻>
+     */
+    private static Map<String, String> getLateOutRoomSettings() {
+        Map<String, String> settings = new HashMap<>();
+
+        String savedSettings = System.getProperty("lateOutRooms");
+        if (savedSettings == null || savedSettings.trim().isEmpty()) {
+            LOGGER.info("レイトアウト部屋の設定はありません");
+            return settings;
+        }
+
+        LOGGER.info("システムプロパティからレイトアウト部屋設定を取得: " + savedSettings);
+        for (String entry : savedSettings.split(";")) {
+            int sep = entry.indexOf('=');
+            if (sep <= 0) continue;
+            String roomNumber = entry.substring(0, sep).trim();
+            String time = entry.substring(sep + 1).trim();
+            if (!roomNumber.isEmpty() && !time.isEmpty()) {
+                settings.put(roomNumber, time);
+            }
+        }
+
+        LOGGER.info("レイトアウト部屋設定: " + settings.size() + "室");
+        return settings;
     }
 
     /**

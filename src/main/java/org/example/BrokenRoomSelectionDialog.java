@@ -19,8 +19,16 @@ import java.util.logging.Logger;
 public class BrokenRoomSelectionDialog extends JDialog {
     private static final Logger LOGGER = Logger.getLogger(BrokenRoomSelectionDialog.class.getName());
 
+    /** タブインデックス: 故障部屋 */
+    public static final int TAB_BROKEN = 0;
+    /** タブインデックス: 未販売設定 */
+    public static final int TAB_UNSOLD = 1;
+
+    private JTabbedPane tabbedPane;
     private JTable brokenRoomTable;
-    private DefaultTableModel tableModel;
+    private JTable unsoldRoomTable;
+    private DefaultTableModel brokenTableModel;
+    private DefaultTableModel unsoldTableModel;
     private Map<String, BrokenRoomInfo> brokenRoomData;
     private Set<String> selectedForCleaning;
     private boolean dialogResult = false;
@@ -65,9 +73,16 @@ public class BrokenRoomSelectionDialog extends JDialog {
     }
 
     /**
-     * コンストラクタ
+     * コンストラクタ（故障部屋タブを初期表示）
      */
     public BrokenRoomSelectionDialog(JFrame parent, File roomDataFile) {
+        this(parent, roomDataFile, TAB_BROKEN);
+    }
+
+    /**
+     * コンストラクタ（初期表示タブを指定）
+     */
+    public BrokenRoomSelectionDialog(JFrame parent, File roomDataFile, int initialTabIndex) {
         super(parent, "故障・未販売部屋清掃設定", true);
         this.brokenRoomData = new HashMap<>();
         this.selectedForCleaning = new HashSet<>();
@@ -76,7 +91,10 @@ public class BrokenRoomSelectionDialog extends JDialog {
         loadBrokenRoomData(roomDataFile);
 
         initializeGUI();
-        setSize(680, 400);
+        if (initialTabIndex == TAB_UNSOLD) {
+            tabbedPane.setSelectedIndex(TAB_UNSOLD);
+        }
+        setSize(680, 430);
         setLocationRelativeTo(parent);
     }
 
@@ -162,11 +180,18 @@ public class BrokenRoomSelectionDialog extends JDialog {
         infoPanel.add(infoLabel, BorderLayout.CENTER);
         add(infoPanel, BorderLayout.NORTH);
 
-        // 中央：故障・未販売部屋テーブル
-        createBrokenRoomTable();
-        JScrollPane scrollPane = new JScrollPane(brokenRoomTable);
-        scrollPane.setPreferredSize(new Dimension(550, 250));
-        add(scrollPane, BorderLayout.CENTER);
+        // 中央：故障部屋／未販売設定タブ
+        brokenTableModel = createRoomTableModel(r -> r.isBroken);
+        brokenRoomTable = createRoomTable(brokenTableModel);
+        unsoldTableModel = createRoomTableModel(r -> r.isUnsold);
+        unsoldRoomTable = createRoomTable(unsoldTableModel);
+
+        tabbedPane = new JTabbedPane();
+        tabbedPane.addTab("故障部屋 (" + brokenCount + ")",
+                createTabComponent(brokenRoomTable, "故障状態の部屋はありません"));
+        tabbedPane.addTab("未販売設定 (" + unsoldCount + ")",
+                createTabComponent(unsoldRoomTable, "未販売状態の部屋はありません"));
+        add(tabbedPane, BorderLayout.CENTER);
 
         // 下部：操作ボタン
         JPanel buttonPanel = new JPanel(new FlowLayout());
@@ -204,11 +229,11 @@ public class BrokenRoomSelectionDialog extends JDialog {
     }
 
     /**
-     * 故障・未販売部屋テーブルの作成
+     * 指定区分の部屋のみを含むテーブルモデルの作成
      */
-    private void createBrokenRoomTable() {
+    private DefaultTableModel createRoomTableModel(java.util.function.Predicate<BrokenRoomInfo> filter) {
         String[] columnNames = {"選択", "部屋番号", "部屋タイプ", "階", "建物", "区分"};
-        tableModel = new DefaultTableModel(columnNames, 0) {
+        DefaultTableModel model = new DefaultTableModel(columnNames, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
                 if (columnIndex == 0) return Boolean.class;
@@ -221,8 +246,13 @@ public class BrokenRoomSelectionDialog extends JDialog {
             }
         };
 
-        // データを追加
-        List<BrokenRoomInfo> sortedRooms = new ArrayList<>(brokenRoomData.values());
+        // データを追加（フィルタに合致する部屋のみ）
+        List<BrokenRoomInfo> sortedRooms = new ArrayList<>();
+        for (BrokenRoomInfo roomInfo : brokenRoomData.values()) {
+            if (filter.test(roomInfo)) {
+                sortedRooms.add(roomInfo);
+            }
+        }
         sortedRooms.sort(Comparator.comparing(r -> r.roomNumber));
 
         for (BrokenRoomInfo roomInfo : sortedRooms) {
@@ -232,50 +262,17 @@ public class BrokenRoomSelectionDialog extends JDialog {
                     roomInfo.roomType,
                     roomInfo.floor + "階",
                     roomInfo.building,
-                    roomInfo.getCategoryDisplay()  // ★追加: 区分（故障／未販売）
+                    roomInfo.getCategoryDisplay()  // 区分（故障／未販売／故障＋未販売）
             };
-            tableModel.addRow(row);
+            model.addRow(row);
         }
 
-        brokenRoomTable = new JTable(tableModel);
-        brokenRoomTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        brokenRoomTable.setRowHeight(25);
-
-        // 列幅設定
-        brokenRoomTable.getColumnModel().getColumn(0).setPreferredWidth(60);  // 選択
-        brokenRoomTable.getColumnModel().getColumn(1).setPreferredWidth(100); // 部屋番号
-        brokenRoomTable.getColumnModel().getColumn(2).setPreferredWidth(100); // 部屋タイプ
-        brokenRoomTable.getColumnModel().getColumn(3).setPreferredWidth(80);  // 階
-        brokenRoomTable.getColumnModel().getColumn(4).setPreferredWidth(80);  // 建物
-        brokenRoomTable.getColumnModel().getColumn(5).setPreferredWidth(110); // ★追加: 区分
-
-        // チェックボックスのレンダラー設定
-        brokenRoomTable.getColumnModel().getColumn(0).setCellRenderer(new TableCellRenderer() {
-            private final JCheckBox checkBox = new JCheckBox();
-
-            @Override
-            public Component getTableCellRendererComponent(JTable table, Object value,
-                                                           boolean isSelected, boolean hasFocus, int row, int column) {
-                checkBox.setSelected(value != null && (Boolean) value);
-                checkBox.setHorizontalAlignment(JLabel.CENTER);
-
-                if (isSelected) {
-                    checkBox.setBackground(table.getSelectionBackground());
-                } else {
-                    checkBox.setBackground(table.getBackground());
-                }
-                checkBox.setOpaque(true);
-
-                return checkBox;
-            }
-        });
-
         // チェックボックス変更イベント
-        tableModel.addTableModelListener(e -> {
+        model.addTableModelListener(e -> {
             if (e.getColumn() == 0) { // チェックボックス列
                 int row = e.getFirstRow();
-                boolean selected = (Boolean) tableModel.getValueAt(row, 0);
-                String roomNumber = (String) tableModel.getValueAt(row, 1);
+                boolean selected = (Boolean) model.getValueAt(row, 0);
+                String roomNumber = (String) model.getValueAt(row, 1);
 
                 BrokenRoomInfo roomInfo = brokenRoomData.get(roomNumber);
                 if (roomInfo != null) {
@@ -287,17 +284,95 @@ public class BrokenRoomSelectionDialog extends JDialog {
                     }
                 }
 
+                // 故障＋未販売の部屋はもう片方のタブにも表示されるため、チェック状態を同期
+                syncOtherTable(model, roomNumber, selected);
+
                 updateSelectionCount();
             }
         });
+
+        return model;
     }
 
     /**
-     * 全選択/全解除
+     * テーブルの作成（レンダラー・列幅設定）
+     */
+    private JTable createRoomTable(DefaultTableModel model) {
+        JTable table = new JTable(model);
+        table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        table.setRowHeight(25);
+
+        // 列幅設定
+        table.getColumnModel().getColumn(0).setPreferredWidth(60);  // 選択
+        table.getColumnModel().getColumn(1).setPreferredWidth(100); // 部屋番号
+        table.getColumnModel().getColumn(2).setPreferredWidth(100); // 部屋タイプ
+        table.getColumnModel().getColumn(3).setPreferredWidth(80);  // 階
+        table.getColumnModel().getColumn(4).setPreferredWidth(80);  // 建物
+        table.getColumnModel().getColumn(5).setPreferredWidth(110); // 区分
+
+        // チェックボックスのレンダラー設定
+        table.getColumnModel().getColumn(0).setCellRenderer(new TableCellRenderer() {
+            private final JCheckBox checkBox = new JCheckBox();
+
+            @Override
+            public Component getTableCellRendererComponent(JTable t, Object value,
+                                                           boolean isSelected, boolean hasFocus, int row, int column) {
+                checkBox.setSelected(value != null && (Boolean) value);
+                checkBox.setHorizontalAlignment(JLabel.CENTER);
+
+                if (isSelected) {
+                    checkBox.setBackground(t.getSelectionBackground());
+                } else {
+                    checkBox.setBackground(t.getBackground());
+                }
+                checkBox.setOpaque(true);
+
+                return checkBox;
+            }
+        });
+
+        return table;
+    }
+
+    /**
+     * タブ内コンポーネントの作成（該当部屋が無い場合はラベルを表示）
+     */
+    private JComponent createTabComponent(JTable table, String emptyMessage) {
+        if (table.getModel().getRowCount() == 0) {
+            JLabel emptyLabel = new JLabel(emptyMessage, JLabel.CENTER);
+            emptyLabel.setFont(new Font("MS Gothic", Font.PLAIN, 14));
+            return emptyLabel;
+        }
+        JScrollPane scrollPane = new JScrollPane(table);
+        scrollPane.setPreferredSize(new Dimension(550, 250));
+        return scrollPane;
+    }
+
+    /**
+     * 故障＋未販売の部屋について、もう片方のタブのチェック状態を同期する
+     */
+    private void syncOtherTable(DefaultTableModel sourceModel, String roomNumber, boolean selected) {
+        DefaultTableModel otherModel = (sourceModel == brokenTableModel) ? unsoldTableModel : brokenTableModel;
+        if (otherModel == null) return;
+
+        for (int row = 0; row < otherModel.getRowCount(); row++) {
+            if (roomNumber.equals(otherModel.getValueAt(row, 1))) {
+                boolean current = Boolean.TRUE.equals(otherModel.getValueAt(row, 0));
+                if (current != selected) { // 値が変わる場合のみ更新（相互呼び出しのループ防止）
+                    otherModel.setValueAt(selected, row, 0);
+                }
+                break;
+            }
+        }
+    }
+
+    /**
+     * 全選択/全解除（現在表示中のタブに適用）
      */
     private void selectAllRooms(boolean select) {
-        for (int row = 0; row < tableModel.getRowCount(); row++) {
-            tableModel.setValueAt(select, row, 0);
+        DefaultTableModel model = (tabbedPane.getSelectedIndex() == 1) ? unsoldTableModel : brokenTableModel;
+        for (int row = 0; row < model.getRowCount(); row++) {
+            model.setValueAt(select, row, 0);
         }
     }
 

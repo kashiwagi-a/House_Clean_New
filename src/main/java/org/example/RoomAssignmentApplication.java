@@ -33,8 +33,10 @@ public class RoomAssignmentApplication extends JFrame {
     private JButton selectEcoDataButton;
     private JButton selectDateButton;
     private JButton brokenRoomSettingsButton;
+    private JButton unsoldRoomSettingsButton;  // ★ボタン分割: 未販売設定ボタン
     private JButton pendingRoomSettingsButton;
     private JButton excludedRoomSettingsButton;  // ★残し部屋(事前設定): 残し部屋設定ボタン
+    private JButton lateOutSettingsButton;  // ★レイトアウト: レイトアウト設定ボタン
     private JButton processButton;
     private JButton viewResultsButton;
 
@@ -305,16 +307,31 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     private JPanel createButtonPanel() {
-        JPanel panel = new JPanel(new FlowLayout());
+        // ★ボタン分割: ボタンが6個になったため、設定系（上段）と実行系（下段）の2行構成にする
+        JPanel panel = new JPanel(new GridLayout(2, 1));
+        JPanel settingsRow = new JPanel(new FlowLayout());
+        JPanel executionRow = new JPanel(new FlowLayout());
 
-        brokenRoomSettingsButton = new JButton("故障・未販売設定");
+        brokenRoomSettingsButton = new JButton("故障部屋");
         brokenRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
-        brokenRoomSettingsButton.setPreferredSize(new Dimension(150, 35));
+        brokenRoomSettingsButton.setPreferredSize(new Dimension(130, 35));
         brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
         brokenRoomSettingsButton.setForeground(Color.BLACK);
-        brokenRoomSettingsButton.addActionListener(this::openBrokenRoomSettings);
+        brokenRoomSettingsButton.addActionListener(
+                e -> openBrokenRoomSettings(BrokenRoomSelectionDialog.TAB_BROKEN));
         brokenRoomSettingsButton.setEnabled(false);
-        panel.add(brokenRoomSettingsButton);
+        settingsRow.add(brokenRoomSettingsButton);
+
+        // ★ボタン分割: 未販売設定ボタン（故障部屋と同じダイアログを未販売タブで開く）
+        unsoldRoomSettingsButton = new JButton("未販売設定");
+        unsoldRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
+        unsoldRoomSettingsButton.setPreferredSize(new Dimension(130, 35));
+        unsoldRoomSettingsButton.setBackground(new Color(255, 140, 0));
+        unsoldRoomSettingsButton.setForeground(Color.BLACK);
+        unsoldRoomSettingsButton.addActionListener(
+                e -> openBrokenRoomSettings(BrokenRoomSelectionDialog.TAB_UNSOLD));
+        unsoldRoomSettingsButton.setEnabled(false);
+        settingsRow.add(unsoldRoomSettingsButton);
 
         pendingRoomSettingsButton = new JButton("未チェックイン設定");
         pendingRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
@@ -323,7 +340,7 @@ public class RoomAssignmentApplication extends JFrame {
         pendingRoomSettingsButton.setForeground(Color.WHITE);
         pendingRoomSettingsButton.addActionListener(this::openPendingRoomSettings);
         pendingRoomSettingsButton.setEnabled(false);
-        panel.add(pendingRoomSettingsButton);
+        settingsRow.add(pendingRoomSettingsButton);
 
         // ★残し部屋(事前設定): 残し部屋設定ボタン（調整画面の残し部屋設定ボタンと同系色）
         excludedRoomSettingsButton = new JButton("残し部屋設定");
@@ -333,7 +350,17 @@ public class RoomAssignmentApplication extends JFrame {
         excludedRoomSettingsButton.setForeground(Color.BLACK);
         excludedRoomSettingsButton.addActionListener(this::openExcludedRoomSettings);
         excludedRoomSettingsButton.setEnabled(false);
-        panel.add(excludedRoomSettingsButton);
+        settingsRow.add(excludedRoomSettingsButton);
+
+        // ★レイトアウト: レイトアウト設定ボタン
+        lateOutSettingsButton = new JButton("レイトアウト設定");
+        lateOutSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
+        lateOutSettingsButton.setPreferredSize(new Dimension(150, 35));
+        lateOutSettingsButton.setBackground(new Color(147, 112, 219));
+        lateOutSettingsButton.setForeground(Color.BLACK);
+        lateOutSettingsButton.addActionListener(this::openLateOutSettings);
+        lateOutSettingsButton.setEnabled(false);
+        settingsRow.add(lateOutSettingsButton);
 
         processButton = new JButton("処理実行");
         processButton.setFont(new Font("MS Gothic", Font.BOLD, 14));
@@ -346,13 +373,16 @@ public class RoomAssignmentApplication extends JFrame {
         viewResultsButton.addActionListener(this::viewResults);
         viewResultsButton.setEnabled(false);
 
-        panel.add(processButton);
-        panel.add(viewResultsButton);
+        executionRow.add(processButton);
+        executionRow.add(viewResultsButton);
+
+        panel.add(settingsRow);
+        panel.add(executionRow);
 
         return panel;
     }
 
-    private void openBrokenRoomSettings(ActionEvent e) {
+    private void openBrokenRoomSettings(int initialTab) {
         if (selectedRoomFile == null) {
             JOptionPane.showMessageDialog(this,
                     "部屋データファイルを先に選択してください。",
@@ -361,7 +391,7 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         try {
-            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(this, selectedRoomFile);
+            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(this, selectedRoomFile, initialTab);
             dialog.setVisible(true);
 
             if (dialog.getDialogResult()) {
@@ -376,9 +406,13 @@ public class RoomAssignmentApplication extends JFrame {
                     }
                 }
 
+                // ★ボタン分割: ダイアログは両タブを含み1回の設定完了で両区分が確定するため、両ボタンを設定済み表示にする
                 brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
                 brokenRoomSettingsButton.setForeground(Color.BLACK);
-                brokenRoomSettingsButton.setText("故障・未販売設定済み");
+                brokenRoomSettingsButton.setText("故障部屋設定済み");
+                unsoldRoomSettingsButton.setBackground(new Color(34, 139, 34));
+                unsoldRoomSettingsButton.setForeground(Color.BLACK);
+                unsoldRoomSettingsButton.setText("未販売設定済み");
             }
 
         } catch (Exception ex) {
@@ -458,8 +492,11 @@ public class RoomAssignmentApplication extends JFrame {
             rememberDataFolder(selectedRoomFile);
 
             brokenRoomSettingsButton.setEnabled(true);
-            brokenRoomSettingsButton.setText("故障・未販売設定");
+            brokenRoomSettingsButton.setText("故障部屋");
             brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
+            unsoldRoomSettingsButton.setEnabled(true);
+            unsoldRoomSettingsButton.setText("未販売設定");
+            unsoldRoomSettingsButton.setBackground(new Color(255, 140, 0));
             selectedBrokenRoomsForCleaning.clear();
 
             // ★残し部屋(事前設定): ファイル変更時は残し部屋設定もリセット
@@ -468,6 +505,12 @@ public class RoomAssignmentApplication extends JFrame {
             excludedRoomSettingsButton.setForeground(Color.BLACK);
             preExcludedRooms.clear();
             System.clearProperty("preExcludedRooms");
+
+            // ★レイトアウト: ファイル変更時はレイトアウト設定もリセット
+            lateOutSettingsButton.setEnabled(true);
+            lateOutSettingsButton.setText("レイトアウト設定");
+            lateOutSettingsButton.setBackground(new Color(147, 112, 219));
+            System.clearProperty("lateOutRooms");
 
             updateButtonStates();
         }
@@ -633,6 +676,48 @@ public class RoomAssignmentApplication extends JFrame {
         }
     }
 
+    /**
+     * ★レイトアウト: レイトアウト設定ダイアログを開く
+     */
+    private void openLateOutSettings(ActionEvent e) {
+        if (selectedRoomFile == null) {
+            JOptionPane.showMessageDialog(this,
+                    "部屋データファイルを先に選択してください。",
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        try {
+            LateOutRoomSelectionDialog dialog = new LateOutRoomSelectionDialog(this, selectedRoomFile);
+            dialog.setVisible(true);
+
+            if (dialog.getDialogResult()) {
+                Map<String, String> lateOutSettings = dialog.getLateOutSettings();
+
+                appendLog("レイトアウト部屋設定が完了しました:");
+                appendLog("  レイトアウト部屋: " + lateOutSettings.size() + "室");
+                lateOutSettings.forEach((room, time) ->
+                        appendLog("    " + room + " → " + time + "以降清掃"));
+
+                if (!lateOutSettings.isEmpty()) {
+                    lateOutSettingsButton.setBackground(new Color(34, 139, 34));
+                    lateOutSettingsButton.setForeground(Color.BLACK);
+                    lateOutSettingsButton.setText("レイトアウト設定済み");
+                } else {
+                    lateOutSettingsButton.setBackground(new Color(147, 112, 219));
+                    lateOutSettingsButton.setForeground(Color.BLACK);
+                    lateOutSettingsButton.setText("レイトアウト設定");
+                }
+            }
+
+        } catch (Exception ex) {
+            LOGGER.severe("レイトアウト設定ダイアログでエラー: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this,
+                    "レイトアウト設定でエラーが発生しました: " + ex.getMessage(),
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
     private void selectDate(ActionEvent e) {
         Date currentDate = selectedDate != null ?
                 java.sql.Date.valueOf(selectedDate) : new Date();
@@ -690,6 +775,8 @@ public class RoomAssignmentApplication extends JFrame {
         boolean canProcess = selectedRoomFile != null && selectedShiftFile != null && selectedDate != null;
         processButton.setEnabled(canProcess);
         brokenRoomSettingsButton.setEnabled(selectedRoomFile != null);
+        unsoldRoomSettingsButton.setEnabled(selectedRoomFile != null);
+        lateOutSettingsButton.setEnabled(selectedRoomFile != null);
         pendingRoomSettingsButton.setEnabled(selectedRoomFile != null && selectedEcoDataFile != null);
         // ★残し部屋(事前設定): 部屋データファイル選択後に有効化
         excludedRoomSettingsButton.setEnabled(selectedRoomFile != null);
@@ -914,6 +1001,12 @@ public class RoomAssignmentApplication extends JFrame {
                 for (String warn : assigner.getTwinWarnings()) {
                     appendLog("【本館ツイン警告】" + warn);
                 }
+                // ★レイトアウト: 大浴場清掃スタッフから移せなかった場合の警告を表示
+                for (String warn : assigner.getLateOutWarnings()) {
+                    appendLog("【レイトアウト警告】" + warn);
+                }
+                // ★未割り当て表示: 未割り当てに残った部屋を処理ログに表示
+                appendUnassignedRoomsLog(assigner.getUnassignedRooms());
             } catch (Exception ex) {
                 appendLog("手動割り当ての部屋番号確定に失敗しましたが続行します: " + ex.getMessage());
             }
@@ -1006,6 +1099,12 @@ public class RoomAssignmentApplication extends JFrame {
                         for (String warn : assigner.getTwinWarnings()) {
                             appendLog("【本館ツイン警告】" + warn);
                         }
+                        // ★レイトアウト: 大浴場清掃スタッフから移せなかった場合の警告を表示
+                        for (String warn : assigner.getLateOutWarnings()) {
+                            appendLog("【レイトアウト警告】" + warn);
+                        }
+                        // ★未割り当て表示: 未割り当てに残った部屋を処理ログに表示
+                        appendUnassignedRoomsLog(assigner.getUnassignedRooms());
                     } catch (Exception ex) {
                         appendLog("部屋番号の詳細割り当てに失敗しましたが、処理を続行します: " + ex.getMessage());
                     }
@@ -1917,6 +2016,21 @@ public class RoomAssignmentApplication extends JFrame {
             logArea.append(message + "\n");
             logArea.setCaretPosition(logArea.getDocument().getLength());
         });
+    }
+
+    /**
+     * ★未割り当て表示: 未割り当てに残った部屋を処理ログに表示する
+     */
+    private void appendUnassignedRoomsLog(List<FileProcessor.Room> unassignedRooms) {
+        if (unassignedRooms.isEmpty()) {
+            appendLog("未割り当て部屋: なし（全部屋割り当て済み）");
+            return;
+        }
+        appendLog("【未割り当て部屋】" + unassignedRooms.size() + "室が未割り当てです:");
+        for (FileProcessor.Room room : unassignedRooms) {
+            appendLog("  " + room.toString());
+        }
+        appendLog("  ※調整画面の「未割り当て」ボタンから手動で割り当てできます。");
     }
 
     public static void main(String[] args) {

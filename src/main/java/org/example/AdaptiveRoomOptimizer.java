@@ -159,6 +159,8 @@ public class AdaptiveRoomOptimizer {
         public final boolean isSuppliesOrder;
         // ★★追加: 具体的なリネン庫担当フロア（後処理で割り当て）
         private List<Integer> linenClosetFloors;
+        // ★ECOスワップ: リネン庫成立に関する通知メッセージ（buildLinenFloorWarningsで表示）
+        private final List<String> linenNotes = new ArrayList<>();
 
         public StaffAssignment(FileProcessor.Staff staff,
                                Map<Integer, RoomAllocation> mainAssignments,
@@ -251,6 +253,60 @@ public class AdaptiveRoomOptimizer {
             return sb.toString();
         }
 
+        // ============================================================
+        // ★ECOスワップ: 階割り当てのミューテータ
+        //   mainBuildingAssignments / annexBuildingAssignments / roomsByFloor / floors は
+        //   コンストラクタで導出関係にあるため、必ずこのメソッド経由で同時更新する。
+        // ============================================================
+
+        /**
+         * ★ECOスワップ: 指定階の割り当てを差し替える。
+         * alloc が null または合計0室なら階ごと削除する。
+         * @param isMain true=本館側マップ、false=別館側マップ（階番号規約と一致させること）
+         */
+        public void putAllocation(int floor, boolean isMain, RoomAllocation alloc) {
+            Map<Integer, RoomAllocation> side = isMain ? mainBuildingAssignments : annexBuildingAssignments;
+            if (alloc == null || alloc.getTotalRooms() <= 0) {
+                side.remove(floor);
+                roomsByFloor.remove(floor);
+                floors.remove(Integer.valueOf(floor));
+            } else {
+                side.put(floor, alloc);
+                roomsByFloor.put(floor, alloc);
+                if (!floors.contains(floor)) {
+                    floors.add(floor);
+                    Collections.sort(floors);
+                }
+            }
+        }
+
+        /** ★ECOスワップ: 指定階の現在の割り当てを返す（未担当ならnull） */
+        public RoomAllocation getAllocation(int floor) {
+            return roomsByFloor.get(floor);
+        }
+
+        /** ★ECOスワップ: 指定階を本館側マップで保持しているか */
+        public boolean holdsFloorInMain(int floor) {
+            return mainBuildingAssignments.containsKey(floor);
+        }
+
+        /** ★ECOスワップ: リネン庫成立の通知メッセージを追加 */
+        public void addLinenNote(String note) {
+            if (note != null && !note.isEmpty()) {
+                linenNotes.add(note);
+            }
+        }
+
+        /** ★ECOスワップ: リネン庫成立の通知メッセージ一覧 */
+        public List<String> getLinenNotes() {
+            return new ArrayList<>(linenNotes);
+        }
+
+        /** ★ECOスワップ: 通知メッセージをクリア（再計算時の重複防止） */
+        public void clearLinenNotes() {
+            linenNotes.clear();
+        }
+
         /**
          * ★追加: ディープコピーを作成
          * 複数解生成時にオブジェクト共有による副作用を防ぐため
@@ -274,6 +330,7 @@ public class AdaptiveRoomOptimizer {
 
             StaffAssignment copy = new StaffAssignment(this.staff, mainCopy, annexCopy, this.bathCleaningType, this.isLinenClosetCleaning, this.linenClosetFloorCount, this.isSuppliesOrder);
             copy.setLinenClosetFloors(this.linenClosetFloors);
+            copy.linenNotes.addAll(this.linenNotes);  // ★ECOスワップ: 通知もコピー
             return copy;
         }
     }
@@ -392,6 +449,12 @@ public class AdaptiveRoomOptimizer {
                         a.linenClosetFloorCount, linen.size()));
             }
         }
+        // ★ECOスワップ: ECOのみの担当階として成立させた場合の通知を追加
+        for (StaffAssignment a : assignments) {
+            if (a.isLinenClosetCleaning) {
+                warns.addAll(a.getLinenNotes());
+            }
+        }
         return warns;
     }
 
@@ -408,6 +471,246 @@ public class AdaptiveRoomOptimizer {
             }
         }
         return sb.toString();
+    }
+
+    // ============================================================
+    // ★ECOスワップ: 清掃担当外リネン階の「ECOのみ担当階」成立処理
+    //   リネン庫担当人数がフロア数を超える等で、清掃担当外の階にリネン庫が
+    //   割り当てられた場合、その階のECOを保持スタッフから同数交換で移し、
+    //   「ECOのみの担当階」としてリネン庫担当を成立させる。
+    //   同一階内の持ち主変更＋同数交換のため、階別ECO合計・各人のECO総数・
+    //   換算スコアはすべて不変。通常清掃部屋には一切触れない。
+    // ============================================================
+
+    /** ★ECOスワップ: 別館の内部階番号か（表示規約 f>20=別館 と一致） */
+    private static boolean isAnnexFloorNumber(int floor) {
+        return floor > 20;
+    }
+
+    /** ★ECOスワップ: スワップ計画 */
+    private static class EcoSwapPlan {
+        final StaffAssignment receiver;          // L: 清掃担当外リネン階を持つスタッフ
+        final StaffAssignment donor;             // D: F階のECOを差し出すスタッフ
+        final int floor;                         // F: 対象リネン階
+        final boolean isMainFloor;               // Fの所属マップ（ドナーの保持側に一致）
+        final int k;                             // 交換室数
+        final Map<Integer, Integer> returnPlan;  // 見返り: Lの担当階 → 室数
+
+        EcoSwapPlan(StaffAssignment receiver, StaffAssignment donor, int floor,
+                    boolean isMainFloor, int k, Map<Integer, Integer> returnPlan) {
+            this.receiver = receiver;
+            this.donor = donor;
+            this.floor = floor;
+            this.isMainFloor = isMainFloor;
+            this.k = k;
+            this.returnPlan = returnPlan;
+        }
+    }
+
+    /**
+     * ★ECOスワップ: スタッフLが差し出せるECOのプールを収集する（担当階→差し出し可能室数）。
+     * L自身のリネン階かつ通常室0の階は1室残す（自分のリネン階を空にして新たな担当外を生まないため）。
+     */
+    private static Map<Integer, Integer> collectOfferPool(StaffAssignment l, int excludeFloor) {
+        Map<Integer, Integer> pool = new LinkedHashMap<>();
+        List<Integer> lFloors = new ArrayList<>(l.floors);
+        Collections.sort(lFloors);
+        Set<Integer> ownLinen = new HashSet<>(l.getLinenClosetFloors());
+        for (int g : lFloors) {
+            if (g == excludeFloor) continue;
+            RoomAllocation alloc = l.getAllocation(g);
+            if (alloc == null || alloc.ecoRooms <= 0) continue;
+            int normal = alloc.getTotalRooms() - alloc.ecoRooms;
+            int reserve = (ownLinen.contains(g) && normal == 0) ? 1 : 0;
+            int available = alloc.ecoRooms - reserve;
+            if (available > 0) {
+                pool.put(g, available);
+            }
+        }
+        return pool;
+    }
+
+    /**
+     * ★ECOスワップ: スタッフLの清掃担当外リネン階Fが、ECOスワップで成立可能かを判定する。
+     * フェーズ2の割り当て優先度にも使用。
+     */
+    public static boolean canResolveByEcoSwap(StaffAssignment l, int floor,
+                                              List<StaffAssignment> assignments) {
+        boolean donorExists = false;
+        for (StaffAssignment d : assignments) {
+            if (d == l) continue;
+            RoomAllocation alloc = d.getAllocation(floor);
+            if (alloc == null || alloc.ecoRooms <= 0) continue;
+            int kWant = d.getLinenClosetFloors().contains(floor)
+                    ? alloc.ecoRooms - 1 : alloc.ecoRooms;
+            if (kWant >= 1) {
+                donorExists = true;
+                break;
+            }
+        }
+        if (!donorExists) return false;
+        return !collectOfferPool(l, floor).isEmpty();
+    }
+
+    /** ★ECOスワップ: スタッフDの既存担当階から階gまでの最小階差 */
+    private static int minFloorDistance(StaffAssignment d, int g) {
+        int min = Integer.MAX_VALUE;
+        for (int c : d.floors) {
+            min = Math.min(min, Math.abs(c - g));
+        }
+        return min == Integer.MAX_VALUE ? 0 : min;
+    }
+
+    /**
+     * ★ECOスワップ: スワップ計画を立てる。成立不能ならnull。
+     * ドナー選定: 見返り配置でドナーに増える新規階数の最小化 > Fから完全撤退できる（階数減）を優遇
+     *             > より多く移せる方を優遇 > 名前順（決定性）
+     */
+    private static EcoSwapPlan planEcoSwap(StaffAssignment l, int floor,
+                                           List<StaffAssignment> assignments) {
+        Map<Integer, Integer> pool = collectOfferPool(l, floor);
+        int poolTotal = pool.values().stream().mapToInt(Integer::intValue).sum();
+        if (poolTotal < 1) return null;
+
+        // ドナー候補を名前順に列挙（決定性）
+        List<StaffAssignment> donors = new ArrayList<>();
+        for (StaffAssignment d : assignments) {
+            if (d == l) continue;
+            RoomAllocation alloc = d.getAllocation(floor);
+            if (alloc != null && alloc.ecoRooms > 0) {
+                donors.add(d);
+            }
+        }
+        if (donors.isEmpty()) return null;
+        donors.sort(Comparator.comparing(a -> a.staff.name));
+
+        EcoSwapPlan best = null;
+        long bestScore = Long.MAX_VALUE;
+        for (int di = 0; di < donors.size(); di++) {
+            final StaffAssignment d = donors.get(di);
+            RoomAllocation allocF = d.getAllocation(floor);
+            int kWant = allocF.ecoRooms;
+            if (d.getLinenClosetFloors().contains(floor)) {
+                kWant = allocF.ecoRooms - 1;  // 防御: ドナー自身のリネン階からは追い出さない
+            }
+            if (kWant < 1) continue;
+            int k = Math.min(kWant, poolTotal);
+
+            // 見返り配布計画: (1)Dの既清掃階 → (2)Dの担当建物と同じ建物 → (3)Dの既存階との最小階差
+            final boolean dHasMain = !d.mainBuildingAssignments.isEmpty();
+            final boolean dHasAnnex = !d.annexBuildingAssignments.isEmpty();
+            List<Integer> poolFloors = new ArrayList<>(pool.keySet());
+            poolFloors.sort(Comparator
+                    .comparingInt((Integer g) -> d.roomsByFloor.containsKey(g) ? 0 : 1)
+                    .thenComparingInt(g -> (isAnnexFloorNumber(g) ? dHasAnnex : dHasMain) ? 0 : 1)
+                    .thenComparingInt(g -> minFloorDistance(d, g))
+                    .thenComparingInt(g -> g));
+            Map<Integer, Integer> returnPlan = new LinkedHashMap<>();
+            int remain = k;
+            int newFloorsForD = 0;
+            for (int g : poolFloors) {
+                if (remain <= 0) break;
+                int take = Math.min(pool.get(g), remain);
+                returnPlan.put(g, take);
+                remain -= take;
+                if (!d.roomsByFloor.containsKey(g)) {
+                    newFloorsForD++;
+                }
+            }
+            if (remain > 0) continue;  // 防御（k <= poolTotal のため通常起こらない）
+
+            int normalOnF = allocF.getTotalRooms() - allocF.ecoRooms;
+            boolean dLeavesF = (normalOnF == 0 && allocF.ecoRooms == k);
+
+            long score = (long) newFloorsForD * 10_000L
+                    - (dLeavesF ? 1_000L : 0L)
+                    - (long) k * 10L
+                    + di;
+            if (score < bestScore) {
+                bestScore = score;
+                best = new EcoSwapPlan(l, d, floor, d.holdsFloorInMain(floor), k, returnPlan);
+            }
+        }
+        return best;
+    }
+
+    /** ★ECOスワップ: 計画を実行する（同数交換・同一階内の持ち主変更のみ） */
+    private static void executeEcoSwap(EcoSwapPlan plan) {
+        StaffAssignment l = plan.receiver;
+        StaffAssignment d = plan.donor;
+        int f = plan.floor;
+
+        // F階: D → L（k室）
+        RoomAllocation allocDF = d.getAllocation(f);
+        d.putAllocation(f, plan.isMainFloor,
+                new RoomAllocation(allocDF.roomCounts, allocDF.ecoRooms - plan.k));
+        RoomAllocation existingLF = l.getAllocation(f);
+        Map<String, Integer> lCountsOnF = existingLF != null
+                ? existingLF.roomCounts : Collections.emptyMap();
+        int lEcoOnF = existingLF != null ? existingLF.ecoRooms : 0;
+        l.putAllocation(f, plan.isMainFloor,
+                new RoomAllocation(lCountsOnF, lEcoOnF + plan.k));
+
+        // 見返り: L → D（合計k室）
+        for (Map.Entry<Integer, Integer> e : plan.returnPlan.entrySet()) {
+            int g = e.getKey();
+            int take = e.getValue();
+            boolean gIsMain = l.holdsFloorInMain(g);
+            RoomAllocation allocLG = l.getAllocation(g);
+            l.putAllocation(g, gIsMain,
+                    new RoomAllocation(allocLG.roomCounts, allocLG.ecoRooms - take));
+            RoomAllocation allocDG = d.getAllocation(g);
+            if (allocDG == null) {
+                d.putAllocation(g, gIsMain, new RoomAllocation(Collections.emptyMap(), take));
+            } else {
+                d.putAllocation(g, d.holdsFloorInMain(g),
+                        new RoomAllocation(allocDG.roomCounts, allocDG.ecoRooms + take));
+            }
+        }
+    }
+
+    /**
+     * ★ECOスワップ: 清掃担当外リネン階をECOスワップで成立させる後処理のエントリポイント。
+     * assignLinenClosetFloors の「最終実行の直後」に呼ぶこと
+     * （assignLinenClosetFloors は複数解パスで2回実行されるため、内部には入れない）。
+     * スワップ不能な階は何もしない → 従来どおり buildLinenFloorWarnings の警告が出る。
+     */
+    public static void resolveExternalLinenFloorsWithEco(List<StaffAssignment> assignments) {
+        if (assignments == null || assignments.isEmpty()) return;
+        for (StaffAssignment a : assignments) {
+            a.clearLinenNotes();
+        }
+
+        List<StaffAssignment> linenStaff = new ArrayList<>();
+        for (StaffAssignment a : assignments) {
+            if (a.isLinenClosetCleaning && !a.getLinenClosetFloors().isEmpty()) {
+                linenStaff.add(a);
+            }
+        }
+        if (linenStaff.isEmpty()) return;
+        linenStaff.sort(Comparator.comparing(a -> a.staff.name));
+
+        for (StaffAssignment l : linenStaff) {
+            List<Integer> lf = l.getLinenClosetFloors();
+            Collections.sort(lf);
+            for (int f : lf) {
+                if (l.roomsByFloor.containsKey(f)) continue;  // 清掃担当階なら成立済み
+                String floorDisp = formatFloorListForDisplay(Collections.singletonList(f));
+                EcoSwapPlan plan = planEcoSwap(l, f, assignments);
+                if (plan == null) {
+                    LOGGER.info(String.format(
+                            "ECOスワップ: %s の清掃担当外リネン階 %s は成立不可（ECO保有者なし/交換用ECOなし）",
+                            l.staff.name, floorDisp));
+                    continue;
+                }
+                executeEcoSwap(plan);
+                String note = String.format(
+                        "%s: %s はECO%d室のみの担当階としてリネン庫を担当します（%s とECOを同数交換）",
+                        l.staff.name, floorDisp, plan.k, plan.donor.staff.name);
+                l.addLinenNote(note);
+                LOGGER.info("ECOスワップ: " + note);
+            }
+        }
     }
 
     /**
@@ -546,6 +849,7 @@ public class AdaptiveRoomOptimizer {
 
                 for (int si = 0; si < staffCount; si++) {
                     if (filled[si] >= linenStaff.get(si).linenClosetFloorCount) continue;
+                    StaffAssignment cand = linenStaff.get(si);
                     Set<Integer> cf = currentFloorsPerStaff.get(si);
                     for (int f : remainingFloors) {
                         int resulting = cf.contains(f) ? cf.size() : cf.size() + 1;
@@ -558,8 +862,19 @@ public class AdaptiveRoomOptimizer {
                             }
                             dist = minDist;
                         }
-                        // 2フロア超過を最優先で回避 → 合計フロア数 → 近さ の順で評価
-                        long score = (long) over * 1_000_000L + (long) resulting * 10_000L + dist;
+                        // ★ECOスワップ: 清掃担当外階でもECOスワップで成立可能な組を優先
+                        boolean external = !cand.roomsByFloor.containsKey(f);
+                        boolean swapFeasible = !external || canResolveByEcoSwap(cand, f, assignments);
+                        // ★ECOスワップ: 同一建物のスタッフを優先
+                        boolean sameBuilding = isAnnexFloorNumber(f)
+                                ? !cand.annexBuildingAssignments.isEmpty()
+                                : !cand.mainBuildingAssignments.isEmpty();
+                        // 2フロア超過回避 → ECO成立可能 → 合計フロア数 → 同一建物 → 近さ の順で評価
+                        long score = (long) over * 1_000_000_000L
+                                + (swapFeasible ? 0L : 100_000_000L)
+                                + (long) resulting * 1_000_000L
+                                + (sameBuilding ? 0L : 10_000L)
+                                + dist;
                         if (score < bestScore) {
                             bestScore = score;
                             bestStaff = si;
@@ -804,6 +1119,9 @@ public class AdaptiveRoomOptimizer {
 
             // ★★追加: リネン庫担当フロアを割り当て
             assignLinenClosetFloors(assignments);
+
+            // ★ECOスワップ: 清掃担当外リネン階をECOのみの担当階として成立させる
+            resolveExternalLinenFloorsWithEco(assignments);
 
             // 最適化結果を返す
             return new OptimizationResult(assignments, config, targetDate);
@@ -1582,6 +1900,9 @@ public class AdaptiveRoomOptimizer {
                         multiSolutionResult.getSolution(i);
                 if (result != null && result.assignments != null) {
                     assignLinenClosetFloors(result.assignments);
+                    // ★ECOスワップ: 清掃担当外リネン階をECOのみの担当階として成立させる
+                    // （assignLinenClosetFloors の最終実行の直後に呼ぶこと）
+                    resolveExternalLinenFloorsWithEco(result.assignments);
                 }
             }
         }

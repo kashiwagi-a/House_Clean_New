@@ -29,12 +29,6 @@ public class RoomNumberAssigner {
     // ★★★本館ツイン統合: 正規化しきれなかった場合の警告（呼び出し元がログ・画面表示に使用）
     private final List<String> twinWarnings = new ArrayList<>();
 
-    // ★レイトアウト: 大浴場清掃スタッフから移せなかったレイトアウト部屋の警告
-    private final List<String> lateOutWarnings = new ArrayList<>();
-
-    // ★未割り当て表示: 直近の assignDetailedRooms で未割り当てに残った部屋
-    private final List<FileProcessor.Room> unassignedRooms = new ArrayList<>();
-
     public RoomNumberAssigner(FileProcessor.CleaningData cleaningData) {
         this.cleaningData = cleaningData;
     }
@@ -45,22 +39,6 @@ public class RoomNumberAssigner {
      */
     public List<String> getTwinWarnings() {
         return new ArrayList<>(twinWarnings);
-    }
-
-    /**
-     * ★レイトアウト: 直近の assignDetailedRooms で発生したレイトアウト警告を返す。
-     * 空リストなら大浴場清掃スタッフにレイトアウト部屋は割り当てられていない。
-     */
-    public List<String> getLateOutWarnings() {
-        return new ArrayList<>(lateOutWarnings);
-    }
-
-    /**
-     * ★未割り当て表示: 直近の assignDetailedRooms で未割り当てに残った部屋を返す。
-     * 空リストなら全部屋が割り当て済み。
-     */
-    public List<FileProcessor.Room> getUnassignedRooms() {
-        return new ArrayList<>(unassignedRooms);
     }
 
     /**
@@ -75,8 +53,6 @@ public class RoomNumberAssigner {
 
         // ★★★本館ツイン統合: 前回実行分の警告をクリア
         twinWarnings.clear();
-        lateOutWarnings.clear();  // ★レイトアウト: 前回実行分の警告をクリア
-        unassignedRooms.clear();  // ★未割り当て表示: 前回実行分をクリア
 
         // 清掃対象の全部屋をプール
         List<FileProcessor.Room> availableRooms = new ArrayList<>(cleaningData.roomsToClean);
@@ -104,14 +80,7 @@ public class RoomNumberAssigner {
         // ★★★本館ツイン統合: 本館ツインを2室以上持つスタッフを同一フロア内交換で解消（1人1部屋まで）
         normalizeMainTwins(assignments, result);
 
-        // ★レイトアウト: 大浴場清掃スタッフに割り当てられたレイトアウト部屋を同一フロア内交換で他スタッフへ移す
-        avoidLateOutForBathStaff(assignments, result);
-
         if (!availableRooms.isEmpty()) {
-            // ★未割り当て表示: 呼び出し元が処理ログに表示できるよう記録
-            unassignedRooms.addAll(availableRooms);
-            unassignedRooms.sort(Comparator.comparing(r -> r.roomNumber));
-
             long stayoverLeft = availableRooms.stream()
                     .filter(r -> "3".equals(r.roomStatus)).count();
             if (stayoverLeft > 0) {
@@ -120,7 +89,6 @@ public class RoomNumberAssigner {
             } else {
                 LOGGER.warning("未割り当て部屋が残っています: " + availableRooms.size() + "室（連泊部屋なし）");
             }
-            unassignedRooms.forEach(r -> LOGGER.warning("  未割り当て: " + r.toString()));
         }
 
         return result;
@@ -373,128 +341,6 @@ public class RoomNumberAssigner {
         }
 
         // 入れ替えが発生したスタッフの部屋リストを再ソート（従来と同じソート規則を適用）
-        for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
-            if (modifiedStaffNames.contains(assignment.staff.name)) {
-                List<FileProcessor.Room> staffRooms = result.get(assignment.staff.name);
-                if (staffRooms != null) {
-                    sortAssignedRooms(assignment, staffRooms);
-                }
-            }
-        }
-    }
-
-    // ============================================================
-    // ★レイトアウト: 大浴場清掃スタッフへの割り当て回避
-    // ============================================================
-
-    /**
-     * ★レイトアウト: 大浴場清掃スタッフ（bathCleaningType != NONE）に割り当てられた
-     * レイトアウト部屋を、同一フロアの非大浴場スタッフの部屋と1対1交換して移す。
-     *
-     * 交換条件（rescueStayoverRooms と同じ安全性モデル）:
-     *   - 受け手は bathCleaningType == NONE のスタッフ
-     *   - 差し出す部屋はレイトアウト部屋と同一階（担当階を変えない）
-     *   - エコ区分が同一（エコ数を変えない）
-     *   - 通常部屋は部屋タイプ（S/T等）も同一（タイプ内訳を変えない。
-     *     ツイン⇔ツイン交換となるため本館ツイン正規化の結果も保たれる）
-     *   - 差し出す部屋自身がレイトアウト部屋でないこと
-     * これによりスタッフごとの部屋数・担当階・タイプ内訳・エコ数は一切変化しない。
-     *
-     * 交換相手が見つからない場合はベストエフォートとして許容し、
-     * lateOutWarnings に警告を記録する。レイトアウト設定が無い場合は何もしない。
-     */
-    private void avoidLateOutForBathStaff(
-            List<AdaptiveRoomOptimizer.StaffAssignment> assignments,
-            Map<String, List<FileProcessor.Room>> result) {
-
-        Map<String, String> lateOutRooms = cleaningData.lateOutRooms;
-        if (lateOutRooms == null || lateOutRooms.isEmpty()) {
-            return; // レイトアウト設定なし（従来動作のまま）
-        }
-
-        Set<String> modifiedStaffNames = new HashSet<>();
-
-        for (AdaptiveRoomOptimizer.StaffAssignment giver : assignments) {
-            if (giver.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
-
-            List<FileProcessor.Room> giverRooms = result.get(giver.staff.name);
-            if (giverRooms == null) continue;
-
-            // このスタッフが担当しているレイトアウト部屋を抽出
-            List<FileProcessor.Room> lateRoomsOfGiver = giverRooms.stream()
-                    .filter(r -> lateOutRooms.containsKey(r.roomNumber))
-                    .collect(Collectors.toList());
-            if (lateRoomsOfGiver.isEmpty()) continue;
-
-            LOGGER.info(String.format("レイトアウト回避: 大浴場清掃スタッフ %s がレイトアウト部屋%d室を保持 → 同一フロア内交換を試行",
-                    giver.staff.name, lateRoomsOfGiver.size()));
-
-            for (FileProcessor.Room lateRoom : lateRoomsOfGiver) {
-                AdaptiveRoomOptimizer.StaffAssignment bestReceiver = null;
-                int bestIndex = -1;
-                int bestScore = Integer.MAX_VALUE;
-
-                for (AdaptiveRoomOptimizer.StaffAssignment receiver : assignments) {
-                    if (receiver.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
-
-                    List<FileProcessor.Room> receiverRooms = result.get(receiver.staff.name);
-                    if (receiverRooms == null) continue;
-
-                    for (int i = 0; i < receiverRooms.size(); i++) {
-                        FileProcessor.Room candidate = receiverRooms.get(i);
-
-                        // レイトアウト部屋同士の交換は無意味なので対象外
-                        if (lateOutRooms.containsKey(candidate.roomNumber)) continue;
-                        // 同一階のみ（担当階を変えない）
-                        if (candidate.floor != lateRoom.floor) continue;
-                        // エコ区分は必ず一致（エコ数を変えない）
-                        if (candidate.isEco != lateRoom.isEco) continue;
-
-                        boolean typeMatches = mapRoomType(candidate.roomType)
-                                .equals(mapRoomType(lateRoom.roomType));
-                        // 通常部屋は部屋タイプ一致が必須（タイプ内訳・ツイン正規化を変えない）
-                        if (!candidate.isEco && !typeMatches) continue;
-
-                        // スコア: タイプ一致を優先し、部屋番号が近いものを選ぶ
-                        int score = (typeMatches ? 0 : 1_000_000)
-                                + Math.abs(extractRoomNumber(candidate.roomNumber)
-                                - extractRoomNumber(lateRoom.roomNumber));
-
-                        if (score < bestScore) {
-                            bestScore = score;
-                            bestReceiver = receiver;
-                            bestIndex = i;
-                        }
-                    }
-                }
-
-                if (bestReceiver != null) {
-                    List<FileProcessor.Room> receiverRooms = result.get(bestReceiver.staff.name);
-                    FileProcessor.Room giveBack = receiverRooms.get(bestIndex);
-
-                    // 1対1交換
-                    receiverRooms.set(bestIndex, lateRoom);
-                    giverRooms.set(giverRooms.indexOf(lateRoom), giveBack);
-
-                    modifiedStaffNames.add(giver.staff.name);
-                    modifiedStaffNames.add(bestReceiver.staff.name);
-
-                    LOGGER.info(String.format("  %d階: レイトアウト%s(%s) ⇔ %s(%s) を交換",
-                            lateRoom.floor, lateRoom.roomNumber, giver.staff.name,
-                            giveBack.roomNumber, bestReceiver.staff.name));
-                } else {
-                    String warn = String.format(
-                            "レイトアウト部屋 %s (%d階, %s以降清掃) は大浴場清掃スタッフ %s の担当のままです"
-                                    + "（同一階に交換可能な非大浴場スタッフの部屋なし・許容）",
-                            lateRoom.roomNumber, lateRoom.floor,
-                            lateOutRooms.get(lateRoom.roomNumber), giver.staff.name);
-                    lateOutWarnings.add(warn);
-                    LOGGER.warning("レイトアウト警告: " + warn);
-                }
-            }
-        }
-
-        // 交換が発生したスタッフの部屋リストを再ソート（従来と同じソート規則を適用）
         for (AdaptiveRoomOptimizer.StaffAssignment assignment : assignments) {
             if (modifiedStaffNames.contains(assignment.staff.name)) {
                 List<FileProcessor.Room> staffRooms = result.get(assignment.staff.name);

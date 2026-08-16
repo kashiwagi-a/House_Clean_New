@@ -58,6 +58,45 @@ public class RoomAssignmentCPSATOptimizer {
     private static final int INITIAL_MAX_STAFF_PER_FLOOR = 2;
     private static final int MAX_STAFF_PER_FLOOR_LIMIT   = 4;
 
+    // ================================================================
+    // ★★必須清掃: 「必ず割り振る部屋・フロア」のフロア別必要数（ハード制約用）
+    // RoomAssignmentApplication が「必須清掃設定」から算出して設定する。
+    // null または空 = 制約なし（従来動作と完全に同一）。
+    // フロアキーは内部値（別館=実階+20、FloorInfo.floorNumber と一致）。
+    // ・本館: タイプ区別なしの通常清掃（非ECO）必要数（本館ツイン統合に合わせる）
+    // ・別館: 正規化タイプ別（S/D/FD等）の必要数 ＋ ツイン("T")必要数
+    // ECO部屋は対象外（ECOは従来どおりソフト制約で全室埋めを目指す）。
+    // ================================================================
+    private static Map<Integer, Integer> requiredMainNormalByFloor = null;
+    private static Map<Integer, Map<String, Integer>> requiredAnnexSinglesByFloorType = null;
+    private static Map<Integer, Integer> requiredAnnexTwinsByFloor = null;
+
+    /**
+     * ★★必須清掃: フロア別必要数を設定する（全てnull/空で従来動作に戻る）。
+     * 処理実行のたびに RoomAssignmentApplication が現在の設定で上書きする。
+     */
+    public static void setRequiredCleaningCounts(
+            Map<Integer, Integer> mainNormalByFloor,
+            Map<Integer, Map<String, Integer>> annexSinglesByFloorType,
+            Map<Integer, Integer> annexTwinsByFloor) {
+
+        requiredMainNormalByFloor = (mainNormalByFloor != null && !mainNormalByFloor.isEmpty())
+                ? new HashMap<>(mainNormalByFloor) : null;
+
+        if (annexSinglesByFloorType != null && !annexSinglesByFloorType.isEmpty()) {
+            Map<Integer, Map<String, Integer>> copy = new HashMap<>();
+            for (Map.Entry<Integer, Map<String, Integer>> en : annexSinglesByFloorType.entrySet()) {
+                copy.put(en.getKey(), new HashMap<>(en.getValue()));
+            }
+            requiredAnnexSinglesByFloorType = copy;
+        } else {
+            requiredAnnexSinglesByFloorType = null;
+        }
+
+        requiredAnnexTwinsByFloor = (annexTwinsByFloor != null && !annexTwinsByFloor.isEmpty())
+                ? new HashMap<>(annexTwinsByFloor) : null;
+    }
+
     /**
      * 段階的緩和設定クラス
      * 完全解が見つからない場合に段階的に制約を緩和するための設定を保持する。
@@ -1637,6 +1676,13 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
+        // === ★★必須清掃制約: 必須部屋・フロアぶんの室数を該当フロアへ必ず配る（ハード） ===
+        // 「必須清掃設定」で指定された部屋・フロア分の室数下限を各フロアに課す。
+        // どの部屋番号を取るかは RoomNumberAssigner が必須部屋優先で確定するため、
+        // ここでは「該当フロア・該当区分に必要数以上を配る」ことだけを保証すればよい。
+        // 未設定時（null）は何も追加せず、従来動作と完全に同一。
+        addRequiredCleaningConstraints(model, buildingData, staffList, xVars, twinVars);
+
         // === ソフト制約: スタッフのシングル目標値 ===
         List<IntVar> shortageVars = new ArrayList<>();
         Map<String, IntVar> staffShortageVars = new HashMap<>();
@@ -2580,6 +2626,143 @@ public class RoomAssignmentCPSATOptimizer {
         }
 
         return results;
+    }
+
+    /**
+     * ★★必須清掃: フロア別必要数のハード制約をモデルへ追加する。
+     *
+     * ・本館フロア: 全通常清掃タイプの合計 ≥ 必要数
+     *   （本館ツイン統合により本館はタイプ区別なし・全て x 変数のため、合計で下限を課す。
+     *     部屋番号確定は RoomNumberAssigner が必須部屋を優先取得するため、
+     *     フロア合計さえ確保できれば必須部屋は必ず割り当てられる）
+     * ・別館フロア: 正規化タイプ別に Σx ≥ 必要数、ツインは Σt ≥ 必要数
+     *   （RoomNumberAssigner の別館割り当てはタイプ別に厳密なため、タイプ別に下限を課す）
+     *
+     * 防御的処理:
+     * ・必要数はフロア供給数でキャップする（通常はダイアログのバリデーション済みだが、
+     *   データ不整合時に解なし連鎖となるのを防ぐ）
+     * ・該当フロアの変数が存在しない場合（その建物に割り振りスタッフがいない等）は
+     *   制約を適用できないため警告ログのみ（解なしにしない）
+     *
+     * 本館・別館は分離最適化されるが、buildingData に含まれるフロアのみを走査するため
+     * 本館モデルでは本館分のみ・別館モデルでは別館分のみが自然に適用される。
+     */
+    private static void addRequiredCleaningConstraints(
+            CpModel model,
+            AdaptiveRoomOptimizer.BuildingData buildingData,
+            List<AdaptiveRoomOptimizer.ExtendedStaffInfo> staffList,
+            Map<String, IntVar> xVars,
+            Map<String, IntVar> twinVars) {
+
+        // --- 本館: タイプ区別なしの合計下限 ---
+        if (requiredMainNormalByFloor != null) {
+            for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
+                Integer req = requiredMainNormalByFloor.get(floor.floorNumber);
+                if (req == null || req <= 0) continue;
+
+                int supply = floor.roomCounts.values().stream().mapToInt(Integer::intValue).sum();
+                int bound = Math.min(req, supply);
+                if (bound <= 0) continue;
+                if (bound < req) {
+                    LOGGER.warning(String.format(
+                            "必須清掃制約: 本館%dF の必要数%d室が供給%d室を超えるため%d室に調整しました",
+                            floor.floorNumber, req, supply, bound));
+                }
+
+                List<IntVar> vars = new ArrayList<>();
+                for (AdaptiveRoomOptimizer.ExtendedStaffInfo si : staffList) {
+                    for (String rt : floor.roomCounts.keySet()) {
+                        String vn = String.format("x_%s_%d_%s", si.staff.name, floor.floorNumber, rt);
+                        if (xVars.containsKey(vn)) vars.add(xVars.get(vn));
+                    }
+                    // 本館ツイン統合により本館の t 変数は通常存在しないが、念のため加算対象に含める
+                    String tvn = String.format("t_%s_%d", si.staff.name, floor.floorNumber);
+                    if (twinVars.containsKey(tvn)) vars.add(twinVars.get(tvn));
+                }
+                if (vars.isEmpty()) {
+                    LOGGER.warning(String.format(
+                            "必須清掃制約: 本館%dF に割り当て可能な変数がないため制約を適用できません（必要数%d室）",
+                            floor.floorNumber, bound));
+                    continue;
+                }
+                model.addGreaterOrEqual(LinearExpr.sum(vars.toArray(new IntVar[0])), bound);
+                LOGGER.info(String.format("必須清掃制約: 本館%dF 通常清掃 ≥ %d室（ハード）",
+                        floor.floorNumber, bound));
+            }
+        }
+
+        // --- 別館: タイプ別下限（シングル等） ---
+        if (requiredAnnexSinglesByFloorType != null) {
+            for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
+                Map<String, Integer> reqByType = requiredAnnexSinglesByFloorType.get(floor.floorNumber);
+                if (reqByType == null || reqByType.isEmpty()) continue;
+
+                for (Map.Entry<String, Integer> en : reqByType.entrySet()) {
+                    String roomType = en.getKey();
+                    int req = en.getValue();
+                    if (req <= 0) continue;
+                    if (isAnnexTwin(roomType)) continue;  // ツインは下のツイン制約が担当（防御）
+
+                    int supply = floor.roomCounts.getOrDefault(roomType, 0);
+                    int bound = Math.min(req, supply);
+                    if (bound <= 0) continue;
+                    if (bound < req) {
+                        LOGGER.warning(String.format(
+                                "必須清掃制約: 別館%dF %s の必要数%d室が供給%d室を超えるため%d室に調整しました",
+                                floor.floorNumber - 20, roomType, req, supply, bound));
+                    }
+
+                    List<IntVar> vars = new ArrayList<>();
+                    for (AdaptiveRoomOptimizer.ExtendedStaffInfo si : staffList) {
+                        String vn = String.format("x_%s_%d_%s", si.staff.name, floor.floorNumber, roomType);
+                        if (xVars.containsKey(vn)) vars.add(xVars.get(vn));
+                    }
+                    if (vars.isEmpty()) {
+                        LOGGER.warning(String.format(
+                                "必須清掃制約: 別館%dF %s に割り当て可能な変数がないため制約を適用できません（必要数%d室）",
+                                floor.floorNumber - 20, roomType, bound));
+                        continue;
+                    }
+                    model.addGreaterOrEqual(LinearExpr.sum(vars.toArray(new IntVar[0])), bound);
+                    LOGGER.info(String.format("必須清掃制約: 別館%dF %s ≥ %d室（ハード）",
+                            floor.floorNumber - 20, roomType, bound));
+                }
+            }
+        }
+
+        // --- 別館: ツイン下限 ---
+        if (requiredAnnexTwinsByFloor != null) {
+            for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
+                Integer req = requiredAnnexTwinsByFloor.get(floor.floorNumber);
+                if (req == null || req <= 0) continue;
+
+                int twinSupply = floor.roomCounts.entrySet().stream()
+                        .filter(e -> isAnnexTwin(e.getKey()))
+                        .mapToInt(Map.Entry::getValue).sum();
+                int bound = Math.min(req, twinSupply);
+                if (bound <= 0) continue;
+                if (bound < req) {
+                    LOGGER.warning(String.format(
+                            "必須清掃制約: 別館%dF ツインの必要数%d室が供給%d室を超えるため%d室に調整しました",
+                            floor.floorNumber - 20, req, twinSupply, bound));
+                }
+
+                List<IntVar> vars = new ArrayList<>();
+                for (AdaptiveRoomOptimizer.ExtendedStaffInfo si : staffList) {
+                    String tvn = String.format("t_%s_%d", si.staff.name, floor.floorNumber);
+                    if (twinVars.containsKey(tvn)) vars.add(twinVars.get(tvn));
+                }
+                if (vars.isEmpty()) {
+                    LOGGER.warning(String.format(
+                            "必須清掃制約: 別館%dF ツインに割り当て可能な変数がないため制約を適用できません（必要数%d室）",
+                            floor.floorNumber - 20, bound));
+                    continue;
+                }
+                model.addGreaterOrEqual(LinearExpr.sum(vars.toArray(new IntVar[0])), bound);
+                LOGGER.info(String.format("必須清掃制約: 別館%dF ツイン ≥ %d室（ハード）",
+                        floor.floorNumber - 20, bound));
+            }
+        }
     }
 
     /**

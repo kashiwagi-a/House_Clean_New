@@ -96,6 +96,14 @@ public class NormalRoomDistributionDialog extends JDialog {
     // ★★追加: 「階別の手動割り当て」を実際に確定したか（初期レイアウト反映と区別するため）
     private boolean manualLayoutUsed = false;
 
+    // ★★必須清掃: 「必ず割り振る部屋・フロア」設定
+    //   割り振りを全部屋数より少なくした場合でも必ず清掃対象として割り振る部屋・フロア。
+    //   requiredCleaningFloors は内部フロアキー（別館=実階+20、Room.floor と一致）。
+    private Set<Integer> requiredCleaningFloors = new HashSet<>();
+    private Set<String> requiredCleaningRooms = new HashSet<>();
+    //   選択肢となる通常清掃部屋（非ECO）。呼び出し元（RoomAssignmentApplication）が設定する。
+    private List<FileProcessor.Room> requiredSelectableRooms = new ArrayList<>();
+
     // ★★追加(入れ替え機能): 入れ替え対象選択用チェックボックス（スタッフ名→チェックボックス）
     private final Map<String, JCheckBox> swapSelectionBoxes = new LinkedHashMap<>();
     // ★★追加(入れ替え機能): 「選択」列の固定幅（狭くするためGridLayoutから独立させる）
@@ -1114,7 +1122,60 @@ public class NormalRoomDistributionDialog extends JDialog {
         linenFloorButton.addActionListener(e -> openLinenTargetFloorDialog());
         panel.add(linenFloorButton);
 
+        // ★★必須清掃: 必ず割り振る部屋・フロア設定ボタン（任意機能）
+        JButton requiredButton = new JButton("必須清掃設定");
+        requiredButton.addActionListener(e -> openRequiredCleaningDialog());
+        panel.add(requiredButton);
+
         return panel;
+    }
+
+    /** ★★必須清掃: 「必ず割り振る部屋・フロア」設定ダイアログを開く */
+    private void openRequiredCleaningDialog() {
+        if (requiredSelectableRooms.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "部屋情報がまだ読み込まれていないため、必須清掃設定を開けません。",
+                    "必須清掃設定", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        RequiredRoomSelectionDialog dlg = new RequiredRoomSelectionDialog(
+                this, requiredSelectableRooms, requiredCleaningFloors, requiredCleaningRooms);
+        dlg.setVisible(true);
+
+        if (dlg.isConfirmed()) {
+            requiredCleaningFloors = dlg.getRequiredFloors();
+            requiredCleaningRooms = dlg.getRequiredRoomNumbers();
+
+            if (requiredCleaningFloors.isEmpty() && requiredCleaningRooms.isEmpty()) {
+                JOptionPane.showMessageDialog(this,
+                        "必須清掃設定を解除しました（従来どおりの割り振りになります）。",
+                        "必須清掃設定", JOptionPane.INFORMATION_MESSAGE);
+            } else {
+                JOptionPane.showMessageDialog(this,
+                        String.format("必須清掃設定を保存しました。\n" +
+                                        "必須フロア: %d階分 / 必須部屋（フロア分を含む合計）: %d室\n\n" +
+                                        "このままOKで確定すると、これらは必ず清掃対象として割り振られます。",
+                                requiredCleaningFloors.size(),
+                                getEffectiveRequiredRoomNumbers().size()),
+                        "必須清掃設定", JOptionPane.INFORMATION_MESSAGE);
+            }
+        }
+    }
+
+    /**
+     * ★★必須清掃: 必須フロア上の全部屋（非ECO）＋個別指定部屋を展開した部屋番号セットを返す。
+     * requiredSelectableRooms（非ECOの通常清掃部屋）を母集団とするため、ECO部屋は含まれない。
+     */
+    public Set<String> getEffectiveRequiredRoomNumbers() {
+        Set<String> set = new HashSet<>();
+        for (FileProcessor.Room room : requiredSelectableRooms) {
+            if (requiredCleaningFloors.contains(room.floor)
+                    || requiredCleaningRooms.contains(room.roomNumber)) {
+                set.add(room.roomNumber);
+            }
+        }
+        return set;
     }
 
     /** ★★追加: 階別の手動割り当てダイアログを開く（「割り当て済み数」ウィンドウも同時に開く） */
@@ -1273,6 +1334,75 @@ public class NormalRoomDistributionDialog extends JDialog {
                     }
                     errors.add(String.format("%s: 指定階 %dF は%sに存在しません（利用可能: %s）",
                             dist.staffName, floor, building, availableStr));
+                }
+            }
+        }
+
+        // ★★必須清掃: 必須部屋・フロアのバリデーション
+        if (!requiredCleaningFloors.isEmpty() || !requiredCleaningRooms.isEmpty()) {
+            // 必須部屋（フロア分を展開済み）を建物・区分別に集計
+            // ※部屋タイプは FileProcessor.determineRoomType で正規化済み（別館ツイン="T"）
+            int reqMainTotal = 0;
+            int reqAnnexSingle = 0;
+            int reqAnnexTwin = 0;
+            for (FileProcessor.Room room : requiredSelectableRooms) {
+                boolean required = requiredCleaningFloors.contains(room.floor)
+                        || requiredCleaningRooms.contains(room.roomNumber);
+                if (!required) continue;
+                if ("別館".equals(room.building)) {
+                    if ("T".equals(room.roomType)) reqAnnexTwin++;
+                    else reqAnnexSingle++;
+                } else {
+                    reqMainTotal++;
+                }
+            }
+
+            // 必須室数が割り振り合計を超える場合はエラー（確定不可）
+            if (reqMainTotal > assignedMainTotal) {
+                errors.add(String.format("必須清掃: 本館の必須%d室が割り振り合計%d室を超えています（本館の割り振りを増やすか必須設定を減らしてください）",
+                        reqMainTotal, assignedMainTotal));
+            }
+            if (reqAnnexSingle > assignedAnnexSingle) {
+                errors.add(String.format("必須清掃: 別館シングル等の必須%d室が割り振り合計%d室を超えています",
+                        reqAnnexSingle, assignedAnnexSingle));
+            }
+            if (reqAnnexTwin > assignedAnnexTwin) {
+                errors.add(String.format("必須清掃: 別館ツインの必須%d室が割り振り合計%d室を超えています",
+                        reqAnnexTwin, assignedAnnexTwin));
+            }
+
+            // ★★必須清掃×手動割り当て: 手動割り当てが使われる場合はCP-SATのハード制約が
+            //   効かないため警告のみとし、手動割り当てを優先する（仕様確定済み）。
+            //   部屋番号確定時の必須部屋優先取得（RoomNumberAssigner）は手動時も有効。
+            if (manualLayout != null && !manualLayout.isEmpty()) {
+                warnings.add("階別の手動割り当てが使用されるため、必須清掃設定は保証されません（手動割り当てが優先されます）");
+
+                // 参考情報として、フロア別の必須室数と手動割り当て室数を照合し不足を警告する
+                Map<Integer, Integer> requiredByFloor = new HashMap<>();
+                for (FileProcessor.Room room : requiredSelectableRooms) {
+                    if (requiredCleaningFloors.contains(room.floor)
+                            || requiredCleaningRooms.contains(room.roomNumber)) {
+                        requiredByFloor.merge(room.floor, 1, Integer::sum);
+                    }
+                }
+                Map<Integer, Integer> manualByFloor = new HashMap<>();
+                for (ManualFloorAssignmentDialog.StaffManual sm : manualLayout.values()) {
+                    if (sm == null) continue;
+                    for (ManualFloorAssignmentDialog.FloorAssign fa : sm.rows) {
+                        manualByFloor.merge(fa.floorKey, fa.singleCount + fa.twinCount, Integer::sum);
+                    }
+                }
+                for (Map.Entry<Integer, Integer> en : requiredByFloor.entrySet()) {
+                    int have = manualByFloor.getOrDefault(en.getKey(), 0);
+                    if (have < en.getValue()) {
+                        int f = en.getKey();
+                        String floorLabel = f > 20
+                                ? String.format("別館%dF", f - 20)
+                                : String.format("本館%dF", f);
+                        warnings.add(String.format(
+                                "必須清掃: %s は必須%d室に対し手動割り当てが%d室のため、必須部屋が未割り当てになる可能性があります",
+                                floorLabel, en.getValue(), have));
+                    }
                 }
             }
         }
@@ -2802,6 +2932,59 @@ public class NormalRoomDistributionDialog extends JDialog {
      */
     public void setInitialManualLayout(Map<String, ManualFloorAssignmentDialog.StaffManual> layout) {
         this.manualLayout = layout;
+    }
+
+    // =====================================================================
+    // ★★必須清掃: 受け渡しAPI
+    // =====================================================================
+
+    /**
+     * ★★必須清掃: 選択肢となる通常清掃部屋（非ECO）を設定する。
+     * 呼び出し元（RoomAssignmentApplication）が cleaningData から収集して渡す。
+     * 既に選択済みの部屋・フロアのうち、選択肢に存在しないものは除去する
+     * （前回選択の復元時に、当日存在しない部屋・階が残らないようにするため）。
+     */
+    public void setRequiredSelectionRooms(List<FileProcessor.Room> rooms) {
+        this.requiredSelectableRooms = (rooms != null) ? new ArrayList<>(rooms) : new ArrayList<>();
+
+        Set<String> validRooms = new HashSet<>();
+        Set<Integer> validFloors = new HashSet<>();
+        for (FileProcessor.Room room : requiredSelectableRooms) {
+            validRooms.add(room.roomNumber);
+            validFloors.add(room.floor);
+        }
+        requiredCleaningRooms.retainAll(validRooms);
+        requiredCleaningFloors.retainAll(validFloors);
+    }
+
+    /**
+     * ★★必須清掃: 前回選択の復元用。setRequiredSelectionRooms の後に呼ぶこと。
+     * 選択肢に存在しない部屋・フロアは除去される。
+     */
+    public void setRequiredCleaningSelection(Set<Integer> floors, Set<String> rooms) {
+        this.requiredCleaningFloors = (floors != null) ? new HashSet<>(floors) : new HashSet<>();
+        this.requiredCleaningRooms = (rooms != null) ? new HashSet<>(rooms) : new HashSet<>();
+
+        if (!requiredSelectableRooms.isEmpty()) {
+            Set<String> validRooms = new HashSet<>();
+            Set<Integer> validFloors = new HashSet<>();
+            for (FileProcessor.Room room : requiredSelectableRooms) {
+                validRooms.add(room.roomNumber);
+                validFloors.add(room.floor);
+            }
+            requiredCleaningRooms.retainAll(validRooms);
+            requiredCleaningFloors.retainAll(validFloors);
+        }
+    }
+
+    /** ★★必須清掃: 選択中の必須フロア（内部キー: 別館=実階+20） */
+    public Set<Integer> getRequiredCleaningFloors() {
+        return new HashSet<>(requiredCleaningFloors);
+    }
+
+    /** ★★必須清掃: 個別に選択した必須部屋番号（フロア分は含まない） */
+    public Set<String> getRequiredCleaningRooms() {
+        return new HashSet<>(requiredCleaningRooms);
     }
 
     /**

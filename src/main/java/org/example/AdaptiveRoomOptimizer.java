@@ -419,6 +419,26 @@ public class AdaptiveRoomOptimizer {
         return linenTargetFloors != null ? new HashSet<>(linenTargetFloors) : null;
     }
 
+    // ★★必須清掃: 「必ず割り振る部屋」の部屋番号セット（必須フロア上の全部屋を展開済み・非ECO）
+    //   空 = 未設定（従来動作）。RoomAssignmentApplication が処理実行時に設定する。
+    //   RoomNumberAssigner が部屋番号確定時に、各フロア内でこれらの部屋を優先的に取得し、
+    //   連泊救済の入れ替えでも未割り当てへ戻さないために参照する。
+    private static Set<String> requiredCleaningRooms = new HashSet<>();
+
+    /**
+     * ★★必須清掃: 必ず割り振る部屋の部屋番号セットを設定する（null/空で従来動作に戻る）
+     */
+    public static void setRequiredCleaningRooms(Set<String> rooms) {
+        requiredCleaningRooms = (rooms != null) ? new HashSet<>(rooms) : new HashSet<>();
+    }
+
+    /**
+     * ★★必須清掃: 現在の必須部屋番号セットを取得（未設定の場合は空セット）
+     */
+    public static Set<String> getRequiredCleaningRooms() {
+        return new HashSet<>(requiredCleaningRooms);
+    }
+
     /**
      * ★★追加: リネン庫割り当て結果の通知メッセージを構築する
      * ・清掃担当外のフロア（未販売階など）をリネン庫担当した場合の通知

@@ -52,6 +52,11 @@ public class RoomAssignmentApplication extends JFrame {
     private Set<Integer> lastLinenTargetFloors = null;
     private Map<Integer, ManualFloorAssignmentDialog.FloorInv> pendingManualInventory = new HashMap<>();
 
+    // ★★必須清掃: 「必ず割り振る部屋・フロア」の前回選択（ダイアログ再表示時に復元する）
+    //   フロアは内部キー（別館=実階+20）。部屋は個別指定分のみ（フロア展開前）。
+    private Set<Integer> lastRequiredCleaningFloors = new HashSet<>();
+    private Set<String> lastRequiredCleaningRooms = new HashSet<>();
+
     private Set<String> selectedBrokenRoomsForCleaning = new HashSet<>();
 
     // ★残し部屋(事前設定): メイン画面で選択された残し部屋（清掃対象から除外する部屋）
@@ -1226,6 +1231,13 @@ public class RoomAssignmentApplication extends JFrame {
         this.lastManualLayout = null;
         this.distributionBackRequested = false;  // ★★追加: 戻るフラグをリセット
 
+        // ★★必須清掃: 静的設定をリセットする。
+        //   OKで確定した場合のみ applyRequiredCleaningSettings で再設定されるため、
+        //   ダイアログをキャンセルした場合に前回実行時の必須設定が残ることを防ぐ。
+        //   （前回選択の記憶 lastRequiredCleaningFloors/Rooms は保持し、次回表示時に復元する）
+        AdaptiveRoomOptimizer.setRequiredCleaningRooms(null);
+        RoomAssignmentCPSATOptimizer.setRequiredCleaningCounts(null, null, null);
+
         // ★修正: ECO部屋はCP-SATが自動配分するため、通常室（シングル等・ツイン）のみ集計
         int totalMainSingleRooms = 0;
         int totalMainTwinRooms = 0;
@@ -1235,6 +1247,9 @@ public class RoomAssignmentApplication extends JFrame {
         // ★★追加: リネン庫対象階の選択肢用に、建物の全フロア（未販売階・故障・事前除外含む）を収集
         Set<Integer> allMainFloorsForLinen = new HashSet<>();
         Set<Integer> allAnnexFloorsForLinen = new HashSet<>();
+
+        // ★★必須清掃: 「必須清掃設定」の選択肢となる通常清掃部屋（非ECO）を収集
+        List<FileProcessor.Room> requiredSelectableRooms = new ArrayList<>();
 
         try {
             FileProcessor.CleaningData cleaningData = FileProcessor.processRoomFile(selectedRoomFile, selectedDate);
@@ -1246,6 +1261,7 @@ public class RoomAssignmentApplication extends JFrame {
                 } else {
                     totalMainSingleRooms++;
                 }
+                requiredSelectableRooms.add(room);  // ★★必須清掃: 非ECOの本館通常清掃部屋
             }
 
             for (FileProcessor.Room room : cleaningData.annexRooms) {
@@ -1255,6 +1271,7 @@ public class RoomAssignmentApplication extends JFrame {
                 } else {
                     totalAnnexSingleRooms++;
                 }
+                requiredSelectableRooms.add(room);  // ★★必須清掃: 非ECOの別館通常清掃部屋
             }
 
             appendLog(String.format("部屋タイプ集計: 本館(S:%d, T:%d), 別館(S:%d, T:%d) ※ECOはCP-SAT自動配分",
@@ -1332,6 +1349,10 @@ public class RoomAssignmentApplication extends JFrame {
         // ★★追加: 階別在庫を手動割り当てダイアログへ渡す（階プルダウンの選択肢になる）
         dialog.setManualInventory(this.pendingManualInventory);
 
+        // ★★必須清掃: 選択肢（非ECOの通常清掃部屋）と前回選択を設定
+        dialog.setRequiredSelectionRooms(requiredSelectableRooms);
+        dialog.setRequiredCleaningSelection(this.lastRequiredCleaningFloors, this.lastRequiredCleaningRooms);
+
         // ★★追加: 初回フローでは「スタッフ選択に戻る」ボタンを表示する
         dialog.showBackToStaffSelectionButton();
 
@@ -1353,6 +1374,13 @@ public class RoomAssignmentApplication extends JFrame {
                         this.lastLinenTargetFloors.size()));
             }
 
+            // ★★必須清掃: 選択を保存し、最適化（CP-SAT）と部屋番号確定へ反映する
+            //   設定が空の場合は静的設定がクリアされ従来動作に戻る
+            this.lastRequiredCleaningFloors = dialog.getRequiredCleaningFloors();
+            this.lastRequiredCleaningRooms = dialog.getRequiredCleaningRooms();
+            applyRequiredCleaningSettings(requiredSelectableRooms,
+                    this.lastRequiredCleaningFloors, this.lastRequiredCleaningRooms);
+
             return dialog.getCurrentDistribution();
         } else {
             if (distributionBackRequested) {
@@ -1361,6 +1389,69 @@ public class RoomAssignmentApplication extends JFrame {
                 appendLog("通常清掃部屋の割り振り設定がキャンセルされました");
             }
             return null;
+        }
+    }
+
+    /**
+     * ★★必須清掃: 必須フロア・必須部屋の設定を静的設定として反映する。
+     *
+     * - AdaptiveRoomOptimizer.setRequiredCleaningRooms:
+     *   部屋番号確定（RoomNumberAssigner）が各フロア内で必須部屋を優先取得し、
+     *   連泊救済の入れ替えでも未割り当てへ戻さないために使用する
+     * - RoomAssignmentCPSATOptimizer.setRequiredCleaningCounts:
+     *   CP-SATが必須部屋ぶんの室数を該当フロアへ必ず配るハード制約に使用する
+     *   （本館はタイプ区別なし合計、別館はタイプ別＋ツイン別。ECOは対象外）
+     *
+     * 設定が空の場合は両方クリアされ、従来動作と完全に同一になる。
+     * 「清掃割り当て調整」画面からの再最適化も静的設定を参照するため、同じ必須設定が維持される。
+     */
+    private void applyRequiredCleaningSettings(List<FileProcessor.Room> selectableRooms,
+                                               Set<Integer> requiredFloors,
+                                               Set<String> requiredRooms) {
+        boolean noFloors = (requiredFloors == null || requiredFloors.isEmpty());
+        boolean noRooms = (requiredRooms == null || requiredRooms.isEmpty());
+        if (noFloors && noRooms) {
+            AdaptiveRoomOptimizer.setRequiredCleaningRooms(null);
+            RoomAssignmentCPSATOptimizer.setRequiredCleaningCounts(null, null, null);
+            return;
+        }
+
+        // 必須フロア上の全部屋＋個別指定部屋を展開し、フロア別必要数を算出
+        // ※selectableRooms は非ECOの通常清掃部屋のみ（ECOは必須清掃の対象外）
+        Set<String> effectiveRooms = new HashSet<>();
+        Map<Integer, Integer> mainNormalByFloor = new HashMap<>();
+        Map<Integer, Map<String, Integer>> annexSinglesByFloorType = new HashMap<>();
+        Map<Integer, Integer> annexTwinsByFloor = new HashMap<>();
+
+        for (FileProcessor.Room room : selectableRooms) {
+            boolean required = requiredFloors.contains(room.floor)
+                    || requiredRooms.contains(room.roomNumber);
+            if (!required) continue;
+
+            effectiveRooms.add(room.roomNumber);
+            if ("別館".equals(room.building)) {
+                // 部屋タイプは FileProcessor.determineRoomType で正規化済み（別館ツイン="T"）
+                if ("T".equals(room.roomType)) {
+                    annexTwinsByFloor.merge(room.floor, 1, Integer::sum);
+                } else {
+                    annexSinglesByFloorType
+                            .computeIfAbsent(room.floor, k -> new HashMap<>())
+                            .merge(room.roomType, 1, Integer::sum);
+                }
+            } else {
+                // 本館はツイン統合によりタイプ区別なしの合計で扱う
+                mainNormalByFloor.merge(room.floor, 1, Integer::sum);
+            }
+        }
+
+        AdaptiveRoomOptimizer.setRequiredCleaningRooms(effectiveRooms);
+        RoomAssignmentCPSATOptimizer.setRequiredCleaningCounts(
+                mainNormalByFloor, annexSinglesByFloorType, annexTwinsByFloor);
+
+        appendLog(String.format("必須清掃設定: 必須フロア%d階分・必須部屋合計%d室を割り振りに反映します",
+                requiredFloors.size(), effectiveRooms.size()));
+        if (lastManualLayout != null && !lastManualLayout.isEmpty()) {
+            appendLog("※階別の手動割り当てが優先されるため、必須清掃設定は部屋番号確定時の優先取得のみに使用されます");
         }
     }
 

@@ -1277,7 +1277,7 @@ public class RoomAssignmentApplication extends JFrame {
                     }
                 }
             }
-            appendLog(String.format("リネン庫対象階の候補: 本館%d階分, 別館%d階分（ウォークイン階含む）",
+            appendLog(String.format("リネン庫対象階の候補: 本館%d階分, 別館%d階分（未販売階含む）",
                     allMainFloorsForLinen.size(), allAnnexFloorsForLinen.size()));
 
         } catch (Exception e) {
@@ -1349,7 +1349,7 @@ public class RoomAssignmentApplication extends JFrame {
             this.lastLinenTargetFloors = dialog.getLinenTargetFloors();
             AdaptiveRoomOptimizer.setLinenTargetFloors(this.lastLinenTargetFloors);
             if (this.lastLinenTargetFloors != null) {
-                appendLog(String.format("リネン庫対象階: %d階（ウォークイン階を含む選択が可能）",
+                appendLog(String.format("リネン庫対象階: %d階（未販売階を含む選択が可能）",
                         this.lastLinenTargetFloors.size()));
             }
 

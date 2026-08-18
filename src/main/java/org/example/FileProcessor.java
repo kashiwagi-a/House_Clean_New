@@ -137,7 +137,7 @@ public class FileProcessor {
          */
         public String getStatusDisplay() {
             switch (roomStatus) {
-                case "0": return "ウォークイン";  // ★追加: 状態0（ウォークイン）
+                case "0": return "未販売";  // ★追加: 状態0（未販売）
                 case "1": return "未チェックイン";  // ★追加: 状態1
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
@@ -540,7 +540,7 @@ public class FileProcessor {
             statusCounts.forEach((status, count) -> {
                 String statusDisplay;
                 switch (status) {
-                    case "0": statusDisplay = "ウォークイン"; break;  // ★追加: 状態0（ウォークイン）
+                    case "0": statusDisplay = "未販売"; break;  // ★追加: 状態0（未販売）
                     case "2": statusDisplay = "チェックアウト"; break;
                     case "3": statusDisplay = "連泊"; break;
                     case "4": statusDisplay = "時間延長"; break;
@@ -557,7 +557,7 @@ public class FileProcessor {
             LOGGER.info("  - 故障部屋（清掃対象外）: " + brokenRooms.size() + "室");
             LOGGER.info("  - エコ清掃: " + ecoRooms.size() + "室");
             LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）、4（清掃要）");
-            LOGGER.info("  - ウォークイン部屋（候補）: " + unsoldRooms.size() + "室");
+            LOGGER.info("  - 未販売部屋（ウォークイン候補）: " + unsoldRooms.size() + "室");
             LOGGER.info("  - 残し部屋(事前設定): " + preExcludedRooms.size() + "室");
 
             // ★レイトアウト: 設定を実際の清掃対象部屋に絞って格納（CSV差し替え等で対象外になった設定は警告）

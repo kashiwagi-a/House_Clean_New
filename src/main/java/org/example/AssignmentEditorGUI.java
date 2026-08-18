@@ -4562,7 +4562,7 @@ public class AssignmentEditorGUI extends JFrame {
 
         if (walkInRooms.isEmpty()) {
             JOptionPane.showMessageDialog(this,
-                    "ウォークイン可能な部屋はありません。",
+                    "ウォークイン可能な未販売部屋はありません。",
                     "ウォークイン", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
@@ -4574,7 +4574,7 @@ public class AssignmentEditorGUI extends JFrame {
         JPanel headerPanel = new JPanel(new BorderLayout());
         headerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         JLabel headerLabel = new JLabel(String.format(
-                "ウォークイン部屋: %d室 （チェックと区分を設定してスタッフに割り当てできます）",
+                "未販売部屋: %d室 （チェックと区分を設定してスタッフに割り当てできます）",
                 walkInRooms.size()));
         headerLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 14));
         headerPanel.add(headerLabel, BorderLayout.CENTER);

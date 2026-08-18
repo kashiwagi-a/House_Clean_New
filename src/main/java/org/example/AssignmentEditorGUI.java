@@ -3415,13 +3415,13 @@ public class AssignmentEditorGUI extends JFrame {
         // 見つからない場合は手動選択にフォールバック
         if (templateFile == null) {
             JOptionPane.showMessageDialog(this,
-                    "清掃指示書の原本（清掃指示書（原本）.xlsm）が見つかりませんでした。\n" +
-                            "ファイルを手動で選択してください。\n\n" +
+                    "原本指示書作成システム（ファイル名に「指示書作成システム」を含む .xlsm）が\n" +
+                            "見つかりませんでした。ファイルを手動で選択してください。\n\n" +
                             "※選択したファイルの場所は記憶され、次回からは自動で使用されます。",
                     "原本の選択", JOptionPane.INFORMATION_MESSAGE);
 
             JFileChooser fileChooser = new JFileChooser();
-            fileChooser.setDialogTitle("清掃指示書の原本（.xlsm）を選択");
+            fileChooser.setDialogTitle("原本指示書作成システム（.xlsm）を選択");
             fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
                     "Excelマクロ有効ブック (*.xlsm)", "xlsm"));
             fileChooser.setAcceptAllFileFilterUsed(false);
@@ -3478,48 +3478,71 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★新規: 清掃指示書の原本（.xlsm）を探す。
+     * ★変更: 原本指示書作成システム（.xlsm）を探す。
+     * 旧「清掃指示書（原本）.xlsm」から原本指示書作成システムへの移行に伴い、
+     * ファイル名に「指示書作成システム」を含む .xlsm を対象とする。
      * 探索順:
-     *   1) 前回選択して記憶されたパス（AppSettings経由の設定ファイル）
-     *   2) デスクトップ／ドキュメント／作業フォルダーにある既定名
-     *      「清掃指示書（原本）.xlsm」のファイル
+     *   1) 前回選択して記憶されたパス（新原本の名前に一致する場合のみ採用。
+     *      旧原本のパスが記憶されていても無視する）
+     *   2) デスクトップ／ドキュメント／作業フォルダーを走査して名前で探す
+     *      （複数見つかった場合は更新日時が最も新しいもの）
      * 見つからなければ null を返す（呼び出し元で手動選択にフォールバックする）。
      * @return 見つかったファイル。見つからなければ null
      */
     private java.io.File findInstructionTemplateFile() {
-        final String EXACT_NAME = "清掃指示書（原本）.xlsm";
-
-        // 1) 前回記憶されたパスを最優先で確認
+        // 1) 前回記憶されたパスを最優先で確認（新原本の名前のときだけ）
         java.io.File saved = AppSettings.getInstance()
                 .getExistingFile(AppSettings.KEY_INSTRUCTION_TEMPLATE);
-        if (saved != null) {
+        if (isInstructionSystemFile(saved)) {
             return saved;
         }
 
-        // 2) よく使うフォルダから既定ファイル名で探す（補助的な探索）
+        // 2) よく使うフォルダを走査して名前で探す（補助的な探索）
         String userHome = System.getProperty("user.home");
         String[] searchDirs = {
                 userHome + java.io.File.separator + "Desktop",
                 userHome + java.io.File.separator + "Documents",
                 System.getProperty("user.dir")
         };
+        java.io.File best = null;
         for (String dirPath : searchDirs) {
-            java.io.File cand = new java.io.File(dirPath, EXACT_NAME);
-            if (cand.exists() && cand.isFile()) {
-                return cand;
+            java.io.File[] files = new java.io.File(dirPath).listFiles();
+            if (files == null) {
+                continue;
+            }
+            for (java.io.File cand : files) {
+                if (isInstructionSystemFile(cand)
+                        && (best == null || cand.lastModified() > best.lastModified())) {
+                    best = cand;
+                }
             }
         }
-        return null;
+        return best;
     }
 
     /**
-     * ★新規: 原本（.xlsm）を読み込み、「本日清掃」シートのデータを差し替えて
-     * 別ファイル（コピー）として保存する。原本自体・数式・マクロには触れない。
-     * ★★新規: コピー側の本館【原本】・別館【原本】（キー受け渡し書）のA列へ
+     * ★新規: 原本指示書作成システムのファイルかを判定する。
+     * ファイル名に「指示書作成システム」を含む .xlsm（Excelの一時ファイル ~$ は除外）。
+     */
+    private boolean isInstructionSystemFile(java.io.File f) {
+        if (f == null || !f.isFile()) {
+            return false;
+        }
+        String name = f.getName();
+        return name.endsWith(".xlsm")
+                && name.contains("指示書作成システム")
+                && !name.startsWith("~$");
+    }
+
+    /**
+     * ★変更: 原本指示書作成システム（.xlsm）を読み込み、「指示書作成シート」の
+     * 担当ブロックへ部屋割りを書き込んで別ファイル（コピー）として保存する。
+     * 原本自体・数式・マクロには触れない。
+     * ★★: コピー側の本館【原本】・別館【原本】（キー受け渡し書）のA列へ
      * 担当者名を自動記入する（B列ラベル・他の列・結合セル・列幅は変更しない）。
      */
     private void createInstructionExcelFromTemplate(java.io.File templateFile, String outputPath) throws IOException {
-        final String SHEET_NAME = "本日清掃";
+        final String SHEET_NAME = "指示書作成シート";
 
         try (FileInputStream fis = new FileInputStream(templateFile);
              XSSFWorkbook workbook = new XSSFWorkbook(fis)) {
@@ -3527,25 +3550,24 @@ public class AssignmentEditorGUI extends JFrame {
             Sheet sheet = workbook.getSheet(SHEET_NAME);
             if (sheet == null) {
                 throw new IOException("原本に「" + SHEET_NAME + "」シートが見つかりません: "
-                        + templateFile.getName());
+                        + templateFile.getName()
+                        + "\n原本指示書作成システムの .xlsm を選択してください。");
             }
 
-            // 「本日清掃」タブの既存データのみクリア（他シートの数式は座標参照のため影響なし）
-            clearSheetData(sheet);
+            // 指示書作成シートの担当ブロックへ書き込み
+            // （原本のコピーに書くため既存データのクリアは不要。
+            //   清掃時間などの数式・マクロには触れない）
+            writeInstructionCreationSheet(sheet);
 
-            // シートへのデータ書き込み（共通処理・従来のExcel出力と同一内容）
-            // ※原本の列幅を維持するため adjustColumnWidths=false
-            writeCleaningSheetData(workbook, sheet, false);
-
-            // ★★新規: 本館【原本】・別館【原本】（キー受け渡し書）のA列へ担当者名を書き込み
-            //   万一失敗しても、従来の清掃指示書出力（本日清掃タブ＋保存）は必ず継続する
+            // 本館【原本】・別館【原本】（キー受け渡し書）のA列へ担当者名を書き込み
+            //   万一失敗しても、清掃指示書出力（担当ブロック＋保存）は必ず継続する
             try {
                 writeKeyHandoverSheets(workbook);
             } catch (Exception e) {
                 System.err.println("キー受け渡し書への担当者名書き込みに失敗しました: " + e.getMessage());
             }
 
-            // 開いたときに「本 通常」など参照側の数式を再計算させる
+            // 開いたときに清掃時間・集計などの数式を再計算させる
             workbook.setForceFormulaRecalculation(true);
 
             // コピーとして保存（.xlsmのまま保存することでマクロも保持される）
@@ -3553,6 +3575,195 @@ public class AssignmentEditorGUI extends JFrame {
                 workbook.write(fos);
             }
         }
+    }
+
+    /**
+     * ★新規: 原本指示書作成システムの「指示書作成シート」へ担当割りを書き込む。
+     *
+     * レイアウト（検証済み・全50ブロック）:
+     *   ・1段 = 26行（見出し行・担当者名行・部屋18行・フッター6行）×10段
+     *   ・1段に5ブロック（先頭列 M/U/AC/AK/AS、8列間隔）
+     *   ・書き込むのは各ブロックの6列（部屋番号・タイプ・連泊・エコ・デュベ・備考）
+     *     ＋担当者名＋担当リネン庫のみ。清掃時間列（S/AA/AI/AQ/AY）は原本の
+     *     数式に任せる（エコ欄に値が入るとエコ清掃時間、空欄ならタイプ別時間）。
+     *   ・タイプは正式表記（NS/ZS/ZT…）のまま書く。マスタの清掃時間検索が
+     *     正式タイプをキーにしているため、簡略表記にすると時間が引けなくなる
+     */
+    private void writeInstructionCreationSheet(Sheet sheet) {
+        final int BAND_FIRST_ROW = 7;    // 0始まり: 1段目の見出し行（=8行目）
+        final int BAND_HEIGHT = 26;      // 段の高さ（行数）
+        final int BLOCK_FIRST_COL = 12;  // 0始まり: 1ブロック目の先頭列（=M列）
+        final int BLOCK_WIDTH = 8;       // ブロックの幅（列数）
+        final int BLOCKS_PER_BAND = 5;   // 1段あたりのブロック数
+        final int ROOMS_PER_BLOCK = 18;  // 1ブロックに書ける部屋数
+        final int TOTAL_BLOCKS = 50;     // 原本のブロック総数（10段×5）
+
+        // 清掃実施日（C2）を対象日で更新
+        java.time.LocalDate targetDate = java.time.LocalDate.now();
+        if (processingResult.optimizationResult != null &&
+                processingResult.optimizationResult.targetDate != null) {
+            targetDate = processingResult.optimizationResult.targetDate;
+        }
+        getCellForWrite(sheet, 1, 2).setCellValue(targetDate);
+
+        int blockIndex = 0;
+        for (StaffData staff : getSortedStaffList()) {
+            // 部屋を通常清掃とエコに分類（従来の本日清掃出力と同じ分け方）
+            List<FileProcessor.Room> normalRooms = new ArrayList<>();
+            List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+            if (staff.detailedRoomsByFloor != null) {
+                for (List<FileProcessor.Room> rooms : staff.detailedRoomsByFloor.values()) {
+                    for (FileProcessor.Room room : rooms) {
+                        (room.isEcoClean ? ecoRooms : normalRooms).add(room);
+                    }
+                }
+            }
+            normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
+            ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
+
+            // 通常（番号順）→ 1行空き → エコ（番号順）。18行に収まらない場合は空きなし
+            List<FileProcessor.Room> ordered = new ArrayList<>(normalRooms);
+            boolean withSeparator = !normalRooms.isEmpty() && !ecoRooms.isEmpty()
+                    && normalRooms.size() + ecoRooms.size() + 1 <= ROOMS_PER_BLOCK;
+            if (withSeparator) {
+                ordered.add(null);   // null = 空き行
+            }
+            ordered.addAll(ecoRooms);
+
+            // 18部屋を超えるスタッフは次のブロックへ「（続き）」として書く
+            int offset = 0;
+            boolean firstBlock = true;
+            while (firstBlock || offset < ordered.size()) {
+                if (blockIndex >= TOTAL_BLOCKS) {
+                    System.err.println("指示書作成シートのブロック数（50）を超えたため、"
+                            + staff.name + " 以降は書き込めませんでした。");
+                    return;
+                }
+                int bandTop = BAND_FIRST_ROW + (blockIndex / BLOCKS_PER_BAND) * BAND_HEIGHT;
+                int col = BLOCK_FIRST_COL + (blockIndex % BLOCKS_PER_BAND) * BLOCK_WIDTH;
+
+                // 担当者名（「清掃担当者：」ラベル右隣の結合セル左上。1段目なら N9 相当）
+                String label = firstBlock ? staff.name : staff.name + "（続き）";
+                getCellForWrite(sheet, bandTop + 1, col + 1).setCellValue(label);
+
+                // 担当リネン庫（フッターのラベル右隣。1段目ブロック1なら S30 相当）
+                if (firstBlock) {
+                    String linen = formatLinenFloors(staff);
+                    if (!linen.isEmpty()) {
+                        getCellForWrite(sheet, bandTop + 22, col + 6).setCellValue(linen);
+                    }
+                }
+
+                // 部屋行（見出し行+2 から18行分）
+                int wrote = 0;
+                while (offset < ordered.size() && wrote < ROOMS_PER_BLOCK) {
+                    writeInstructionRoomRow(sheet, bandTop + 2 + wrote, col, ordered.get(offset));
+                    offset++;
+                    wrote++;
+                }
+
+                blockIndex++;
+                firstBlock = false;
+            }
+        }
+    }
+
+    /**
+     * ★新規: 指示書作成シートの1部屋分（ブロック先頭からの6セル）を書き込む。
+     * 原本のVLOOKUP数式を消して値にするため、6セルとも明示的に上書きする。
+     * room = null は通常清掃とエコの間の空き行。
+     */
+    private void writeInstructionRoomRow(Sheet sheet, int row, int col, FileProcessor.Room room) {
+        for (int i = 0; i < 6; i++) {
+            getCellForWrite(sheet, row, col + i).setBlank();
+        }
+        if (room == null) {
+            return;
+        }
+
+        // 部屋番号（数値にできる場合は数値で）
+        Cell roomCell = getCellForWrite(sheet, row, col);
+        try {
+            roomCell.setCellValue(Integer.parseInt(room.roomNumber));
+        } catch (NumberFormatException e) {
+            roomCell.setCellValue(room.roomNumber);
+        }
+
+        // タイプ（NS/ZS/ZT等の正式表記。清掃時間の数式がこの値をマスタから検索する。
+        // room.roomType は割り当て計算用にS/D/T/FDへ丸められているため、
+        // CSVの正式タイプを保持した rawRoomType を優先して使う）
+        String typeText = (room.rawRoomType != null && !room.rawRoomType.isEmpty())
+                ? room.rawRoomType : room.roomType;
+        if (typeText != null && !typeText.isEmpty()) {
+            getCellForWrite(sheet, row, col + 1).setCellValue(typeText);
+        }
+
+        boolean isStay = "3".equals(room.roomStatus);
+
+        // 連泊 = ○
+        if (isStay) {
+            getCellForWrite(sheet, row, col + 2).setCellValue("○");
+        }
+
+        // エコ = 「エコ」（値が入ると清掃時間の数式がエコ清掃時間を選ぶ）
+        if (room.isEcoClean) {
+            getCellForWrite(sheet, row, col + 3).setCellValue("エコ");
+        }
+
+        // デュベ列 = ●（連泊の通常清掃＝3日周期の清掃日の部屋）
+        if (isStay && !room.isEcoClean) {
+            getCellForWrite(sheet, row, col + 4).setCellValue("●");
+        }
+
+        // 備考（エコドアは入室禁止を明記し、手入力の備考と併記）
+        String remark = roomRemarksMap.get(room.roomNumber);
+        boolean hasRemark = (remark != null && !remark.isEmpty());
+        String ecoDoor = "エコドア".equals(room.ecoStatus) ? "エコドア入室禁止" : "";
+        String text;
+        if (!ecoDoor.isEmpty() && hasRemark) {
+            text = ecoDoor + "／" + remark;
+        } else if (!ecoDoor.isEmpty()) {
+            text = ecoDoor;
+        } else {
+            text = hasRemark ? remark : "";
+        }
+        if (!text.isEmpty()) {
+            getCellForWrite(sheet, row, col + 5).setCellValue(text);
+        }
+    }
+
+    /**
+     * ★新規: リネン庫担当階を「2,8F」形式で整形する（別館は「別1」表記）。
+     * 従来の本日清掃出力と同じ表記ルール。担当なしは空文字を返す。
+     */
+    private String formatLinenFloors(StaffData staff) {
+        if (!staff.isLinenClosetCleaning || staff.linenClosetFloors == null
+                || staff.linenClosetFloors.isEmpty()) {
+            return "";
+        }
+        List<Integer> sortedFloors = new ArrayList<>(staff.linenClosetFloors);
+        Collections.sort(sortedFloors);
+        StringBuilder floorSb = new StringBuilder();
+        for (int i = 0; i < sortedFloors.size(); i++) {
+            if (i > 0) floorSb.append(",");
+            int f = sortedFloors.get(i);
+            if (f > 20) {
+                floorSb.append("別").append(f - 20);
+            } else {
+                floorSb.append(f);
+            }
+        }
+        floorSb.append("F");
+        return floorSb.toString();
+    }
+
+    /** ★新規: 行・セルを（無ければ作って）取得する */
+    private Cell getCellForWrite(Sheet sheet, int rowIdx, int colIdx) {
+        Row row = sheet.getRow(rowIdx);
+        if (row == null) {
+            row = sheet.createRow(rowIdx);
+        }
+        return row.getCell(colIdx, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
     }
 
 
@@ -4488,7 +4699,8 @@ public class AssignmentEditorGUI extends JFrame {
                             // 区分に応じたRoomを生成して割り当て
                             // out: 状態"2"（チェックアウト）の通常部屋 / エコ: エコ清掃フラグON
                             FileProcessor.Room assignRoom = new FileProcessor.Room(
-                                    room.roomNumber, room.roomType, isEco, false, "2");
+                                    room.roomNumber, room.roomType, isEco, false, "2",
+                                    null, room.rawRoomType);
                             selectedRooms.add(assignRoom);
                             break;
                         }

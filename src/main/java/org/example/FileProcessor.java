@@ -98,8 +98,13 @@ public class FileProcessor {
         public final String building;  // 建物情報
         public final String roomStatus;  //  部屋状態（連泊/チェックアウト）
         public final String ecoStatus;  // エコ清掃ステータス（"×", "エコドア", null）
+        // ★追加: CSVの正式部屋タイプ（NS/ZS/ZT/ADT等）。
+        // roomType は割り当て計算用に S/D/T/FD へ丸められるため、
+        // 指示書出力で正式表記が必要な場合はこちらを使う（無ければ null）
+        public final String rawRoomType;
 
-        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken, String roomStatus, String ecoStatus) {
+        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken,
+                    String roomStatus, String ecoStatus, String rawRoomType) {
             this.roomNumber = roomNumber;
             this.roomType = roomType;
             this.isEcoClean = isEcoClean;
@@ -109,6 +114,12 @@ public class FileProcessor {
             this.building = isAnnexRoom(roomNumber) ? "別館" : "本館";
             this.roomStatus = roomStatus;  //  部屋状態を保存
             this.ecoStatus = ecoStatus;    //  エコ清掃ステータスを保存
+            this.rawRoomType = rawRoomType;  // 正式部屋タイプを保存
+        }
+
+        // 後方互換性のためのコンストラクタ（rawRoomTypeなし）
+        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken, String roomStatus, String ecoStatus) {
+            this(roomNumber, roomType, isEcoClean, isBroken, roomStatus, ecoStatus, null);
         }
 
         // 後方互換性のためのコンストラクタ（ecoStatusなし）
@@ -309,7 +320,8 @@ public class FileProcessor {
                 boolean wasOriginallyBroken = isBroken;
                 if (isBroken) {
                     // 故障部屋リストに追加（記録用）
-                    Room brokenRoom = new Room(roomNumber, determineRoomType(roomTypeCode), false, true, roomStatus);
+                    Room brokenRoom = new Room(roomNumber, determineRoomType(roomTypeCode), false, true,
+                            roomStatus, null, roomTypeCode);
                     brokenRooms.add(brokenRoom);
 
                     // 選択された故障部屋は清掃対象として処理を続行
@@ -334,7 +346,8 @@ public class FileProcessor {
                         // ※故障部屋（故障＋未販売含む）は前段の故障判定でスキップ済みのためここには来ない
                         // ※「故障・未販売部屋清掃設定」で清掃対象に追加済みの部屋もこの分岐に入らないため記録されない
                         if ("0".equals(roomStatus)) {
-                            unsoldRooms.add(new Room(roomNumber, determineRoomType(roomTypeCode), false, false, roomStatus));
+                            unsoldRooms.add(new Room(roomNumber, determineRoomType(roomTypeCode), false, false,
+                                    roomStatus, null, roomTypeCode));
                         }
                         LOGGER.info("★除外: 清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
                         continue;
@@ -358,8 +371,8 @@ public class FileProcessor {
                     }
                 }
 
-                // 部屋状態情報を含むRoomオブジェクトを作成
-                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus, ecoStatus);
+                // 部屋状態情報を含むRoomオブジェクトを作成（正式タイプも保持）
+                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus, ecoStatus, roomTypeCode);
 
                 // 全部屋マップに追加
                 allRoomsMap.put(roomNumber, room);

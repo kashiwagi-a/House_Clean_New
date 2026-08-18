@@ -32,7 +32,7 @@ public class AppSettings {
     private static final String SETTINGS_FILE_NAME = "room_assignment_settings.properties";
 
     // ===== 設定キー =====
-    /** 清掃指示書（原本）.xlsm のパス */
+    /** 原本指示書作成システム（.xlsm）のパス（旧: 清掃指示書（原本）.xlsm） */
     public static final String KEY_INSTRUCTION_TEMPLATE = "instruction.template.path";
     /** 部屋状態CSV・シフトxlsx・エコDBを収めた共通データフォルダーのパス */
     public static final String KEY_DATA_FOLDER = "data.folder.path";

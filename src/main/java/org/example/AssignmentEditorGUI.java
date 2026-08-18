@@ -1165,7 +1165,7 @@ public class AssignmentEditorGUI extends JFrame {
         unassignedRoomsButton.addActionListener(e -> showUnassignedRoomsDialog());
         buttonPanel.add(unassignedRoomsButton);
 
-        // ★新規: ウォークインボタン（未販売部屋をスタッフへ割り振る）
+        // ★新規: ウォークインボタン（ウォークイン部屋をスタッフへ割り振る）
         JButton walkInButton = new JButton("ウォークイン");
         walkInButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
         walkInButton.setBackground(new java.awt.Color(150, 200, 255));  // 青系の色
@@ -4514,9 +4514,9 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * ★新規: ウォークイン候補の部屋を取得
-     * 未販売部屋（状態"0"）のうち、まだどのスタッフにも割り当てられておらず、
+     * ウォークイン部屋（状態"0"）のうち、まだどのスタッフにも割り当てられておらず、
      * 残し部屋にもなっていない部屋を返す。
-     * ※故障部屋、および「故障・未販売部屋清掃設定」で清掃対象に追加済みの部屋は
+     * ※故障部屋、および「故障部屋・ウォークイン清掃設定」で清掃対象に追加済みの部屋は
      *   FileProcessor側でunsoldRoomsに含まれないため、ここには現れない。
      */
     private List<FileProcessor.Room> getWalkInCandidateRooms() {
@@ -4554,7 +4554,7 @@ public class AssignmentEditorGUI extends JFrame {
 
     /**
      * ★新規: ウォークインダイアログを表示
-     * 未販売部屋を一覧表示し、部屋ごとに区分（out / エコ）を選択してスタッフへ割り当てる。
+     * ウォークイン部屋を一覧表示し、部屋ごとに区分（out / エコ）を選択してスタッフへ割り当てる。
      * outは状態"2"（チェックアウト）の通常部屋、エコはエコ清掃フラグONの部屋として登録される。
      */
     private void showWalkInDialog() {
@@ -4562,7 +4562,7 @@ public class AssignmentEditorGUI extends JFrame {
 
         if (walkInRooms.isEmpty()) {
             JOptionPane.showMessageDialog(this,
-                    "ウォークイン可能な未販売部屋はありません。",
+                    "ウォークイン可能な部屋はありません。",
                     "ウォークイン", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
@@ -4574,7 +4574,7 @@ public class AssignmentEditorGUI extends JFrame {
         JPanel headerPanel = new JPanel(new BorderLayout());
         headerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         JLabel headerLabel = new JLabel(String.format(
-                "未販売部屋: %d室 （チェックと区分を設定してスタッフに割り当てできます）",
+                "ウォークイン部屋: %d室 （チェックと区分を設定してスタッフに割り当てできます）",
                 walkInRooms.size()));
         headerLabel.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 14));
         headerPanel.add(headerLabel, BorderLayout.CENTER);

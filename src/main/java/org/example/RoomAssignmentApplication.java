@@ -33,7 +33,6 @@ public class RoomAssignmentApplication extends JFrame {
     private JButton selectEcoDataButton;
     private JButton selectDateButton;
     private JButton brokenRoomSettingsButton;
-    private JButton unsoldRoomSettingsButton;  // ★ボタン分割: 未販売設定ボタン
     private JButton pendingRoomSettingsButton;
     private JButton excludedRoomSettingsButton;  // ★残し部屋(事前設定): 残し部屋設定ボタン
     private JButton lateOutSettingsButton;  // ★レイトアウト: レイトアウト設定ボタン
@@ -317,32 +316,20 @@ public class RoomAssignmentApplication extends JFrame {
         JPanel settingsRow = new JPanel(new FlowLayout());
         JPanel executionRow = new JPanel(new FlowLayout());
 
-        brokenRoomSettingsButton = new JButton("故障部屋");
+        brokenRoomSettingsButton = new JButton("故障部屋・ウォークイン");
         brokenRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
-        brokenRoomSettingsButton.setPreferredSize(new Dimension(130, 35));
+        brokenRoomSettingsButton.setPreferredSize(new Dimension(190, 35));
         brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
         brokenRoomSettingsButton.setForeground(Color.BLACK);
-        brokenRoomSettingsButton.addActionListener(
-                e -> openBrokenRoomSettings(BrokenRoomSelectionDialog.TAB_BROKEN));
+        brokenRoomSettingsButton.addActionListener(e -> openBrokenRoomSettings());
         brokenRoomSettingsButton.setEnabled(false);
         settingsRow.add(brokenRoomSettingsButton);
-
-        // ★ボタン分割: 未販売設定ボタン（故障部屋と同じダイアログを未販売タブで開く）
-        unsoldRoomSettingsButton = new JButton("未販売設定");
-        unsoldRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
-        unsoldRoomSettingsButton.setPreferredSize(new Dimension(130, 35));
-        unsoldRoomSettingsButton.setBackground(new Color(255, 140, 0));
-        unsoldRoomSettingsButton.setForeground(Color.BLACK);
-        unsoldRoomSettingsButton.addActionListener(
-                e -> openBrokenRoomSettings(BrokenRoomSelectionDialog.TAB_UNSOLD));
-        unsoldRoomSettingsButton.setEnabled(false);
-        settingsRow.add(unsoldRoomSettingsButton);
 
         pendingRoomSettingsButton = new JButton("未チェックイン設定");
         pendingRoomSettingsButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
         pendingRoomSettingsButton.setPreferredSize(new Dimension(150, 35));
-        pendingRoomSettingsButton.setBackground(new Color(70, 130, 180));
-        pendingRoomSettingsButton.setForeground(Color.WHITE);
+        pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
+        pendingRoomSettingsButton.setForeground(Color.BLACK);
         pendingRoomSettingsButton.addActionListener(this::openPendingRoomSettings);
         pendingRoomSettingsButton.setEnabled(false);
         settingsRow.add(pendingRoomSettingsButton);
@@ -387,7 +374,7 @@ public class RoomAssignmentApplication extends JFrame {
         return panel;
     }
 
-    private void openBrokenRoomSettings(int initialTab) {
+    private void openBrokenRoomSettings() {
         if (selectedRoomFile == null) {
             JOptionPane.showMessageDialog(this,
                     "部屋データファイルを先に選択してください。",
@@ -396,14 +383,14 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         try {
-            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(this, selectedRoomFile, initialTab);
+            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(this, selectedRoomFile);
             dialog.setVisible(true);
 
             if (dialog.getDialogResult()) {
                 selectedBrokenRoomsForCleaning = dialog.getSelectedRoomsForCleaning();
 
-                appendLog("故障・未販売部屋設定が完了しました:");
-                appendLog("  清掃対象に追加する故障・未販売部屋: " + selectedBrokenRoomsForCleaning.size() + "室");
+                appendLog("故障部屋・ウォークイン設定が完了しました:");
+                appendLog("  清掃対象に追加する故障部屋・ウォークイン: " + selectedBrokenRoomsForCleaning.size() + "室");
 
                 if (!selectedBrokenRoomsForCleaning.isEmpty()) {
                     for (String roomNumber : selectedBrokenRoomsForCleaning) {
@@ -411,19 +398,15 @@ public class RoomAssignmentApplication extends JFrame {
                     }
                 }
 
-                // ★ボタン分割: ダイアログは両タブを含み1回の設定完了で両区分が確定するため、両ボタンを設定済み表示にする
                 brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
                 brokenRoomSettingsButton.setForeground(Color.BLACK);
-                brokenRoomSettingsButton.setText("故障部屋設定済み");
-                unsoldRoomSettingsButton.setBackground(new Color(34, 139, 34));
-                unsoldRoomSettingsButton.setForeground(Color.BLACK);
-                unsoldRoomSettingsButton.setText("未販売設定済み");
+                brokenRoomSettingsButton.setText("故障部屋・ウォークイン設定済み");
             }
 
         } catch (Exception ex) {
-            LOGGER.severe("故障・未販売部屋設定ダイアログでエラー: " + ex.getMessage());
+            LOGGER.severe("故障部屋・ウォークイン設定ダイアログでエラー: " + ex.getMessage());
             JOptionPane.showMessageDialog(this,
-                    "故障・未販売部屋設定でエラーが発生しました: " + ex.getMessage(),
+                    "故障部屋・ウォークイン設定でエラーが発生しました: " + ex.getMessage(),
                     "エラー", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -497,11 +480,8 @@ public class RoomAssignmentApplication extends JFrame {
             rememberDataFolder(selectedRoomFile);
 
             brokenRoomSettingsButton.setEnabled(true);
-            brokenRoomSettingsButton.setText("故障部屋");
+            brokenRoomSettingsButton.setText("故障部屋・ウォークイン");
             brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
-            unsoldRoomSettingsButton.setEnabled(true);
-            unsoldRoomSettingsButton.setText("未販売設定");
-            unsoldRoomSettingsButton.setBackground(new Color(255, 140, 0));
             selectedBrokenRoomsForCleaning.clear();
 
             // ★残し部屋(事前設定): ファイル変更時は残し部屋設定もリセット
@@ -664,11 +644,11 @@ public class RoomAssignmentApplication extends JFrame {
 
                 if (changedCount > 0) {
                     pendingRoomSettingsButton.setBackground(new Color(34, 139, 34));
-                    pendingRoomSettingsButton.setForeground(Color.WHITE);
+                    pendingRoomSettingsButton.setForeground(Color.BLACK);
                     pendingRoomSettingsButton.setText("未チェックイン設定済み");
                 } else {
-                    pendingRoomSettingsButton.setBackground(new Color(70, 130, 180));
-                    pendingRoomSettingsButton.setForeground(Color.WHITE);
+                    pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
+                    pendingRoomSettingsButton.setForeground(Color.BLACK);
                     pendingRoomSettingsButton.setText("未チェックイン設定");
                 }
             }
@@ -780,7 +760,6 @@ public class RoomAssignmentApplication extends JFrame {
         boolean canProcess = selectedRoomFile != null && selectedShiftFile != null && selectedDate != null;
         processButton.setEnabled(canProcess);
         brokenRoomSettingsButton.setEnabled(selectedRoomFile != null);
-        unsoldRoomSettingsButton.setEnabled(selectedRoomFile != null);
         lateOutSettingsButton.setEnabled(selectedRoomFile != null);
         pendingRoomSettingsButton.setEnabled(selectedRoomFile != null && selectedEcoDataFile != null);
         // ★残し部屋(事前設定): 部屋データファイル選択後に有効化
@@ -824,10 +803,10 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         if (!selectedBrokenRoomsForCleaning.isEmpty()) {
-            // ★注: 未販売部屋も同じプロパティで渡す（FileProcessor側の既存バイパス処理を流用するため名称は維持）
+            // ★注: ウォークイン部屋も同じプロパティで渡す（FileProcessor側の既存バイパス処理を流用するためプロパティ名は維持）
             String brokenRoomsStr = String.join(",", selectedBrokenRoomsForCleaning);
             System.setProperty("selectedBrokenRooms", brokenRoomsStr);
-            appendLog("清掃対象の故障・未販売部屋を設定: " + selectedBrokenRoomsForCleaning.size() + "室");
+            appendLog("清掃対象の故障部屋・ウォークインを設定: " + selectedBrokenRoomsForCleaning.size() + "室");
         } else {
             System.clearProperty("selectedBrokenRooms");
         }
@@ -1298,7 +1277,7 @@ public class RoomAssignmentApplication extends JFrame {
                     }
                 }
             }
-            appendLog(String.format("リネン庫対象階の候補: 本館%d階分, 別館%d階分（未販売階含む）",
+            appendLog(String.format("リネン庫対象階の候補: 本館%d階分, 別館%d階分（ウォークイン階含む）",
                     allMainFloorsForLinen.size(), allAnnexFloorsForLinen.size()));
 
         } catch (Exception e) {
@@ -1370,7 +1349,7 @@ public class RoomAssignmentApplication extends JFrame {
             this.lastLinenTargetFloors = dialog.getLinenTargetFloors();
             AdaptiveRoomOptimizer.setLinenTargetFloors(this.lastLinenTargetFloors);
             if (this.lastLinenTargetFloors != null) {
-                appendLog(String.format("リネン庫対象階: %d階（未販売階を含む選択が可能）",
+                appendLog(String.format("リネン庫対象階: %d階（ウォークイン階を含む選択が可能）",
                         this.lastLinenTargetFloors.size()));
             }
 

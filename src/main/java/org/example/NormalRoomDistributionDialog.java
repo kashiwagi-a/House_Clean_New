@@ -3091,7 +3091,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         dlg.setLayout(new BorderLayout());
 
         JLabel info = new JLabel("<html><div style='padding:8px;'>" +
-                "リネン庫清掃の対象階を選択してください（未販売の階も選択できます）。<br>" +
+                "リネン庫清掃の対象階を選択してください（ウォークインの階も選択できます）。<br>" +
                 "デフォルトは全階です。チェックを外した階にはリネン庫担当を割り振りません。</div></html>");
         dlg.add(info, BorderLayout.NORTH);
 

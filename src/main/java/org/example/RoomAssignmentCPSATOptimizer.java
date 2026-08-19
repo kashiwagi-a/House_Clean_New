@@ -2184,9 +2184,8 @@ public class RoomAssignmentCPSATOptimizer {
 
         // === 大浴清掃スタッフの2フロア目使用ペナルティ ===
         // 大浴清掃スタッフがECOのために2フロア目を使う場合にペナルティを課す。
-        // 優先順位: シングル全室(1000) > 1フロアに収める(10) > ECO全室(1)
-        // → ECO1室を諦める(コスト1)より2フロア目を使う(コスト10)方が高コスト
-        // → ECO2室以上を諦める(コスト2+)なら2フロア目を使う(コスト10未満)方が安い
+        // 優先順位: シングル全室(1000) > ECO全室(100) > 点数差の許容幅超過(30/点) > 1フロアに収める(10)
+        // → 点数差が許容幅を超える(1点あたり30)くらいなら2フロア目のECOを取りに行く(コスト10)方が安い
         List<BoolVar> bathSecondFloorVars = new ArrayList<>();
         for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
             if (staffInfo.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
@@ -2263,18 +2262,115 @@ public class RoomAssignmentCPSATOptimizer {
             }
         }
 
-        // === スコア均等化: 建物ごとに通常清掃スタッフ間の換算スコア差を最小化 ===
-        // スコア = 通常室 × 5 + ECO室 × 1（ECO5室 ≒ 通常室1室の換算）
-        // 対象①: 制限なし（非大浴場）スタッフ（本館・別館それぞれ）
-        // 対象②: 大浴場スタッフ同士（本館固定のためまとめて均等化）
-        // 均等化指標: グループ内スコアの「最大 - 最小」を最小化（range minimization）
-        List<IntVar> scoreRangeVars = new ArrayList<>();
-
-        // --- 大浴場スタッフ同士のスコア均等化（本館固定） ---
-        // スコア式: 通常室×10 + ツイン換算値×10 + リネン庫×4 + ECO×2
+        // === スコア均等化・点数差制約: ECO込み換算スコアでグループ内・グループ間の差を管理 ===
+        // スコア = 通常室×10 + ツイン換算値×10 + リネン庫×4 + ECO×2
         // （convertedTotalRoomsと同一ロジック、×10スケールで整数化）
+        // グループと許容幅（deadband: 幅内は無罰、超過分のみ重み30/点でペナルティ）:
+        //   ①本館通常（制限なし・非大浴・非備品・非またぎ）: グループ内range ≦ 4点
+        //   ②別館通常（同上）: グループ内range ≦ 4点
+        //   ③大浴場: 各自のスコアが「本館min − reduction×10」から±8点、偏差同士のrange ≦ 2点
+        //   ④備品発注: 「所属建物min − 60点」から±8点
+        //   ⑤館またぎ: 本館+別館の合計スコアが「別館min − 10点」から±8点
+        // ①②③は従来のrange最小化（重み1）も併用し、許容幅内でもなるべく縮める。
+        List<IntVar> scoreRangeVars = new ArrayList<>();
+        List<IntVar> deadbandExcessVars = new ArrayList<>();  // 許容幅超過分（重み30/点）
+        final int GROUP_RANGE_DEADBAND = 4;      // ①②: グループ内rangeの許容幅
+        final int OFFSET_DEADBAND = 8;           // ③④⑤: 基準オフセットからの許容幅
+        final int BATH_DEV_RANGE_DEADBAND = 2;   // ③: 大浴同士の偏差rangeの許容幅（ECO1室=2点刻み）
+        final int DEADBAND_EXCESS_WEIGHT = 30;   // 許容幅超過1点あたりのペナルティ重み
+
+        // ★またぎ・所属建物の判定は建物フィルタ前のoriginalConfigで行う。
+        //   本館/別館の個別最適化時、configのroomDistributionは自建物分のみに
+        //   フィルタされており、またぎスタッフが片建物専任スタッフに見えるため。
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> origDistMap =
+                (originalConfig != null && originalConfig.roomDistribution != null)
+                        ? originalConfig.roomDistribution
+                        : config.roomDistribution;
+
+        // --- ①本館 / ②別館: 制限なし通常スタッフのグループ内均等化 ---
+        // 大浴場・備品発注・館またぎは③④⑤で別枠管理するため除外（従来は備品・またぎが混入していた）
+        List<IntVar> mainScoreVars = new ArrayList<>();
+        List<IntVar> annexScoreVars = new ArrayList<>();
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+            String staffName = staffInfo.staff.name;
+            if (staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
+            if (staffInfo.isSuppliesOrder) continue;
+            AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(staffName);
+            if (pc != null && !"制限なし".equals(pc.constraintType)) continue;
+
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
+            if (dist == null) continue;
+            NormalRoomDistributionDialog.StaffDistribution origDist =
+                    origDistMap != null ? origDistMap.get(staffName) : null;
+            if (origDist != null
+                    && origDist.mainSingleAssignedRooms + origDist.mainTwinAssignedRooms > 0
+                    && origDist.annexSingleAssignedRooms + origDist.annexTwinAssignedRooms > 0) {
+                continue;  // ⑤館またぎは別枠
+            }
+            int mainRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+            int annexRooms = dist.annexSingleAssignedRooms + dist.annexTwinAssignedRooms;
+
+            if (mainRooms > 0) {
+                // baseScore = 通常室×10 + ツイン換算×10 + リネン庫×4
+                int baseScore = dist.mainSingleAssignedRooms * 10
+                        + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.mainTwinAssignedRooms) * 10)
+                        + staffInfo.linenClosetFloorCount * 4;
+                mainScoreVars.add(buildEcoScoreVar(model, ecoVars, buildingData.mainFloors,
+                        staffName, baseScore, "score_main_" + staffName));
+                LOGGER.info(String.format("スコア均等化(本館): %s 通常室=%d ツイン=%d baseScore=%d",
+                        staffName, dist.mainSingleAssignedRooms, dist.mainTwinAssignedRooms, baseScore));
+            } else if (annexRooms > 0) {
+                int baseScore = dist.annexSingleAssignedRooms * 10
+                        + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.annexTwinAssignedRooms) * 10);
+                annexScoreVars.add(buildEcoScoreVar(model, ecoVars, buildingData.annexFloors,
+                        staffName, baseScore, "score_annex_" + staffName));
+                LOGGER.info(String.format("スコア均等化(別館): %s 通常室=%d ツイン=%d baseScore=%d",
+                        staffName, dist.annexSingleAssignedRooms, dist.annexTwinAssignedRooms, baseScore));
+            }
+        }
+        // グループ最小スコア（③④⑤の基準値としてグループ1名でも作成する）
+        IntVar minMainScore = null;
+        IntVar minAnnexScore = null;
+        if (!mainScoreVars.isEmpty()) {
+            minMainScore = model.newIntVar(0, 20000, "min_score_main");
+            model.addMinEquality(minMainScore, mainScoreVars.toArray(new IntVar[0]));
+        }
+        if (!annexScoreVars.isEmpty()) {
+            minAnnexScore = model.newIntVar(0, 20000, "min_score_annex");
+            model.addMinEquality(minAnnexScore, annexScoreVars.toArray(new IntVar[0]));
+        }
+        if (mainScoreVars.size() >= 2) {
+            IntVar maxScore = model.newIntVar(0, 20000, "max_score_main");
+            model.addMaxEquality(maxScore, mainScoreVars.toArray(new IntVar[0]));
+            IntVar rangeVar = model.newIntVar(0, 20000, "range_main");
+            model.addEquality(rangeVar, LinearExpr.newBuilder()
+                    .addTerm(maxScore, 1).addTerm(minMainScore, -1).build());
+            scoreRangeVars.add(rangeVar);
+            addDeadbandExcess(model, rangeVar, GROUP_RANGE_DEADBAND, false,
+                    "range_main", deadbandExcessVars);
+            LOGGER.info("スコア均等化(本館): " + mainScoreVars.size() + "名対象, range≦"
+                    + GROUP_RANGE_DEADBAND + "点(超過ペナルティ)+range最小化");
+        }
+        if (annexScoreVars.size() >= 2) {
+            IntVar maxScore = model.newIntVar(0, 20000, "max_score_annex");
+            model.addMaxEquality(maxScore, annexScoreVars.toArray(new IntVar[0]));
+            IntVar rangeVar = model.newIntVar(0, 20000, "range_annex");
+            model.addEquality(rangeVar, LinearExpr.newBuilder()
+                    .addTerm(maxScore, 1).addTerm(minAnnexScore, -1).build());
+            scoreRangeVars.add(rangeVar);
+            addDeadbandExcess(model, rangeVar, GROUP_RANGE_DEADBAND, false,
+                    "range_annex", deadbandExcessVars);
+            LOGGER.info("スコア均等化(別館): " + annexScoreVars.size() + "名対象, range≦"
+                    + GROUP_RANGE_DEADBAND + "点(超過ペナルティ)+range最小化");
+        }
+
+        // --- ③大浴場スタッフ: 本館通常minとの点数差制約 + 偏差同士の均等化 ---
+        // 各自: スコア ≒ 本館min − reduction×10（±OFFSET_DEADBAND点、超過分ペナルティ）
+        // 同士: 調整値（スコア + reduction×10）のrange ≦ BATH_DEV_RANGE_DEADBAND点
+        //       （湯抜きあり/通常の混在時も「各自の目標からのズレ」が揃うことを保証する）
         {
-            List<IntVar> bathScoreVars = new ArrayList<>();
+            List<IntVar> bathAdjVars = new ArrayList<>();  // スコア + reduction×10（本館minと直接比較する調整値）
             for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
                 String staffName = staffInfo.staff.name;
                 if (staffInfo.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
@@ -2283,150 +2379,172 @@ public class RoomAssignmentCPSATOptimizer {
                         config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
                 if (dist == null || dist.mainSingleAssignedRooms <= 0) continue;
 
-                // 大浴場スタッフの本館ECO合計変数を収集
-                List<IntVar> staffMainEcoList = new ArrayList<>();
-                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
-                    String eVarName = String.format("e_%s_%d", staffName, floor.floorNumber);
-                    if (ecoVars.containsKey(eVarName)) staffMainEcoList.add(ecoVars.get(eVarName));
-                }
-
                 // baseScore = 通常室×10 + ツイン換算×10 + リネン庫×4
                 int baseScore = dist.mainSingleAssignedRooms * 10
                         + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.mainTwinAssignedRooms) * 10)
                         + staffInfo.linenClosetFloorCount * 4;
-                int maxPossibleEco = buildingData.mainFloors.stream().mapToInt(f -> f.ecoRooms).sum();
-                // ECO×2を動的に加算
-                IntVar scoreVar = model.newIntVar(baseScore, baseScore + maxPossibleEco * 2,
-                        "score_bath_" + staffName);
-                if (staffMainEcoList.isEmpty()) {
-                    model.addEquality(scoreVar, baseScore);
-                } else {
-                    LinearExprBuilder eb = LinearExpr.newBuilder().add(baseScore);
-                    for (IntVar ev : staffMainEcoList) eb.addTerm(ev, 2);
-                    model.addEquality(scoreVar, eb.build());
+                IntVar scoreVar = buildEcoScoreVar(model, ecoVars, buildingData.mainFloors,
+                        staffName, baseScore, "score_bath_" + staffName);
+                int reductionPts = staffInfo.bathCleaningType.reduction * 10;
+                IntVar adjVar = model.newIntVar(0, 20000, "adj_bath_" + staffName);
+                model.addEquality(adjVar, LinearExpr.newBuilder()
+                        .addTerm(scoreVar, 1).add(reductionPts).build());
+                bathAdjVars.add(adjVar);
+
+                if (minMainScore != null) {
+                    // dev = スコア − (本館min − reduction×10) = adj − 本館min
+                    IntVar devVar = model.newIntVar(-20000, 20000, "dev_bath_" + staffName);
+                    model.addEquality(devVar, LinearExpr.newBuilder()
+                            .addTerm(adjVar, 1).addTerm(minMainScore, -1).build());
+                    addDeadbandExcess(model, devVar, OFFSET_DEADBAND, true,
+                            "dev_bath_" + staffName, deadbandExcessVars);
                 }
-                bathScoreVars.add(scoreVar);
-                LOGGER.info(String.format("スコア均等化(大浴場): %s 通常室=%d ツイン=%d baseScore=%d",
-                        staffName, dist.mainSingleAssignedRooms, dist.mainTwinAssignedRooms, baseScore));
+                LOGGER.info(String.format("点数差制約(大浴場): %s baseScore=%d 目標=本館min−%d±%d点",
+                        staffName, baseScore, reductionPts, OFFSET_DEADBAND));
             }
-            if (bathScoreVars.size() >= 2) {
-                IntVar minScore = model.newIntVar(0, 10000, "min_score_bath");
-                IntVar maxScore = model.newIntVar(0, 10000, "max_score_bath");
-                model.addMinEquality(minScore, bathScoreVars.toArray(new IntVar[0]));
-                model.addMaxEquality(maxScore, bathScoreVars.toArray(new IntVar[0]));
-                IntVar rangeVar = model.newIntVar(0, 10000, "range_bath");
+            if (minMainScore == null && !bathAdjVars.isEmpty()) {
+                LOGGER.info("点数差制約(大浴場): 本館通常スタッフ不在のため基準オフセット制約はスキップ");
+            }
+            if (bathAdjVars.size() >= 2) {
+                IntVar minAdj = model.newIntVar(0, 20000, "min_adj_bath");
+                IntVar maxAdj = model.newIntVar(0, 20000, "max_adj_bath");
+                model.addMinEquality(minAdj, bathAdjVars.toArray(new IntVar[0]));
+                model.addMaxEquality(maxAdj, bathAdjVars.toArray(new IntVar[0]));
+                IntVar rangeVar = model.newIntVar(0, 20000, "range_bath");
                 model.addEquality(rangeVar, LinearExpr.newBuilder()
-                        .addTerm(maxScore, 1).addTerm(minScore, -1).build());
+                        .addTerm(maxAdj, 1).addTerm(minAdj, -1).build());
                 scoreRangeVars.add(rangeVar);
-                LOGGER.info("スコア均等化(大浴場): " + bathScoreVars.size() + "名対象, range最小化を目的関数に追加");
+                addDeadbandExcess(model, rangeVar, BATH_DEV_RANGE_DEADBAND, false,
+                        "range_bath", deadbandExcessVars);
+                LOGGER.info("点数差制約(大浴場): " + bathAdjVars.size() + "名対象, 偏差range≦"
+                        + BATH_DEV_RANGE_DEADBAND + "点(超過ペナルティ)+range最小化");
             }
         }
 
-        // --- 本館スコア均等化（制限なし通常スタッフ） ---
-        // スコア式: 通常室×10 + ツイン換算値×10 + リネン庫×4 + ECO×2
-        {
-            List<IntVar> mainScoreVars = new ArrayList<>();
-            for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
-                String staffName = staffInfo.staff.name;
-                if (staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
-                AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(staffName);
-                if (pc != null && !"制限なし".equals(pc.constraintType)) continue;
+        // --- ④備品発注スタッフ: 所属建物の通常minとの点数差制約（−60点±8点） ---
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+            String staffName = staffInfo.staff.name;
+            if (!staffInfo.isSuppliesOrder) continue;
+            if (staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
 
-                NormalRoomDistributionDialog.StaffDistribution dist =
-                        config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
-                if (dist == null || dist.mainSingleAssignedRooms <= 0) continue;
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
+            if (dist == null) continue;
+            // 所属建物の判定はフィルタ前のoriginalConfigベースで行う
+            NormalRoomDistributionDialog.StaffDistribution sideDist =
+                    (origDistMap != null && origDistMap.get(staffName) != null)
+                            ? origDistMap.get(staffName) : dist;
+            int mainRooms = sideDist.mainSingleAssignedRooms + sideDist.mainTwinAssignedRooms;
+            int annexRooms = sideDist.annexSingleAssignedRooms + sideDist.annexTwinAssignedRooms;
+            boolean isMainSide = mainRooms > 0 && annexRooms == 0;
+            boolean isAnnexSide = annexRooms > 0 && mainRooms == 0;
+            IntVar minRef = isMainSide ? minMainScore : (isAnnexSide ? minAnnexScore : null);
+            if (minRef == null) {
+                LOGGER.info("点数差制約(備品発注): " + staffName + " 基準グループ不在または両建物担当のためスキップ");
+                continue;
+            }
 
-                // このスタッフの本館ECO合計変数を収集
-                List<IntVar> staffMainEcoList = new ArrayList<>();
-                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.mainFloors) {
-                    String eVarName = String.format("e_%s_%d", staffName, floor.floorNumber);
-                    if (ecoVars.containsKey(eVarName)) staffMainEcoList.add(ecoVars.get(eVarName));
-                }
-
-                // baseScore = 通常室×10 + ツイン換算×10 + リネン庫×4
-                int baseScore = dist.mainSingleAssignedRooms * 10
+            int baseScore;
+            IntVar scoreVar;
+            if (isMainSide) {
+                baseScore = dist.mainSingleAssignedRooms * 10
                         + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.mainTwinAssignedRooms) * 10)
                         + staffInfo.linenClosetFloorCount * 4;
-                int maxPossibleEco = buildingData.mainFloors.stream().mapToInt(f -> f.ecoRooms).sum();
-                IntVar scoreVar = model.newIntVar(baseScore, baseScore + maxPossibleEco * 2,
-                        "score_main_" + staffName);
-                if (staffMainEcoList.isEmpty()) {
-                    model.addEquality(scoreVar, baseScore);
-                } else {
-                    LinearExprBuilder eb = LinearExpr.newBuilder().add(baseScore);
-                    for (IntVar ev : staffMainEcoList) eb.addTerm(ev, 2);
-                    model.addEquality(scoreVar, eb.build());
-                }
-                mainScoreVars.add(scoreVar);
-                LOGGER.info(String.format("スコア均等化(本館): %s 通常室=%d ツイン=%d baseScore=%d",
-                        staffName, dist.mainSingleAssignedRooms, dist.mainTwinAssignedRooms, baseScore));
-            }
-            if (mainScoreVars.size() >= 2) {
-                IntVar minScore = model.newIntVar(0, 10000, "min_score_main");
-                IntVar maxScore = model.newIntVar(0, 10000, "max_score_main");
-                model.addMinEquality(minScore, mainScoreVars.toArray(new IntVar[0]));
-                model.addMaxEquality(maxScore, mainScoreVars.toArray(new IntVar[0]));
-                IntVar rangeVar = model.newIntVar(0, 10000, "range_main");
-                model.addEquality(rangeVar, LinearExpr.newBuilder()
-                        .addTerm(maxScore, 1).addTerm(minScore, -1).build());
-                scoreRangeVars.add(rangeVar);
-                LOGGER.info("スコア均等化(本館): " + mainScoreVars.size() + "名対象, range最小化を目的関数に追加");
-            }
-        }
-
-        // --- 別館スコア均等化（制限なし通常スタッフ） ---
-        // スコア式: 通常室×10 + ツイン換算値×10 + ECO×2
-        {
-            List<IntVar> annexScoreVars = new ArrayList<>();
-            for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
-                String staffName = staffInfo.staff.name;
-                if (staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
-                AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(staffName);
-                if (pc != null && !"制限なし".equals(pc.constraintType)) continue;
-
-                NormalRoomDistributionDialog.StaffDistribution dist =
-                        config.roomDistribution != null ? config.roomDistribution.get(staffName) : null;
-                if (dist == null || dist.annexSingleAssignedRooms <= 0) continue;
-
-                List<IntVar> staffAnnexEcoList = new ArrayList<>();
-                for (AdaptiveRoomOptimizer.FloorInfo floor : buildingData.annexFloors) {
-                    String eVarName = String.format("e_%s_%d", staffName, floor.floorNumber);
-                    if (ecoVars.containsKey(eVarName)) staffAnnexEcoList.add(ecoVars.get(eVarName));
-                }
-
-                // baseScore = 通常室×10 + ツイン換算×10
-                int baseScore = dist.annexSingleAssignedRooms * 10
+                scoreVar = buildEcoScoreVar(model, ecoVars, buildingData.mainFloors,
+                        staffName, baseScore, "score_sup_" + staffName);
+            } else {
+                baseScore = dist.annexSingleAssignedRooms * 10
                         + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(dist.annexTwinAssignedRooms) * 10);
-                int maxPossibleEco = buildingData.annexFloors.stream().mapToInt(f -> f.ecoRooms).sum();
-                IntVar scoreVar = model.newIntVar(baseScore, baseScore + maxPossibleEco * 2,
-                        "score_annex_" + staffName);
-                if (staffAnnexEcoList.isEmpty()) {
-                    model.addEquality(scoreVar, baseScore);
-                } else {
-                    LinearExprBuilder eb = LinearExpr.newBuilder().add(baseScore);
-                    for (IntVar ev : staffAnnexEcoList) eb.addTerm(ev, 2);
-                    model.addEquality(scoreVar, eb.build());
-                }
-                annexScoreVars.add(scoreVar);
-                LOGGER.info(String.format("スコア均等化(別館): %s 通常室=%d ツイン=%d baseScore=%d",
-                        staffName, dist.annexSingleAssignedRooms, dist.annexTwinAssignedRooms, baseScore));
+                scoreVar = buildEcoScoreVar(model, ecoVars, buildingData.annexFloors,
+                        staffName, baseScore, "score_sup_" + staffName);
             }
-            if (annexScoreVars.size() >= 2) {
-                IntVar minScore = model.newIntVar(0, 10000, "min_score_annex");
-                IntVar maxScore = model.newIntVar(0, 10000, "max_score_annex");
-                model.addMinEquality(minScore, annexScoreVars.toArray(new IntVar[0]));
-                model.addMaxEquality(maxScore, annexScoreVars.toArray(new IntVar[0]));
-                IntVar rangeVar = model.newIntVar(0, 10000, "range_annex");
-                model.addEquality(rangeVar, LinearExpr.newBuilder()
-                        .addTerm(maxScore, 1).addTerm(minScore, -1).build());
-                scoreRangeVars.add(rangeVar);
-                LOGGER.info("スコア均等化(別館): " + annexScoreVars.size() + "名対象, range最小化を目的関数に追加");
+            int offsetPts = AdaptiveRoomOptimizer.SUPPLIES_ORDER_REDUCTION * 10;
+            // dev = スコア − (所属建物min − 60)
+            IntVar devVar = model.newIntVar(-20000, 20000, "dev_sup_" + staffName);
+            model.addEquality(devVar, LinearExpr.newBuilder()
+                    .addTerm(scoreVar, 1).addTerm(minRef, -1).add(offsetPts).build());
+            addDeadbandExcess(model, devVar, OFFSET_DEADBAND, true,
+                    "dev_sup_" + staffName, deadbandExcessVars);
+            LOGGER.info(String.format("点数差制約(備品発注): %s baseScore=%d 目標=%smin−%d±%d点",
+                    staffName, baseScore, isMainSide ? "本館" : "別館", offsetPts, OFFSET_DEADBAND));
+        }
+
+        // --- ⑤館またぎスタッフ: 総スコア（本館+別館）の点数差制約 ---
+        // 本館と別館は別モデルで解かれるため「別館minスコア」を変数として参照できない。
+        // 代わりにoriginalConfigから別館専任通常スタッフの基本スコア最小値（定数）を求め、
+        // ECO見込み補正（+4点 ≒ 別館ECO約2室分）を加えた推定基準を使う。
+        // 目標 = (別館基本min + 補正) − 10点、±OFFSET_DEADBAND点。
+        // またぎのECO担当は片建物に限定される（determineCrossBuildingEcoSide）ため、
+        // この制約はECO担当側のモデルでのみ実質的に効く（反対側モデルではスコアが定数となり無害）。
+        {
+            final int ANNEX_ECO_ADJ = 4;  // 別館通常スタッフに乗る見込みECOの換算補正
+            // 別館専任の通常スタッフ（制限なし・非大浴・非備品）の基本スコア最小値（②と同式・ECO除く）
+            int annexBaseMin = Integer.MAX_VALUE;
+            if (originalConfig != null && originalConfig.extendedStaffInfo != null
+                    && originalConfig.roomDistribution != null) {
+                for (AdaptiveRoomOptimizer.ExtendedStaffInfo oInfo : originalConfig.extendedStaffInfo) {
+                    String oName = oInfo.staff.name;
+                    if (oInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
+                    if (oInfo.isSuppliesOrder) continue;
+                    AdaptiveRoomOptimizer.PointConstraint oPc =
+                            originalConfig.pointConstraints != null ? originalConfig.pointConstraints.get(oName) : null;
+                    if (oPc != null && !"制限なし".equals(oPc.constraintType)) continue;
+                    NormalRoomDistributionDialog.StaffDistribution od = originalConfig.roomDistribution.get(oName);
+                    if (od == null) continue;
+                    int oMain = od.mainSingleAssignedRooms + od.mainTwinAssignedRooms;
+                    int oAnnex = od.annexSingleAssignedRooms + od.annexTwinAssignedRooms;
+                    if (oMain > 0 || oAnnex == 0) continue;  // 別館専任のみ
+                    int base = od.annexSingleAssignedRooms * 10
+                            + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(od.annexTwinAssignedRooms) * 10);
+                    annexBaseMin = Math.min(annexBaseMin, base);
+                }
+            }
+
+            for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+                String staffName = staffInfo.staff.name;
+                if (staffInfo.bathCleaningType != AdaptiveRoomOptimizer.BathCleaningType.NONE) continue;
+                if (staffInfo.isSuppliesOrder) continue;
+                AdaptiveRoomOptimizer.PointConstraint pc = config.pointConstraints.get(staffName);
+                if (pc != null && !"制限なし".equals(pc.constraintType)) continue;
+
+                NormalRoomDistributionDialog.StaffDistribution origDist =
+                        origDistMap != null ? origDistMap.get(staffName) : null;
+                if (origDist == null) continue;
+                int mainRooms = origDist.mainSingleAssignedRooms + origDist.mainTwinAssignedRooms;
+                int annexRooms = origDist.annexSingleAssignedRooms + origDist.annexTwinAssignedRooms;
+                if (mainRooms <= 0 || annexRooms <= 0) continue;  // 両建物担当のみ対象
+
+                if (annexBaseMin == Integer.MAX_VALUE) {
+                    LOGGER.info("点数差制約(館またぎ): " + staffName + " 別館専任通常スタッフ不在のためスキップ");
+                    continue;
+                }
+
+                // baseScore = 本館分 + 別館分（フィルタ前の全体値、リネン庫込み）
+                int baseScore = origDist.mainSingleAssignedRooms * 10
+                        + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(origDist.mainTwinAssignedRooms) * 10)
+                        + origDist.annexSingleAssignedRooms * 10
+                        + (int)(AdaptiveRoomOptimizer.calculateTwinConversion(origDist.annexTwinAssignedRooms) * 10)
+                        + staffInfo.linenClosetFloorCount * 4;
+                // ECO変数はこのモデルに存在する建物分のみ（担当禁止側は0のため合計スコアとして正しい）
+                List<AdaptiveRoomOptimizer.FloorInfo> splitAllFloors = new ArrayList<>(buildingData.mainFloors);
+                splitAllFloors.addAll(buildingData.annexFloors);
+                IntVar scoreVar = buildEcoScoreVar(model, ecoVars, splitAllFloors,
+                        staffName, baseScore, "score_split_" + staffName);
+                int targetConst = annexBaseMin + ANNEX_ECO_ADJ - 10;
+                // dev = 総スコア − 推定目標
+                IntVar devVar = model.newIntVar(-20000, 20000, "dev_split_" + staffName);
+                model.addEquality(devVar, LinearExpr.newBuilder()
+                        .addTerm(scoreVar, 1).add(-targetConst).build());
+                addDeadbandExcess(model, devVar, OFFSET_DEADBAND, true,
+                        "dev_split_" + staffName, deadbandExcessVars);
+                LOGGER.info(String.format("点数差制約(館またぎ): %s baseScore=%d 目標=%d点(推定別館min%d+%d−10)±%d点",
+                        staffName, baseScore, targetConst, annexBaseMin, ANNEX_ECO_ADJ, OFFSET_DEADBAND));
             }
         }
 
-        // === 目的関数: シングル優先（重み1000）+ 大浴2フロア目ペナルティ（重み10）+ ECO未割当（重み100）
-        //     + ★★ツイン回避（重み5）+ スコア均等化（重み1） ===
-        // 優先順位: 通常室全室埋める > ECO全室埋める > 大浴1フロア維持 > ツイン回避 > スコア均等化
+        // === 目的関数: シングル優先（重み1000）+ ECO未割当（重み100）+ 許容幅超過（重み30/点）
+        //     + 大浴2フロア目ペナルティ（重み10）+ ★★ツイン回避（重み5）+ スコア均等化（重み1） ===
+        // 優先順位: 通常室全室埋める > ECO全室埋める > 点数差の許容幅内維持 > 大浴1フロア維持 > ツイン回避 > スコア均等化
         LinearExprBuilder objectiveBuilder = LinearExpr.newBuilder();
         boolean hasObjective = false;
         for (IntVar sv : shortageVars) {
@@ -2439,6 +2557,12 @@ public class RoomAssignmentCPSATOptimizer {
         }
         for (IntVar ev : ecoShortageVars) {
             objectiveBuilder.addTerm(ev, 100);  // 1→100: ECO全室埋めをスコア均等化より優先
+            hasObjective = true;
+        }
+        for (IntVar dv : deadbandExcessVars) {
+            // 許容幅超過ペナルティ（ECO全室埋めより弱く、大浴2フロア回避より強い
+            // → 許容幅を超えるくらいなら2フロア目のECOを取りに行く）
+            objectiveBuilder.addTerm(dv, DEADBAND_EXCESS_WEIGHT);
             hasObjective = true;
         }
         for (BoolVar tv : linenBathTwinFloorVars) {
@@ -2954,6 +3078,54 @@ public class RoomAssignmentCPSATOptimizer {
 
         return new AdaptiveRoomOptimizer.AdaptiveLoadConfig(
                 staffList, extList, bathMap, config.pointConstraints, distMap);
+    }
+
+    /**
+     * スコア均等化・点数差制約用: baseScore + 対象フロアのECO×2 を表すスコア変数を構築する。
+     * スコア = 通常室×10 + ツイン換算×10 + リネン庫×4 + ECO×2（呼び出し元がbaseScoreに前3項を詰める）
+     */
+    private static IntVar buildEcoScoreVar(CpModel model, Map<String, IntVar> ecoVars,
+                                           List<AdaptiveRoomOptimizer.FloorInfo> floors,
+                                           String staffName, int baseScore, String varName) {
+        List<IntVar> ecoList = new ArrayList<>();
+        int maxPossibleEco = 0;
+        for (AdaptiveRoomOptimizer.FloorInfo floor : floors) {
+            String eVarName = String.format("e_%s_%d", staffName, floor.floorNumber);
+            if (ecoVars.containsKey(eVarName)) {
+                ecoList.add(ecoVars.get(eVarName));
+                maxPossibleEco += floor.ecoRooms;
+            }
+        }
+        IntVar scoreVar = model.newIntVar(baseScore, baseScore + maxPossibleEco * 2L, varName);
+        if (ecoList.isEmpty()) {
+            model.addEquality(scoreVar, baseScore);
+        } else {
+            LinearExprBuilder eb = LinearExpr.newBuilder().add(baseScore);
+            for (IntVar ev : ecoList) eb.addTerm(ev, 2);
+            model.addEquality(scoreVar, eb.build());
+        }
+        return scoreVar;
+    }
+
+    /**
+     * deadband付きソフト制約用: dev が許容幅 band を超えた分を表す変数を作り excessOut に追加する。
+     * 幅内（|dev| ≦ band）なら超過変数は0になり無罰。目的関数側で超過変数に重みを掛けて最小化する。
+     * @param twoSided true=両側（±band超過を計上）、false=正方向のみ（range変数など非負のdev用）
+     */
+    private static void addDeadbandExcess(CpModel model, IntVar dev, int band, boolean twoSided,
+                                          String namePrefix, List<IntVar> excessOut) {
+        IntVar over = model.newIntVar(0, 20000, namePrefix + "_over");
+        // over ≧ dev − band（最小化により over = max(0, dev − band) に収束）
+        model.addGreaterOrEqual(
+                LinearExpr.newBuilder().addTerm(over, 1).addTerm(dev, -1).build(), -band);
+        excessOut.add(over);
+        if (twoSided) {
+            IntVar under = model.newIntVar(0, 20000, namePrefix + "_under");
+            // under ≧ −dev − band
+            model.addGreaterOrEqual(
+                    LinearExpr.newBuilder().addTerm(under, 1).addTerm(dev, 1).build(), -band);
+            excessOut.add(under);
+        }
     }
 
     /**

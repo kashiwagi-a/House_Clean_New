@@ -3710,20 +3710,26 @@ public class AssignmentEditorGUI extends JFrame {
             getCellForWrite(sheet, row, col + 3).setCellValue("エコ");
         }
 
-        // デュベ列 = ●（連泊の通常清掃＝3日周期の清掃日の部屋）
-        if (isStay && !room.isEcoClean) {
+        // デュベ列 = ●（エコDB上で対象日に「〇」＝3日周期の清掃日の部屋のみ。
+        // 通常清掃・エコプランに関係なく〇の日だけ付け、
+        // 空白（レコード無し）の日には付けない）
+        if (isStay && room.isDuvetChange && !room.isEcoClean) {
             getCellForWrite(sheet, row, col + 4).setCellValue("●");
         }
 
-        // 備考（エコドアは入室禁止を明記し、手入力の備考と併記）
+        // 備考（本日清掃タブと同様、エコ部屋は「エコ清掃」／エコドアは「エコドア入室禁止」を
+        // 明記し、手入力の備考と併記。エコ列と重複するが備考でも分かるようにする）
         String remark = roomRemarksMap.get(room.roomNumber);
         boolean hasRemark = (remark != null && !remark.isEmpty());
-        String ecoDoor = "エコドア".equals(room.ecoStatus) ? "エコドア入室禁止" : "";
+        String ecoText = "";
+        if (room.isEcoClean) {
+            ecoText = "エコドア".equals(room.ecoStatus) ? "エコドア入室禁止" : "エコ清掃";
+        }
         String text;
-        if (!ecoDoor.isEmpty() && hasRemark) {
-            text = ecoDoor + "／" + remark;
-        } else if (!ecoDoor.isEmpty()) {
-            text = ecoDoor;
+        if (!ecoText.isEmpty() && hasRemark) {
+            text = ecoText + "／" + remark;
+        } else if (!ecoText.isEmpty()) {
+            text = ecoText;
         } else {
             text = hasRemark ? remark : "";
         }

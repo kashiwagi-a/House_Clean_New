@@ -20,6 +20,10 @@ public class FileProcessor {
     // ★追加: 部屋状態情報を保存するマップ
     private static final Map<String, String> ROOM_STATUS_MAP = new HashMap<>();
 
+    // ★デュベ: エコDB上で「〇」（3日周期の清掃日）が立っている部屋（日付文字列 → 部屋番号集合）。
+    // loadEcoRoomInfo() でエコ情報と一緒に読み込む
+    private static final Map<String, Set<String>> DUVET_ROOM_MAP = new HashMap<>();
+
     // CleaningDataクラスを内部クラスとして定義（修正版）
     public static class CleaningData {
         public final List<Room> mainRooms;
@@ -102,9 +106,13 @@ public class FileProcessor {
         // roomType は割り当て計算用に S/D/T/FD へ丸められるため、
         // 指示書出力で正式表記が必要な場合はこちらを使う（無ければ null）
         public final String rawRoomType;
+        // ★デュベ: エコDB上で対象日に「〇」（3日周期の清掃日）が立っている部屋。
+        // 通常清掃・エコプランに関係なく清掃日には〇が入る。
+        // 〇でない日（×・エコドア・レコード無し＝空白）は false
+        public final boolean isDuvetChange;
 
         public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken,
-                    String roomStatus, String ecoStatus, String rawRoomType) {
+                    String roomStatus, String ecoStatus, String rawRoomType, boolean isDuvetChange) {
             this.roomNumber = roomNumber;
             this.roomType = roomType;
             this.isEcoClean = isEcoClean;
@@ -115,6 +123,13 @@ public class FileProcessor {
             this.roomStatus = roomStatus;  //  部屋状態を保存
             this.ecoStatus = ecoStatus;    //  エコ清掃ステータスを保存
             this.rawRoomType = rawRoomType;  // 正式部屋タイプを保存
+            this.isDuvetChange = isDuvetChange;  // デュベ（〇）フラグを保存
+        }
+
+        // 後方互換性のためのコンストラクタ（isDuvetChangeなし）
+        public Room(String roomNumber, String roomType, boolean isEcoClean, boolean isBroken,
+                    String roomStatus, String ecoStatus, String rawRoomType) {
+            this(roomNumber, roomType, isEcoClean, isBroken, roomStatus, ecoStatus, rawRoomType, false);
         }
 
         // 後方互換性のためのコンストラクタ（rawRoomTypeなし）
@@ -371,8 +386,12 @@ public class FileProcessor {
                     }
                 }
 
+                // ★デュベ: DB上で対象日に「〇」が立っている部屋か（空白＝レコード無しの日は false）
+                boolean isDuvetChange = DUVET_ROOM_MAP.containsKey(targetDateStr)
+                        && DUVET_ROOM_MAP.get(targetDateStr).contains(roomNumber);
+
                 // 部屋状態情報を含むRoomオブジェクトを作成（正式タイプも保持）
-                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus, ecoStatus, roomTypeCode);
+                Room room = new Room(roomNumber, roomType, isEcoClean, isBroken, roomStatus, ecoStatus, roomTypeCode, isDuvetChange);
 
                 // 全部屋マップに追加
                 allRoomsMap.put(roomNumber, room);
@@ -729,8 +748,10 @@ public class FileProcessor {
     }
 
     // ★エコ清掃情報をデータベースから読み込む（対象日付指定版）
+    // あわせて「〇」（3日周期の清掃日＝デュベ交換日）の部屋を DUVET_ROOM_MAP に読み込む
     private static Map<String, Map<String, String>> loadEcoRoomInfo(LocalDate targetDate) {
         Map<String, Map<String, String>> ecoRoomsByDate = new HashMap<>();
+        DUVET_ROOM_MAP.clear();
 
         String dbPath = System.getProperty("ecoDataFile");
         if (dbPath == null || dbPath.isEmpty()) {
@@ -804,6 +825,13 @@ public class FileProcessor {
                 // ステータスのカウント
                 statusCount.merge(cleaningStatus, 1, Integer::sum);
 
+                // ★デュベ: 「〇」＝3日周期の清掃日（デュベ交換日）。
+                // 通常清掃・エコプランに関係なく清掃日には〇が入る（U+3007/U+25CBの表記ゆれを許容）
+                if (cleaningStatus.equals("〇") || cleaningStatus.equals("○")) {
+                    DUVET_ROOM_MAP.computeIfAbsent(cleaningDate, k -> new HashSet<>()).add(roomNumber);
+                    continue;  // 〇はエコ判定の対象外
+                }
+
                 // エコ清掃の判定条件を緩和
                 boolean isEco = cleaningStatus.equals("×") ||
                         cleaningStatus.equals("エコドア") ||
@@ -821,6 +849,10 @@ public class FileProcessor {
             LOGGER.info("=== エコデータベース読み込み結果 ===");
             LOGGER.info(String.format("エコ清掃データベースから読み込み完了: %d件のエコ清掃記録", totalEcoRecords));
             LOGGER.info(String.format("対象日数: %d日", ecoRoomsByDate.size()));
+            LOGGER.info(String.format("デュベ（〇）記録: %d日分, 対象日(%s)の〇部屋数: %d室",
+                    DUVET_ROOM_MAP.size(),
+                    targetDateStr,
+                    DUVET_ROOM_MAP.getOrDefault(targetDateStr, Collections.emptySet()).size()));
 
             // ステータスごとの件数を表示
             LOGGER.info("cleaning_statusごとの件数:");

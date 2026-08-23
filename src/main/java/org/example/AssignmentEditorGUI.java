@@ -3567,6 +3567,14 @@ public class AssignmentEditorGUI extends JFrame {
                 System.err.println("キー受け渡し書への担当者名書き込みに失敗しました: " + e.getMessage());
             }
 
+            // 指示書タブのインスペクション／TV点検の数式をエコ部屋限定に修正
+            //   万一失敗しても、清掃指示書出力（担当ブロック＋保存）は必ず継続する
+            try {
+                fixInspectionFormulas(workbook);
+            } catch (Exception e) {
+                System.err.println("インスペクション数式の修正に失敗しました: " + e.getMessage());
+            }
+
             // 開いたときに清掃時間・集計などの数式を再計算させる
             workbook.setForceFormulaRecalculation(true);
 
@@ -3651,6 +3659,16 @@ public class AssignmentEditorGUI extends JFrame {
                     String linen = formatLinenFloors(staff);
                     if (!linen.isEmpty()) {
                         getCellForWrite(sheet, bandTop + 22, col + 6).setCellValue(linen);
+                        // ドンディス確認拭き上げ補充担当（1段目ブロック1なら N28 相当）
+                        //   リネン庫担当と同じ内容を記入する
+                        getCellForWrite(sheet, bandTop + 20, col + 1).setCellValue(linen);
+                    }
+
+                    // 個人備考（1段目ブロック1なら N33 相当）
+                    //   大浴場担当スタッフに限り、他スタッフの担当フロア一覧を記入する
+                    String bathNote = formatOtherStaffFloorsForBath(staff);
+                    if (!bathNote.isEmpty()) {
+                        getCellForWrite(sheet, bandTop + 25, col + 1).setCellValue(bathNote);
                     }
                 }
 
@@ -3736,6 +3754,80 @@ public class AssignmentEditorGUI extends JFrame {
         if (!text.isEmpty()) {
             getCellForWrite(sheet, row, col + 5).setCellValue(text);
         }
+    }
+
+    /**
+     * ★新規: 指示書タブのインスペクション（AE列）・TV点検（AG列）の数式を
+     * エコ部屋のときだけ「×」が付くように修正する。
+     * 原本の数式 =IF(L9="","","×") は、参照先のエコセルが完全な空白だと
+     * OFFSETが 0 を返すため L9="" が偽になり、エコでない部屋にも×が付く。
+     * =IF(L9="エコ","×","") に置き換えることで、エコ列に「エコ」と
+     * 書かれた部屋（本ツールがエコ清掃部屋にのみ書き込む値）だけに×が付く。
+     */
+    private void fixInspectionFormulas(XSSFWorkbook workbook) {
+        Sheet sheet = workbook.getSheet("指示書");
+        if (sheet == null) {
+            return;
+        }
+        // 部屋行は9〜26行目（0始まり8〜25）。AE=0始まり30列、AG=0始まり32列
+        for (int r = 8; r <= 25; r++) {
+            String formula = "IF(L" + (r + 1) + "=\"エコ\",\"×\",\"\")";
+            getCellForWrite(sheet, r, 30).setCellFormula(formula);
+            getCellForWrite(sheet, r, 32).setCellFormula(formula);
+        }
+    }
+
+    /**
+     * ★新規: 大浴場担当スタッフの個人備考欄に書く「他スタッフの担当フロア一覧」を整形する。
+     * 大浴場担当（bathCleaningType が NONE 以外）のスタッフに対してのみ、
+     * 「花子さん→2階・3階、太郎さん→別館1階、…」の形式で、
+     * 本人以外の全スタッフとその通常清掃の担当フロアを列挙する。
+     * エコ清掃の部屋しかない階は「通常清掃の担当フロア」ではないため列挙しない。
+     * 大浴場担当でない場合・列挙対象がいない場合は空文字を返す。
+     */
+    private String formatOtherStaffFloorsForBath(StaffData staff) {
+        if (staff.bathCleaningType == null
+                || staff.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (StaffData other : getSortedStaffList()) {
+            if (other.name.equals(staff.name)) {
+                continue;
+            }
+            List<Integer> floors = new ArrayList<>();
+            if (other.detailedRoomsByFloor != null) {
+                for (Map.Entry<Integer, List<FileProcessor.Room>> e
+                        : other.detailedRoomsByFloor.entrySet()) {
+                    boolean hasNormalRoom = e.getValue() != null
+                            && e.getValue().stream().anyMatch(r -> !r.isEcoClean);
+                    if (hasNormalRoom) {
+                        floors.add(e.getKey());
+                    }
+                }
+            }
+            if (floors.isEmpty()) {
+                continue;
+            }
+            Collections.sort(floors);
+            StringBuilder floorSb = new StringBuilder();
+            for (int i = 0; i < floors.size(); i++) {
+                if (i > 0) {
+                    floorSb.append("・");
+                }
+                int f = floors.get(i);
+                if (f <= 20) {
+                    floorSb.append(f).append("階");
+                } else {
+                    floorSb.append("別館").append(f - 20).append("階");
+                }
+            }
+            if (sb.length() > 0) {
+                sb.append("、");
+            }
+            sb.append(other.name).append("さん→").append(floorSb);
+        }
+        return sb.toString();
     }
 
     /**

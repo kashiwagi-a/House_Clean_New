@@ -156,7 +156,6 @@ public class FileProcessor {
                 case "1": return "未チェックイン";  // ★追加: 状態1
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
-                case "4": return "清掃要";  // ★追加: 状態4
                 default: return roomStatus.isEmpty() ? "不明" : roomStatus;
             }
         }
@@ -309,23 +308,26 @@ public class FileProcessor {
                 String roomStatus = parts.length > 6 ? parts[6].trim() : "";
 
                 // ★追加: 未チェックイン部屋（状態1）に対してダイアログ設定を上書き適用
+                // （有効な上書きはチェックアウト「2」/連泊「3」のみ。それ以外は未設定扱い＝清掃対象外）
                 if ("1".equals(roomStatus) && pendingRoomSettings.containsKey(roomNumber)) {
                     String[] setting = pendingRoomSettings.get(roomNumber);
                     String overrideStatus = setting[0];
                     boolean overrideEco   = Boolean.parseBoolean(setting[1]);
-                    LOGGER.info("未チェックイン設定を適用: " + roomNumber
-                            + " 状態:" + roomStatus + "→" + overrideStatus
-                            + (overrideEco ? ", エコ清掃ON" : ""));
-                    roomStatus = overrideStatus;
-                    // エコ上書きフラグを一時保存（後でecoRoomMapの判定に使用）
-                    if (overrideEco) {
-                        // ecoRoomMapに手動エントリとして追加
-                        String targetDateStr2 = targetDate.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE);
-                        ecoRoomMap.computeIfAbsent(targetDateStr2, k -> new HashMap<>())
-                                .putIfAbsent(roomNumber, "手動設定");
+                    if ("2".equals(overrideStatus) || "3".equals(overrideStatus)) {
+                        LOGGER.info("未チェックイン設定を適用: " + roomNumber
+                                + " 状態:" + roomStatus + "→" + overrideStatus
+                                + (overrideEco ? ", エコ清掃ON" : ""));
+                        roomStatus = overrideStatus;
+                        // エコ上書きフラグを一時保存（後でecoRoomMapの判定に使用）
+                        if (overrideEco) {
+                            // ecoRoomMapに手動エントリとして追加
+                            String targetDateStr2 = targetDate.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE);
+                            ecoRoomMap.computeIfAbsent(targetDateStr2, k -> new HashMap<>())
+                                    .putIfAbsent(roomNumber, "手動設定");
+                        }
+                        // 部屋状態マップも更新
+                        ROOM_STATUS_MAP.put(roomNumber, roomStatus);
                     }
-                    // 部屋状態マップも更新
-                    ROOM_STATUS_MAP.put(roomNumber, roomStatus);
                 }
 
                 // ★追加: 部屋状態をマップに保存
@@ -351,11 +353,11 @@ public class FileProcessor {
                     }
                 }
 
-                // ★修正: 清掃状態による正しい除外処理（1, 2, 3, 4のみ清掃対象）
+                // ★修正: 清掃状態による正しい除外処理（2, 3のみ清掃対象。未チェックイン（状態1）は清掃対象外）
                 if (!wasOriginallyBroken || selectedBrokenRooms.contains(roomNumber)) {
                     // 選択された故障部屋の場合は清掃状態に関係なく処理
                     if (!selectedBrokenRooms.contains(roomNumber) &&
-                            !roomStatus.equals("1") && !roomStatus.equals("2") && !roomStatus.equals("3") && !roomStatus.equals("4")) {
+                            !roomStatus.equals("2") && !roomStatus.equals("3")) {
                         cleaningStatusSkipped++;
                         // ★ウォークイン用: 未販売部屋（状態0）を記録
                         // ※故障部屋（故障＋未販売含む）は前段の故障判定でスキップ済みのためここには来ない
@@ -364,7 +366,11 @@ public class FileProcessor {
                             unsoldRooms.add(new Room(roomNumber, determineRoomType(roomTypeCode), false, false,
                                     roomStatus, null, roomTypeCode));
                         }
-                        LOGGER.info("★除外: 清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
+                        if ("1".equals(roomStatus)) {
+                            LOGGER.info("★除外: 未チェックイン部屋（状態1）は清掃対象外: " + roomNumber);
+                        } else {
+                            LOGGER.info("★除外: 清掃不要の部屋をスキップ: " + roomNumber + " (状態: " + roomStatus + ")");
+                        }
                         continue;
                     }
                 }
@@ -560,22 +566,22 @@ public class FileProcessor {
                 String statusDisplay;
                 switch (status) {
                     case "0": statusDisplay = "未販売"; break;  // ★追加: 状態0（未販売）
+                    case "1": statusDisplay = "未チェックイン"; break;
                     case "2": statusDisplay = "チェックアウト"; break;
                     case "3": statusDisplay = "連泊"; break;
-                    case "4": statusDisplay = "時間延長"; break;
                     default: statusDisplay = status.isEmpty() ? "不明" : status; break;
                 }
                 LOGGER.info("  " + statusDisplay + ": " + count + "室");
             });
 
-            // ★重要: 状態2,3,4の部屋のみが清掃対象として処理されることをログ出力
+            // ★重要: 状態2,3の部屋のみが清掃対象として処理されることをログ出力
             int totalProcessedRooms = mainRooms.size() + annexRooms.size();
-            LOGGER.info("★修正完了: 清掃対象（状態2,3,4）" + totalProcessedRooms + "室を処理しました");
+            LOGGER.info("★修正完了: 清掃対象（状態2,3）" + totalProcessedRooms + "室を処理しました");
             LOGGER.info("  - 本館: " + mainRooms.size() + "室");
             LOGGER.info("  - 別館: " + annexRooms.size() + "室");
             LOGGER.info("  - 故障部屋（清掃対象外）: " + brokenRooms.size() + "室");
             LOGGER.info("  - エコ清掃: " + ecoRooms.size() + "室");
-            LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）、4（清掃要）");
+            LOGGER.info("  - 清掃対象条件: 状態2（チェックアウト）、3（連泊）※未チェックイン（状態1）は清掃対象外");
             LOGGER.info("  - 未販売部屋（ウォークイン候補）: " + unsoldRooms.size() + "室");
             LOGGER.info("  - 残し部屋(事前設定): " + preExcludedRooms.size() + "室");
 

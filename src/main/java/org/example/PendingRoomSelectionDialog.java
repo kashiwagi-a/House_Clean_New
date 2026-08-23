@@ -13,7 +13,8 @@ import java.util.logging.Logger;
 /**
  *
  * 未チェックイン部屋設定ダイアログ
- * 状態「1」（未チェックイン）の部屋に対して、状態（2/3/4）とエコ清掃フラグを設定する
+ * 状態「1」（未チェックイン）の部屋に対して、状態（2/3）とエコ清掃フラグを設定する
+ * 未設定（状態1のまま）の部屋は清掃対象外として扱われる
  */
 public class PendingRoomSelectionDialog extends JDialog {
     private static final Logger LOGGER = Logger.getLogger(PendingRoomSelectionDialog.class.getName());
@@ -31,7 +32,7 @@ public class PendingRoomSelectionDialog extends JDialog {
         public final String roomType;
         public final int floor;
         public final String building;
-        public String newStatus;   // "1"(未変更) / "2"(チェックアウト) / "3"(連泊) / "4"(清掃要)
+        public String newStatus;   // "1"(未設定=清掃対象外) / "2"(チェックアウト) / "3"(連泊)
         public boolean isEco;      // エコ清掃フラグ
 
         public PendingRoomInfo(String roomNumber, String roomType, int floor, String building) {
@@ -47,7 +48,6 @@ public class PendingRoomSelectionDialog extends JDialog {
             switch (newStatus) {
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
-                case "4": return "清掃要";
                 default:  return "未設定";
             }
         }
@@ -139,7 +139,8 @@ public class PendingRoomSelectionDialog extends JDialog {
 
             PendingRoomInfo info = pendingRoomData.get(roomNumber);
             if (info != null) {
-                info.newStatus = status;
+                // 廃止された状態「4」（清掃要）が保存されていた場合は未設定に戻す
+                info.newStatus = ("2".equals(status) || "3".equals(status)) ? status : "1";
                 info.isEco     = eco;
             }
         }
@@ -156,8 +157,8 @@ public class PendingRoomSelectionDialog extends JDialog {
         infoPanel.setBorder(BorderFactory.createTitledBorder("未チェックイン部屋設定"));
 
         JLabel infoLabel = new JLabel("<html><div style='padding:10px;'>" +
-                "未チェックインの部屋の状態を設定できます。。<br>" +
-                "設定しない場合は現状のままで清掃対象に含まれます。<br>" +
+                "未チェックインの部屋の状態を設定できます。<br>" +
+                "<b>未設定のままの部屋は清掃対象外（清掃しない）となります。</b><br>" +
                 "未チェックイン部屋数: " + pendingRoomData.size() + "室" +
                 "</div></html>");
         infoPanel.add(infoLabel, BorderLayout.CENTER);
@@ -237,7 +238,7 @@ public class PendingRoomSelectionDialog extends JDialog {
 
         // 状態列: JComboBox
         JComboBox<String> statusCombo = new JComboBox<>(
-                new String[]{"未設定", "チェックアウト", "連泊", "清掃要"});
+                new String[]{"未設定", "チェックアウト", "連泊"});
         roomTable.getColumnModel().getColumn(4).setCellEditor(
                 new DefaultCellEditor(statusCombo));
 
@@ -289,7 +290,6 @@ public class PendingRoomSelectionDialog extends JDialog {
         switch (display) {
             case "チェックアウト": return "2";
             case "連泊":          return "3";
-            case "清掃要":        return "4";
             default:              return "1";
         }
     }
@@ -315,6 +315,22 @@ public class PendingRoomSelectionDialog extends JDialog {
         // 編集中のセルを確定
         if (roomTable.isEditing()) {
             roomTable.getCellEditor().stopCellEditing();
+        }
+
+        // 未設定（清掃対象外）のままエコ清掃だけ指定されている部屋は矛盾するため警告
+        List<String> ecoWithoutStatus = new ArrayList<>();
+        for (PendingRoomInfo info : pendingRoomData.values()) {
+            if ("1".equals(info.newStatus) && info.isEco) {
+                ecoWithoutStatus.add(info.roomNumber);
+            }
+        }
+        if (!ecoWithoutStatus.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "以下の部屋は状態が未設定（清掃対象外）のためエコ清掃を設定できません。\n" +
+                    "状態（チェックアウト/連泊）を設定するか、エコ清掃のチェックを外してください。\n\n" +
+                    String.join(", ", ecoWithoutStatus),
+                    "設定エラー", JOptionPane.WARNING_MESSAGE);
+            return;
         }
 
         dialogResult = true;

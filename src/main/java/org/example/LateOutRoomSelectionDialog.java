@@ -11,7 +11,7 @@ import java.util.logging.Logger;
 
 /**
  * レイトアウト部屋設定ダイアログ
- * 清掃対象の部屋（状態1〜4、故障除く）に対して、アウト予定時刻を自由入力で設定する。
+ * 清掃対象の部屋（状態2〜3、故障除く）に対して、アウト予定時刻を自由入力で設定する。
  * 設定した部屋は調整画面の備考に「〇〇以降清掃」として自動登録され、
  * 部屋割り振りでは大浴場清掃スタッフへの割り当てを極力避ける。
  */
@@ -45,10 +45,8 @@ public class LateOutRoomSelectionDialog extends JDialog {
 
         public String getStatusDisplay() {
             switch (roomStatus) {
-                case "1": return "未チェックイン";
                 case "2": return "チェックアウト";
                 case "3": return "連泊";
-                case "4": return "時間延長";
                 default:  return roomStatus;
             }
         }
@@ -74,7 +72,7 @@ public class LateOutRoomSelectionDialog extends JDialog {
     }
 
     /**
-     * CSVから清掃対象の部屋（状態1〜4、故障除く）を読み込む
+     * CSVから清掃対象の部屋（状態2〜3、故障除く）を読み込む
      */
     private void loadLateOutRoomData(File file) {
         if (file == null) {
@@ -114,9 +112,8 @@ public class LateOutRoomSelectionDialog extends JDialog {
                     roomStatus = pendingOverrides.get(roomNumber);
                 }
 
-                // 清掃対象（状態1〜4）のみ対象
-                if (!"1".equals(roomStatus) && !"2".equals(roomStatus)
-                        && !"3".equals(roomStatus) && !"4".equals(roomStatus)) continue;
+                // 清掃対象（状態2〜3）のみ対象（未チェックイン（状態1）は清掃対象外）
+                if (!"2".equals(roomStatus) && !"3".equals(roomStatus)) continue;
 
                 // 残し部屋(事前設定)済みの部屋は清掃されないため対象外
                 if (preExcludedRooms.contains(roomNumber)) continue;
@@ -153,7 +150,7 @@ public class LateOutRoomSelectionDialog extends JDialog {
             if (tokens.length < 2) continue;
             String roomNumber = tokens[0].trim();
             String status     = tokens[1].trim();
-            if (!roomNumber.isEmpty() && !"1".equals(status)) {
+            if (!roomNumber.isEmpty() && ("2".equals(status) || "3".equals(status))) {
                 overrides.put(roomNumber, status);
             }
         }

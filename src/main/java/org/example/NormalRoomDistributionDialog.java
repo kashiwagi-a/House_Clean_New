@@ -1095,28 +1095,6 @@ public class NormalRoomDistributionDialog extends JDialog {
         swapButton.addActionListener(e -> swapSelectedStaff());
         panel.add(swapButton);
 
-        JButton resetButton = new JButton("リセット");
-        resetButton.addActionListener(e -> resetPattern());
-        panel.add(resetButton);
-
-        JButton okButton = new JButton("OK");
-        okButton.addActionListener(e -> {
-            if (validateBeforeOk()) {
-                dialogResult = true;
-                dispose();
-            }
-        });
-        panel.add(okButton);
-
-        JButton cancelButton = new JButton("キャンセル");
-        cancelButton.addActionListener(e -> dispose());
-        panel.add(cancelButton);
-
-        // ★★追加: 階別の手動割り当てボタン（任意機能）
-        JButton manualButton = new JButton("階別の手動割り当て");
-        manualButton.addActionListener(e -> openManualAssignment());
-        panel.add(manualButton);
-
         // ★★追加: リネン庫フロア設定ボタン（対象階の選択。デフォルトは全階）
         JButton linenFloorButton = new JButton("リネン庫フロア設定");
         linenFloorButton.addActionListener(e -> openLinenTargetFloorDialog());
@@ -1126,6 +1104,21 @@ public class NormalRoomDistributionDialog extends JDialog {
         JButton requiredButton = new JButton("必須清掃設定");
         requiredButton.addActionListener(e -> openRequiredCleaningDialog());
         panel.add(requiredButton);
+
+        // ★★追加: 階別の手動割り当てボタン（任意機能）
+        JButton manualButton = new JButton("手動割り当て");
+        manualButton.addActionListener(e -> openManualAssignment());
+        panel.add(manualButton);
+
+        // OKは一番右に配置（リセット・キャンセルは廃止）
+        JButton okButton = new JButton("OK");
+        okButton.addActionListener(e -> {
+            if (validateBeforeOk()) {
+                dialogResult = true;
+                dispose();
+            }
+        });
+        panel.add(okButton);
 
         return panel;
     }
@@ -2856,10 +2849,6 @@ public class NormalRoomDistributionDialog extends JDialog {
             // 一致している場合は通常の黒色
             return text;
         }
-    }
-
-    private void resetPattern() {
-        applySelectedPattern();
     }
 
     /**

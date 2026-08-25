@@ -3,6 +3,7 @@ package org.example;
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellRenderer;
 import java.awt.*;
 import java.util.*;
 import java.util.List;
@@ -25,7 +26,10 @@ import java.util.List;
  */
 public class RequiredRoomSelectionDialog extends JDialog {
 
-    /** 選択肢となる通常清掃部屋（非ECO） */
+    /** 階の区切り線の色 */
+    private static final Color FLOOR_LINE_COLOR = new Color(96, 96, 96);
+
+    /** 選択肢となる通常清掃部屋（非ECO・非連泊。連泊は必ず清掃されるため選択不要） */
     private final List<FileProcessor.Room> selectableRooms;
 
     /** 内部フロアキー → フロアチェックボックス */
@@ -47,7 +51,16 @@ public class RequiredRoomSelectionDialog extends JDialog {
                                        Set<String> initialRooms) {
         super(parent, "必須清掃設定（必ず割り振る部屋・フロア）", true);
 
-        this.selectableRooms = (rooms != null) ? new ArrayList<>(rooms) : new ArrayList<>();
+        // 連泊（状態3）は必ず清掃対象になるため選択肢から除外する。
+        // ※フロア必須時の室数展開（NormalRoomDistributionDialog側）は連泊を含んだままで正しい
+        this.selectableRooms = new ArrayList<>();
+        if (rooms != null) {
+            for (FileProcessor.Room room : rooms) {
+                if (!"3".equals(room.roomStatus)) {
+                    this.selectableRooms.add(room);
+                }
+            }
+        }
         Set<Integer> initFloors = (initialFloors != null) ? new HashSet<>(initialFloors) : new HashSet<>();
         Set<String> initRooms = (initialRooms != null) ? new HashSet<>(initialRooms) : new HashSet<>();
 
@@ -63,18 +76,19 @@ public class RequiredRoomSelectionDialog extends JDialog {
         JPanel northPanel = new JPanel();
         northPanel.setLayout(new BoxLayout(northPanel, BoxLayout.Y_AXIS));
 
-        JLabel info = new JLabel("<html><div style='padding:8px;'>" +
-                "割り振りを全部屋数より少なくした場合でも「必ず清掃対象として割り振る」部屋・フロアを選択してください。<br>" +
-                "フロアにチェックを入れると、その階の通常清掃部屋（非ECO）全室が必須になります（個別チェック不要）。<br>" +
-                "※ECO部屋は対象外です（ECOは従来どおりCP-SATが自動配分します）。<br>" +
-                "※階別の手動割り当てを使用する場合、この設定は保証されません（手動割り当てが優先されます）。" +
+        JLabel info = new JLabel("<html><div style='padding:16px;'>" +
+                "通常清掃部屋割り振り設定では全ての部屋を割り振らずとも機能を使用できます。<br>" +
+                "そして余った部屋は’残し部屋’となります。<br>" +
+                "しかし、残し部屋に選ばれる部屋は自動です。そこで必須設定では必ず清掃に含めたい部屋を選択することで強制的に割り振ることができます。<br>" +
                 "</div></html>");
+        info.setAlignmentX(Component.LEFT_ALIGNMENT);
         northPanel.add(info);
 
         // フロア単位選択パネル
         JPanel floorOuter = new JPanel();
         floorOuter.setLayout(new BoxLayout(floorOuter, BoxLayout.Y_AXIS));
         floorOuter.setBorder(BorderFactory.createTitledBorder("フロア単位で必須にする"));
+        floorOuter.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         // 本館・別館のフロアキーを収集（部屋データから。内部キー: 別館=実階+20）
         Set<Integer> mainFloorKeys = new TreeSet<>();
@@ -183,7 +197,9 @@ public class RequiredRoomSelectionDialog extends JDialog {
             Object[] rowData = {
                     initRooms.contains(room.roomNumber),
                     room.roomNumber,
-                    room.roomType,
+                    // 正式タイプ（NS/ZS/ZT等）があればそちらを表示。無ければ丸め後のS/T
+                    (room.rawRoomType != null && !room.rawRoomType.isEmpty())
+                            ? room.rawRoomType : room.roomType,
                     room.building,
                     actualFloor + "階",
                     room.getStatusDisplay()
@@ -215,12 +231,34 @@ public class RequiredRoomSelectionDialog extends JDialog {
                             ? new Color(255, 228, 196)   // 薄橙: フロア指定で必須扱い
                             : Color.WHITE);
                 }
+                setBorder(floorBoundaryBorder(row));
                 return c;
             }
         };
         for (int i = 1; i < columnNames.length; i++) {
             roomTable.getColumnModel().getColumn(i).setCellRenderer(renderer);
         }
+
+        // チェック列にも同じ区切り線を引く（デフォルトのBooleanレンダラーをラップ）
+        TableCellRenderer boolRenderer = roomTable.getDefaultRenderer(Boolean.class);
+        roomTable.getColumnModel().getColumn(0).setCellRenderer(
+                (table, value, isSelected, hasFocus, row, column) -> {
+                    Component c = boolRenderer.getTableCellRendererComponent(
+                            table, value, isSelected, hasFocus, row, column);
+                    if (c instanceof JComponent) {
+                        ((JComponent) c).setBorder(floorBoundaryBorder(row));
+                    }
+                    return c;
+                });
+    }
+
+    /** 階（建物含む）が前の行と変わる行なら上辺の区切り線、そうでなければ枠なしを返す */
+    private javax.swing.border.Border floorBoundaryBorder(int row) {
+        boolean boundary = row > 0 && row < tableRooms.size()
+                && tableRooms.get(row).floor != tableRooms.get(row - 1).floor;
+        return boundary
+                ? BorderFactory.createMatteBorder(2, 0, 0, 0, FLOOR_LINE_COLOR)
+                : BorderFactory.createEmptyBorder(2, 0, 0, 0);
     }
 
     /** 指定行の部屋が「フロア単位で必須」の階にあるか */

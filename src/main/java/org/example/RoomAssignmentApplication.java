@@ -331,7 +331,7 @@ public class RoomAssignmentApplication extends JFrame {
         pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
         pendingRoomSettingsButton.setForeground(Color.BLACK);
         pendingRoomSettingsButton.addActionListener(this::openPendingRoomSettings);
-        pendingRoomSettingsButton.setEnabled(false);
+        // 常に押下可能とし、ファイル未選択時はクリック時にエラーダイアログで案内する
         settingsRow.add(pendingRoomSettingsButton);
 
         // ★残し部屋(事前設定): 残し部屋設定ボタン（調整画面の残し部屋設定ボタンと同系色）
@@ -497,6 +497,12 @@ public class RoomAssignmentApplication extends JFrame {
             lateOutSettingsButton.setBackground(new Color(147, 112, 219));
             System.clearProperty("lateOutRooms");
 
+            // ★未チェックイン: ファイル変更時は未チェックイン設定もリセット
+            pendingRoomSettingsButton.setText("未チェックイン設定");
+            pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
+            pendingRoomSettingsButton.setForeground(Color.BLACK);
+            System.clearProperty("pendingRoomSettings");
+
             updateButtonStates();
         }
     }
@@ -613,9 +619,9 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     private void openPendingRoomSettings(ActionEvent e) {
-        if (selectedRoomFile == null || selectedEcoDataFile == null) {
+        if (selectedRoomFile == null) {
             JOptionPane.showMessageDialog(this,
-                    "部屋データファイルとエコデータベースを先に選択してください。",
+                    "部屋データファイルを先に選択してください。",
                     "エラー", JOptionPane.ERROR_MESSAGE);
             return;
         }
@@ -761,7 +767,7 @@ public class RoomAssignmentApplication extends JFrame {
         processButton.setEnabled(canProcess);
         brokenRoomSettingsButton.setEnabled(selectedRoomFile != null);
         lateOutSettingsButton.setEnabled(selectedRoomFile != null);
-        pendingRoomSettingsButton.setEnabled(selectedRoomFile != null && selectedEcoDataFile != null);
+        // 未チェックイン設定ボタンは常に押下可能（未選択時はクリック時にエラーダイアログで案内）
         // ★残し部屋(事前設定): 部屋データファイル選択後に有効化
         excludedRoomSettingsButton.setEnabled(selectedRoomFile != null);
     }

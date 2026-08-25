@@ -3664,11 +3664,11 @@ public class AssignmentEditorGUI extends JFrame {
                         getCellForWrite(sheet, bandTop + 20, col + 1).setCellValue(linen);
                     }
 
-                    // 個人備考（1段目ブロック1なら N33 相当）
-                    //   大浴場担当スタッフに限り、他スタッフの担当フロア一覧を記入する
+                    // 大浴場清掃ラベルの右隣（1段目ブロック1なら N29 相当）
+                    //   大浴場担当スタッフに限り、他の大浴場担当スタッフの担当フロア一覧を記入する
                     String bathNote = formatOtherStaffFloorsForBath(staff);
                     if (!bathNote.isEmpty()) {
-                        getCellForWrite(sheet, bandTop + 25, col + 1).setCellValue(bathNote);
+                        getCellForWrite(sheet, bandTop + 21, col + 1).setCellValue(bathNote);
                     }
                 }
 
@@ -3778,10 +3778,10 @@ public class AssignmentEditorGUI extends JFrame {
     }
 
     /**
-     * ★新規: 大浴場担当スタッフの個人備考欄に書く「他スタッフの担当フロア一覧」を整形する。
+     * ★新規: 大浴場担当スタッフの「大浴場清掃」欄に書く「他の大浴場担当スタッフの担当フロア一覧」を整形する。
      * 大浴場担当（bathCleaningType が NONE 以外）のスタッフに対してのみ、
      * 「花子さん→2階・3階、太郎さん→別館1階、…」の形式で、
-     * 本人以外の全スタッフとその通常清掃の担当フロアを列挙する。
+     * 本人以外の大浴場担当スタッフとその通常清掃の担当フロアを列挙する。
      * エコ清掃の部屋しかない階は「通常清掃の担当フロア」ではないため列挙しない。
      * 大浴場担当でない場合・列挙対象がいない場合は空文字を返す。
      */
@@ -3793,6 +3793,11 @@ public class AssignmentEditorGUI extends JFrame {
         StringBuilder sb = new StringBuilder();
         for (StaffData other : getSortedStaffList()) {
             if (other.name.equals(staff.name)) {
+                continue;
+            }
+            // 大浴場担当でないスタッフは列挙しない
+            if (other.bathCleaningType == null
+                    || other.bathCleaningType == AdaptiveRoomOptimizer.BathCleaningType.NONE) {
                 continue;
             }
             List<Integer> floors = new ArrayList<>();

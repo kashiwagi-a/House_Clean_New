@@ -1,0 +1,81 @@
+name: Release
+
+# v1.0.0 のような数字のタグを push すると起動し、
+# GitHub Releases にポータブル版 zip・インストーラー exe・実行可能 jar を公開する。
+# 公開リポジトリの Releases はログイン不要でダウンロードできる。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Build JAR with Maven
+        run: mvn package -DskipTests
+
+      # タグ v1.2.3 → アプリバージョン 1.2.3
+      - name: Resolve version from tag
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v',''
+          echo "APP_VERSION=$version" >> $env:GITHUB_ENV
+
+      # target には shade 前の original-*.jar 等も入るため、
+      # 配布する shaded jar だけを staging フォルダに隔離する
+      - name: Stage shaded jar
+        run: |
+          New-Item -ItemType Directory stage | Out-Null
+          Copy-Item target\hotel-cleaning-system-*.jar stage\HouseClean.jar
+
+      # ポータブル版: Java 実行環境同梱。インストール不要・管理者権限不要。
+      # 展開して HouseClean.exe をダブルクリックするだけで起動する。
+      - name: Create portable app image
+        run: |
+          jpackage `
+            --input stage `
+            --dest portable `
+            --name "HouseClean" `
+            --main-jar HouseClean.jar `
+            --type app-image `
+            --app-version "$env:APP_VERSION" `
+            --vendor "HouseClean"
+
+      - name: Zip portable app
+        run: Compress-Archive -Path portable\HouseClean -DestinationPath "HouseClean-$env:APP_VERSION-portable-win.zip"
+
+      # インストーラー版: スタートメニュー登録などをしたい場合用（実行に管理者権限が要ることがある）
+      - name: Create Windows Installer
+        run: |
+          jpackage `
+            --input stage `
+            --dest installer `
+            --name "HouseClean" `
+            --main-jar HouseClean.jar `
+            --type exe `
+            --win-shortcut `
+            --win-menu `
+            --win-dir-chooser `
+            --app-version "$env:APP_VERSION" `
+            --vendor "HouseClean"
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            HouseClean-*-portable-win.zip
+            installer/*.exe
+            stage/HouseClean.jar

@@ -3,6 +3,8 @@ package org.example;
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.StringSelection;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -88,6 +90,7 @@ public class ManualRoomStatusDialog extends JDialog {
                 "過去CSV（" + sourceFile.getName() + "）は部屋一覧の取得にのみ使用します（過去の状態は使いません）。<br>" +
                 "<b>本日の状態が空白の部屋は清掃対象になりません。</b>エコ清掃はチェックを付けた部屋のみ対象です。<br>" +
                 "（エコDBは使用せず、ここで指定した内容のみ反映されます）<br>" +
+                "セルを選択して Ctrl+C / Ctrl+V でコピー＆貼り付けできます（複数セルへ同じ値を一括貼り付け、Excelからの貼り付けも可）。<br>" +
                 "部屋数: " + roomLines.size() + "室" +
                 "</div></html>"), BorderLayout.CENTER);
         add(infoPanel, BorderLayout.NORTH);
@@ -152,6 +155,152 @@ public class ManualRoomStatusDialog extends JDialog {
         roomTable.getColumnModel().getColumn(COL_BUILDING).setPreferredWidth(60);
         roomTable.getColumnModel().getColumn(COL_STATUS).setPreferredWidth(130);
         roomTable.getColumnModel().getColumn(COL_ECO).setPreferredWidth(70);
+
+        installClipboardSupport();
+    }
+
+    /**
+     * Ctrl+C / Ctrl+V 対応。
+     * コピー: 選択セルをタブ/改行区切りのテキストとしてクリップボードへ（Excelへの貼り付けも可）。
+     * 貼り付け: 1つの値を複数の選択セルへ一括貼り付け、または複数行を選択セルの先頭から順に貼り付け。
+     * 編集できない列（部屋番号など）を起点にした場合は「本日の状態」列から貼り付ける。
+     */
+    private void installClipboardSupport() {
+        roomTable.setCellSelectionEnabled(true);
+        roomTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+
+        roomTable.getActionMap().put("copy", new AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent e) {
+                copySelection();
+            }
+        });
+        roomTable.getActionMap().put("paste", new AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent e) {
+                pasteToSelection();
+            }
+        });
+    }
+
+    private void copySelection() {
+        int[] rows = roomTable.getSelectedRows();
+        int[] cols = roomTable.getSelectedColumns();
+        if (rows.length == 0 || cols.length == 0) return;
+
+        StringBuilder sb = new StringBuilder();
+        for (int r : rows) {
+            for (int j = 0; j < cols.length; j++) {
+                if (j > 0) sb.append('\t');
+                Object v = roomTable.getValueAt(r, cols[j]);
+                if (v instanceof Boolean) sb.append(((Boolean) v) ? "TRUE" : "FALSE");
+                else sb.append(v == null ? "" : v.toString());
+            }
+            sb.append('\n');
+        }
+        Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new StringSelection(sb.toString()), null);
+    }
+
+    private void pasteToSelection() {
+        String text;
+        try {
+            text = (String) Toolkit.getDefaultToolkit().getSystemClipboard()
+                    .getData(DataFlavor.stringFlavor);
+        } catch (Exception ex) {
+            return;
+        }
+        if (text == null || text.isEmpty()) return;
+
+        stopEditing();
+        int[] rows = roomTable.getSelectedRows();
+        int[] cols = roomTable.getSelectedColumns();
+        if (rows.length == 0 || cols.length == 0) return;
+
+        text = text.replace("\r\n", "\n").replace('\r', '\n');
+        if (text.endsWith("\n")) text = text.substring(0, text.length() - 1);
+        String[] lineArr = text.split("\n", -1);
+        String[][] grid = new String[lineArr.length][];
+        for (int i = 0; i < lineArr.length; i++) grid[i] = lineArr[i].split("\t", -1);
+
+        List<String> invalid = new ArrayList<>();
+        boolean single = grid.length == 1 && grid[0].length == 1;
+
+        if (single && rows.length * cols.length > 1) {
+            // 1つの値を選択中の全セルへ一括貼り付け
+            for (int r : rows) {
+                for (int c : cols) setCellFromText(r, c, grid[0][0], invalid);
+            }
+        } else {
+            int startCol = cols[0];
+            int modelCol = roomTable.convertColumnIndexToModel(startCol);
+            if (modelCol != COL_STATUS && modelCol != COL_ECO) {
+                startCol = roomTable.convertColumnIndexToView(COL_STATUS);
+            }
+            for (int i = 0; i < grid.length; i++) {
+                int r = rows[0] + i;
+                if (r >= roomTable.getRowCount()) break;
+                for (int j = 0; j < grid[i].length; j++) {
+                    int c = startCol + j;
+                    if (c >= roomTable.getColumnCount()) break;
+                    setCellFromText(r, c, grid[i][j], invalid);
+                }
+            }
+        }
+
+        if (!invalid.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "認識できない値があったため、" + invalid.size() + "件を貼り付けませんでした。\n" +
+                            "状態: 空白 / チェックアウト / 連泊、エコ清掃: TRUE / FALSE\n\n" +
+                            String.join(", ", invalid.subList(0, Math.min(invalid.size(), 10))),
+                    "貼り付けの警告", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    /** 貼り付け値をセルへ反映する（編集対象外の列は無視、認識できない値は invalid に記録） */
+    private void setCellFromText(int viewRow, int viewCol, String raw, List<String> invalid) {
+        int modelCol = roomTable.convertColumnIndexToModel(viewCol);
+        String v = raw == null ? "" : raw.trim();
+        if (modelCol == COL_STATUS) {
+            String status = parseStatus(v);
+            if (status == null) invalid.add(v);
+            else roomTable.setValueAt(status, viewRow, viewCol);
+        } else if (modelCol == COL_ECO) {
+            Boolean eco = parseEco(v);
+            if (eco == null) invalid.add(v);
+            else roomTable.setValueAt(eco, viewRow, viewCol);
+        }
+    }
+
+    private static String parseStatus(String v) {
+        switch (v.toLowerCase()) {
+            case "":
+            case "対象外":
+            case "空白":
+            case "1":
+                return "";
+            case "チェックアウト":
+            case "co":
+            case "c/o":
+            case "2":
+                return "チェックアウト";
+            case "連泊":
+            case "3":
+                return "連泊";
+            default:
+                return null;
+        }
+    }
+
+    private static Boolean parseEco(String v) {
+        switch (v.toLowerCase()) {
+            case "true": case "1": case "○": case "〇": case "✓": case "☑": case "エコ": case "eco":
+                return Boolean.TRUE;
+            case "": case "false": case "0": case "-": case "☐":
+                return Boolean.FALSE;
+            default:
+                return null;
+        }
     }
 
     private void stopEditing() {

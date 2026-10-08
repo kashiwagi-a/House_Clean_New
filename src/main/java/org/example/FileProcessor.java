@@ -235,6 +235,17 @@ public class FileProcessor {
 
         Map<String, Map<String, String>> ecoRoomMap = loadEcoRoomInfo(targetDate);
 
+        // ★手動入力モード: エコDBの代わりに、手動指定されたエコ部屋を対象日のエコ情報として使用する
+        String manualEco = System.getProperty("manualEcoRooms");
+        if (manualEco != null) {
+            Map<String, String> manualEcoMap = new HashMap<>();
+            for (String r : manualEco.split(",")) {
+                if (!r.trim().isEmpty()) manualEcoMap.put(r.trim(), "手動設定");
+            }
+            ecoRoomMap.put(targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE), manualEcoMap);
+            LOGGER.info("手動入力モード: 手動指定のエコ清掃部屋を使用します (" + manualEcoMap.size() + "室)");
+        }
+
         // 部屋状態マップをクリア
         ROOM_STATUS_MAP.clear();
 

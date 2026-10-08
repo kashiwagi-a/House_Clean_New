@@ -280,7 +280,13 @@ public class RoomAssignmentApplication extends JFrame {
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
         selectRoomFileButton = new JButton("CSVファイルを選択...");
         selectRoomFileButton.addActionListener(this::selectRoomFile);
-        panel.add(selectRoomFileButton, gbc);
+        JButton manualInputButton = new JButton("手動入力モード");
+        manualInputButton.setToolTipText("CSV/エコDBが取得できない場合に、過去のCSVから状態とエコ清掃を手動で選定します");
+        manualInputButton.addActionListener(this::openManualInputMode);
+        JPanel roomFileRow = new JPanel(new BorderLayout(5, 0));
+        roomFileRow.add(selectRoomFileButton, BorderLayout.CENTER);
+        roomFileRow.add(manualInputButton, BorderLayout.EAST);
+        panel.add(roomFileRow, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         panel.add(new JLabel("シフトファイル:"), gbc);
@@ -479,6 +485,64 @@ public class RoomAssignmentApplication extends JFrame {
             // ★フォルダー自動検出: 選択したファイルの親フォルダーを記憶
             rememberDataFolder(selectedRoomFile);
 
+            // 通常のCSVを選択した場合は手動入力モードのエコ指定を解除
+            System.clearProperty("manualEcoRooms");
+            selectEcoDataButton.setEnabled(true);
+            if (selectedEcoDataFile == null) {
+                selectEcoDataButton.setText("データベースを選択...");
+            }
+            resetRoomFileDependentSettings();
+        }
+    }
+
+    /**
+     * ★手動入力モード: 当日のCSV/エコDBが取得できない場合に、過去CSVの部屋一覧から
+     * 部屋ごとに状態（チェックアウト/連泊/対象外）とエコ清掃を手動指定する
+     */
+    private void openManualInputMode(ActionEvent e) {
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setDialogTitle("手動入力モード: 部屋一覧のもとになる過去のCSVを選択");
+        fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
+            @Override
+            public boolean accept(File f) {
+                return f.isDirectory() || f.getName().toLowerCase().endsWith(".csv");
+            }
+
+            @Override
+            public String getDescription() {
+                return "CSVファイル (*.csv)";
+            }
+        });
+        applyRememberedDataFolder(fileChooser);
+
+        if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File pastCsv = fileChooser.getSelectedFile();
+        rememberDataFolder(pastCsv);
+
+        ManualRoomStatusDialog dialog = new ManualRoomStatusDialog(this, pastCsv);
+        dialog.setVisible(true);
+        if (!dialog.getDialogResult()) {
+            return;
+        }
+
+        selectedRoomFile = dialog.getGeneratedCsv();
+        selectRoomFileButton.setText("手動入力（元: " + pastCsv.getName() + "）");
+        appendLog("手動入力モードで部屋状態を設定しました（元CSV: " + pastCsv.getName() + "）");
+        appendLog("  → エコ清掃は手動指定の内容のみ使用します（エコDBは使用しません）");
+
+        // 手動入力モード中はエコDBを読み込めないようにする
+        selectedEcoDataFile = null;
+        System.clearProperty("ecoDataFile");
+        selectEcoDataButton.setText("手動入力モード中は使用不可");
+        selectEcoDataButton.setEnabled(false);
+        resetRoomFileDependentSettings();
+    }
+
+    /** 部屋データファイル変更時に、ファイルに依存する各設定をリセットする */
+    private void resetRoomFileDependentSettings() {
+        {
             brokenRoomSettingsButton.setEnabled(true);
             brokenRoomSettingsButton.setText("故障部屋・ウォークイン");
             brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
@@ -801,6 +865,12 @@ public class RoomAssignmentApplication extends JFrame {
     private void executeProcessingWithWorker() {
         // === Phase 1: データ読み込み・ダイアログ操作（EDT上で実行） ===
         appendLog("\n=== 処理開始 ===");
+
+        // 手動入力モード中はエコDBを使用しない
+        if (System.getProperty("manualEcoRooms") != null) {
+            selectedEcoDataFile = null;
+            System.clearProperty("ecoDataFile");
+        }
 
         if (selectedEcoDataFile != null) {
             System.setProperty("ecoDataFile", selectedEcoDataFile.getAbsolutePath());

@@ -15,14 +15,14 @@ import java.util.logging.Logger;
 /**
  * 手動入力モードダイアログ
  * 外部システムエラーで当日の部屋状態CSV・エコDBが取得できない場合に、
- * 過去のCSVから部屋一覧を読み込み、部屋ごとに状態（チェックアウト/連泊/対象外）とエコ清掃を手動指定する。
+ * 過去のCSVから部屋一覧を読み込み、部屋ごとに状態（チェックアウト/連泊/空白=対象外）とエコ清掃を手動指定する。
  * 結果は「部屋状態を差し替えた一時CSV」として出力し、通常のCSVと同じ流れで処理できるようにする。
  */
 public class ManualRoomStatusDialog extends JDialog {
     private static final Logger LOGGER = Logger.getLogger(ManualRoomStatusDialog.class.getName());
 
-    private static final String[] STATUS_ITEMS = {"対象外", "チェックアウト", "連泊"};
-    private static final int COL_ROOM = 0, COL_TYPE = 1, COL_BUILDING = 2, COL_PAST = 3, COL_STATUS = 4, COL_ECO = 5;
+    private static final String[] STATUS_ITEMS = {"", "チェックアウト", "連泊"};
+    private static final int COL_ROOM = 0, COL_TYPE = 1, COL_BUILDING = 2, COL_STATUS = 3, COL_ECO = 4;
 
     /** CSVの1行分（部屋行のみ列を差し替えられるよう保持） */
     private static class CsvLine {
@@ -30,7 +30,6 @@ public class ManualRoomStatusDialog extends JDialog {
         final String[] parts;      // 部屋行のみ。それ以外は null
         final String roomNumber;
         final String roomTypeCode;
-        final String pastStatus;
         final boolean broken;
 
         CsvLine(String raw, String[] parts) {
@@ -39,7 +38,6 @@ public class ManualRoomStatusDialog extends JDialog {
             this.roomNumber = parts != null ? parts[1].trim() : "";
             this.roomTypeCode = parts != null ? parts[2].trim() : "";
             this.broken = parts != null && "1".equals(parts[5].trim());
-            this.pastStatus = parts != null ? parts[6].trim() : "";
         }
     }
 
@@ -87,8 +85,8 @@ public class ManualRoomStatusDialog extends JDialog {
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoPanel.setBorder(BorderFactory.createTitledBorder("手動入力モード"));
         infoPanel.add(new JLabel("<html><div style='padding:8px;'>" +
-                "過去CSV（" + sourceFile.getName() + "）の部屋一覧をもとに、本日の状態を部屋ごとに指定します。<br>" +
-                "<b>「対象外」の部屋は清掃対象になりません。</b>エコ清掃はチェックを付けた部屋のみ対象です。<br>" +
+                "過去CSV（" + sourceFile.getName() + "）は部屋一覧の取得にのみ使用します（過去の状態は使いません）。<br>" +
+                "<b>本日の状態が空白の部屋は清掃対象になりません。</b>エコ清掃はチェックを付けた部屋のみ対象です。<br>" +
                 "（エコDBは使用せず、ここで指定した内容のみ反映されます）<br>" +
                 "部屋数: " + roomLines.size() + "室" +
                 "</div></html>"), BorderLayout.CENTER);
@@ -98,15 +96,11 @@ public class ManualRoomStatusDialog extends JDialog {
         add(new JScrollPane(roomTable), BorderLayout.CENTER);
 
         JPanel buttonPanel = new JPanel(new FlowLayout());
-        JButton inheritButton = new JButton("過去の状態を引き継ぐ");
-        inheritButton.addActionListener(e -> applyPastStatuses());
-        buttonPanel.add(inheritButton);
-
-        JButton clearButton = new JButton("全て対象外にする");
+        JButton clearButton = new JButton("全て空白に戻す");
         clearButton.addActionListener(e -> {
             stopEditing();
             for (int row = 0; row < tableModel.getRowCount(); row++) {
-                tableModel.setValueAt("対象外", row, COL_STATUS);
+                tableModel.setValueAt("", row, COL_STATUS);
                 tableModel.setValueAt(false, row, COL_ECO);
             }
         });
@@ -127,7 +121,7 @@ public class ManualRoomStatusDialog extends JDialog {
     }
 
     private void createRoomTable() {
-        String[] columnNames = {"部屋番号", "部屋タイプ", "建物", "過去CSVの状態", "本日の状態", "エコ清掃"};
+        String[] columnNames = {"部屋番号", "部屋タイプ", "建物", "本日の状態", "エコ清掃"};
 
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
@@ -145,8 +139,7 @@ public class ManualRoomStatusDialog extends JDialog {
             String building = isAnnexRoom(line.roomNumber) ? "別館" : "本館";
             String type = line.roomTypeCode + (line.broken ? "（故障）" : "");
             tableModel.addRow(new Object[]{
-                    line.roomNumber, type, building, statusLabel(line.pastStatus),
-                    defaultStatusItem(line), false});
+                    line.roomNumber, type, building, "", false});
         }
 
         roomTable = new JTable(tableModel);
@@ -157,37 +150,8 @@ public class ManualRoomStatusDialog extends JDialog {
         roomTable.getColumnModel().getColumn(COL_ROOM).setPreferredWidth(90);
         roomTable.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(110);
         roomTable.getColumnModel().getColumn(COL_BUILDING).setPreferredWidth(60);
-        roomTable.getColumnModel().getColumn(COL_PAST).setPreferredWidth(120);
         roomTable.getColumnModel().getColumn(COL_STATUS).setPreferredWidth(130);
         roomTable.getColumnModel().getColumn(COL_ECO).setPreferredWidth(70);
-    }
-
-    /** 過去CSVの状態を初期値に引き継ぐ（チェックアウト/連泊のみ。故障部屋は対象外） */
-    private String defaultStatusItem(CsvLine line) {
-        if (line.broken) return "対象外";
-        switch (line.pastStatus) {
-            case "2": return "チェックアウト";
-            case "3": return "連泊";
-            default:  return "対象外";
-        }
-    }
-
-    private void applyPastStatuses() {
-        stopEditing();
-        for (int i = 0; i < roomLines.size(); i++) {
-            tableModel.setValueAt(defaultStatusItem(roomLines.get(i)), i, COL_STATUS);
-            tableModel.setValueAt(false, i, COL_ECO);
-        }
-    }
-
-    private static String statusLabel(String status) {
-        switch (status) {
-            case "0": return "0 未販売";
-            case "1": return "1 未チェックイン";
-            case "2": return "2 チェックアウト";
-            case "3": return "3 連泊";
-            default:  return status;
-        }
     }
 
     private void stopEditing() {
@@ -199,18 +163,19 @@ public class ManualRoomStatusDialog extends JDialog {
     private void onOkClicked() {
         stopEditing();
 
-        // 対象外なのにエコが付いている部屋は矛盾するため警告
+        // 状態が空白なのにエコが付いている部屋は矛盾するため警告
         List<String> invalid = new ArrayList<>();
         int target = 0;
         for (int i = 0; i < tableModel.getRowCount(); i++) {
-            boolean excluded = "対象外".equals(tableModel.getValueAt(i, COL_STATUS));
+            String st = (String) tableModel.getValueAt(i, COL_STATUS);
+            boolean excluded = st == null || st.isEmpty();
             boolean eco = Boolean.TRUE.equals(tableModel.getValueAt(i, COL_ECO));
             if (excluded && eco) invalid.add((String) tableModel.getValueAt(i, COL_ROOM));
             if (!excluded) target++;
         }
         if (!invalid.isEmpty()) {
             JOptionPane.showMessageDialog(this,
-                    "以下の部屋は「対象外」のためエコ清掃を設定できません。\n" +
+                    "以下の部屋は状態が空白（清掃対象外）のためエコ清掃を設定できません。\n" +
                             "状態を設定するか、エコ清掃のチェックを外してください。\n\n" + String.join(", ", invalid),
                     "設定エラー", JOptionPane.WARNING_MESSAGE);
             return;
@@ -236,7 +201,7 @@ public class ManualRoomStatusDialog extends JDialog {
 
     /**
      * 画面の指定内容を反映した一時CSVを出力する。
-     * 対象外は状態「1」（未チェックイン＝清掃対象外）に置き換える。
+     * 空白（対象外）は状態「1」（未チェックイン＝清掃対象外）に置き換える。
      * 故障フラグ等は過去CSVのまま保持する（故障部屋は従来どおり故障部屋設定で扱う）。
      */
     private File writeGeneratedCsv() throws Exception {

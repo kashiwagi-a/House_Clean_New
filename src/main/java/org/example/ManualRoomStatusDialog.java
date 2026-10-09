@@ -47,7 +47,12 @@ public class ManualRoomStatusDialog extends JDialog {
     private final List<CsvLine> lines = new ArrayList<>();
     private final List<CsvLine> roomLines = new ArrayList<>();
     private final File sourceFile;
+    private static final Font TABLE_FONT = new Font("MS Gothic", Font.PLAIN, 18);
+    private static final Font HEADER_FONT = new Font("MS Gothic", Font.BOLD, 16);
+    private static final Font UI_FONT = new Font("MS Gothic", Font.PLAIN, 15);
+
     private JTable roomTable;
+    private JLabel countLabel;
     private DefaultTableModel tableModel;
     private boolean dialogResult = false;
     private File generatedCsv;
@@ -57,8 +62,15 @@ public class ManualRoomStatusDialog extends JDialog {
         this.sourceFile = pastCsv;
         loadCsv(pastCsv);
         initializeGUI();
-        setSize(540, 560);
-        setLocationRelativeTo(parent);
+        // モニターの作業領域（タスクバーを除く）いっぱいに広げる
+        GraphicsConfiguration gc = parent != null && parent.getGraphicsConfiguration() != null
+                ? parent.getGraphicsConfiguration()
+                : GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration();
+        Rectangle screen = gc.getBounds();
+        Insets insets = Toolkit.getDefaultToolkit().getScreenInsets(gc);
+        setBounds(screen.x + insets.left, screen.y + insets.top,
+                screen.width - insets.left - insets.right,
+                screen.height - insets.top - insets.bottom);
     }
 
     private void loadCsv(File file) {
@@ -87,18 +99,28 @@ public class ManualRoomStatusDialog extends JDialog {
 
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoPanel.setBorder(BorderFactory.createTitledBorder("手動入力モード"));
-        infoPanel.add(new JLabel("<html><div style='padding:8px; width:460px;'>" +
+        JLabel descLabel = new JLabel("<html><div style='padding:8px;'>" +
                 "<b>本日の状態が空白の部屋は清掃対象になりません。</b><br>" +
-                "エコ清掃は「エコ」または「エコドア」を選択します。デュベ（布団カバー交換）はチェックを付けた部屋が対象で、エコ選択中の部屋は選べません。<br>" +
-                "部屋数: " + roomLines.size() + "室" +
-                "</div></html>"), BorderLayout.CENTER);
+                "エコ清掃は「エコ」または「エコドア」を選択します。デュベ（布団カバー交換）はチェックを付けた部屋が対象で、エコ選択中の部屋は選べません。" +
+                "</div></html>");
+        descLabel.setFont(UI_FONT);
+        infoPanel.add(descLabel, BorderLayout.CENTER);
+
+        // 部屋数と、本日の清掃（チェックアウト/連泊）の部屋数を同じ行に表示
+        countLabel = new JLabel();
+        countLabel.setFont(new Font("MS Gothic", Font.BOLD, 18));
+        countLabel.setBorder(BorderFactory.createEmptyBorder(2, 10, 8, 10));
+        infoPanel.add(countLabel, BorderLayout.SOUTH);
         add(infoPanel, BorderLayout.NORTH);
 
         createRoomTable();
+        tableModel.addTableModelListener(e -> updateCounts());
+        updateCounts();
         add(new JScrollPane(roomTable), BorderLayout.CENTER);
 
         JPanel buttonPanel = new JPanel(new FlowLayout());
         JButton clearButton = new JButton("全て空白に戻す");
+        clearButton.setFont(UI_FONT);
         clearButton.addActionListener(e -> {
             stopEditing();
             for (int row = 0; row < tableModel.getRowCount(); row++) {
@@ -112,11 +134,12 @@ public class ManualRoomStatusDialog extends JDialog {
         buttonPanel.add(Box.createHorizontalStrut(20));
 
         JButton okButton = new JButton("設定完了");
-        okButton.setFont(new Font("MS Gothic", Font.BOLD, 12));
+        okButton.setFont(new Font("MS Gothic", Font.BOLD, 15));
         okButton.addActionListener(e -> onOkClicked());
         buttonPanel.add(okButton);
 
         JButton cancelButton = new JButton("キャンセル");
+        cancelButton.setFont(UI_FONT);
         cancelButton.addActionListener(e -> dispose());
         buttonPanel.add(cancelButton);
 
@@ -163,14 +186,18 @@ public class ManualRoomStatusDialog extends JDialog {
         }
 
         roomTable = new JTable(tableModel);
-        roomTable.setRowHeight(26);
+        roomTable.setFont(TABLE_FONT);
+        roomTable.setRowHeight(34);
+        roomTable.getTableHeader().setFont(HEADER_FONT);
         roomTable.setAutoCreateRowSorter(true);
         // 列幅を固定して広がりすぎないようにする
         roomTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-        roomTable.getColumnModel().getColumn(COL_STATUS)
-                .setCellEditor(new DefaultCellEditor(new JComboBox<>(STATUS_ITEMS)));
-        roomTable.getColumnModel().getColumn(COL_ECO)
-                .setCellEditor(new DefaultCellEditor(new JComboBox<>(ECO_ITEMS)));
+        JComboBox<String> statusCombo = new JComboBox<>(STATUS_ITEMS);
+        statusCombo.setFont(TABLE_FONT);
+        JComboBox<String> ecoCombo = new JComboBox<>(ECO_ITEMS);
+        ecoCombo.setFont(TABLE_FONT);
+        roomTable.getColumnModel().getColumn(COL_STATUS).setCellEditor(new DefaultCellEditor(statusCombo));
+        roomTable.getColumnModel().getColumn(COL_ECO).setCellEditor(new DefaultCellEditor(ecoCombo));
         // デュベ列: エコ選択中はチェックボックスを無効表示にする
         roomTable.getColumnModel().getColumn(COL_DUVET).setCellRenderer(new javax.swing.table.TableCellRenderer() {
             private final JCheckBox cb = new JCheckBox();
@@ -186,12 +213,12 @@ public class ManualRoomStatusDialog extends JDialog {
                 return cb;
             }
         });
-        roomTable.getColumnModel().getColumn(COL_ROOM).setPreferredWidth(70);
-        roomTable.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(80);
-        roomTable.getColumnModel().getColumn(COL_BUILDING).setPreferredWidth(50);
-        roomTable.getColumnModel().getColumn(COL_STATUS).setPreferredWidth(100);
-        roomTable.getColumnModel().getColumn(COL_ECO).setPreferredWidth(80);
-        roomTable.getColumnModel().getColumn(COL_DUVET).setPreferredWidth(50);
+        roomTable.getColumnModel().getColumn(COL_ROOM).setPreferredWidth(100);
+        roomTable.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(130);
+        roomTable.getColumnModel().getColumn(COL_BUILDING).setPreferredWidth(80);
+        roomTable.getColumnModel().getColumn(COL_STATUS).setPreferredWidth(160);
+        roomTable.getColumnModel().getColumn(COL_ECO).setPreferredWidth(120);
+        roomTable.getColumnModel().getColumn(COL_DUVET).setPreferredWidth(80);
 
         installClipboardSupport();
     }
@@ -373,6 +400,18 @@ public class ManualRoomStatusDialog extends JDialog {
             default:
                 return null;
         }
+    }
+
+    /** 部屋数と、本日の清掃（チェックアウト/連泊）の部屋数を表示する */
+    private void updateCounts() {
+        int checkout = 0, stay = 0;
+        for (int i = 0; i < tableModel.getRowCount(); i++) {
+            Object st = tableModel.getValueAt(i, COL_STATUS);
+            if ("チェックアウト".equals(st)) checkout++;
+            else if ("連泊".equals(st)) stay++;
+        }
+        countLabel.setText("部屋数: " + tableModel.getRowCount() + "室　　本日の清掃: "
+                + (checkout + stay) + "室（チェックアウト " + checkout + "室 / 連泊 " + stay + "室）");
     }
 
     private void stopEditing() {

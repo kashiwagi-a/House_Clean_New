@@ -62,15 +62,16 @@ public class ManualRoomStatusDialog extends JDialog {
         this.sourceFile = pastCsv;
         loadCsv(pastCsv);
         initializeGUI();
-        // モニターの作業領域（タスクバーを除く）いっぱいに広げる
+        // 高さはモニターの作業領域（タスクバーを除く）いっぱい、幅は表に合わせて中央に配置する
         GraphicsConfiguration gc = parent != null && parent.getGraphicsConfiguration() != null
                 ? parent.getGraphicsConfiguration()
                 : GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration();
         Rectangle screen = gc.getBounds();
         Insets insets = Toolkit.getDefaultToolkit().getScreenInsets(gc);
-        setBounds(screen.x + insets.left, screen.y + insets.top,
-                screen.width - insets.left - insets.right,
-                screen.height - insets.top - insets.bottom);
+        int usableWidth = screen.width - insets.left - insets.right;
+        int width = Math.min(usableWidth, Math.max(roomTable.getColumnModel().getTotalColumnWidth() + 70, 740));
+        setBounds(screen.x + insets.left + (usableWidth - width) / 2, screen.y + insets.top,
+                width, screen.height - insets.top - insets.bottom);
     }
 
     private void loadCsv(File file) {
@@ -101,7 +102,8 @@ public class ManualRoomStatusDialog extends JDialog {
         infoPanel.setBorder(BorderFactory.createTitledBorder("手動入力モード"));
         JLabel descLabel = new JLabel("<html><div style='padding:8px;'>" +
                 "<b>本日の状態が空白の部屋は清掃対象になりません。</b><br>" +
-                "エコ清掃は「エコ」または「エコドア」を選択します。デュベ（布団カバー交換）はチェックを付けた部屋が対象で、エコ選択中の部屋は選べません。" +
+                "エコ清掃は「エコ」または「エコドア」を選択します。<br>" +
+                "デュベ（布団カバー交換）はチェックを付けた部屋が対象です。エコ選択中の部屋は選べません。" +
                 "</div></html>");
         descLabel.setFont(UI_FONT);
         infoPanel.add(descLabel, BorderLayout.CENTER);

@@ -87,10 +87,7 @@ public class ManualRoomStatusDialog extends JDialog {
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoPanel.setBorder(BorderFactory.createTitledBorder("手動入力モード"));
         infoPanel.add(new JLabel("<html><div style='padding:8px;'>" +
-                "過去CSV（" + sourceFile.getName() + "）は部屋一覧の取得にのみ使用します（過去の状態は使いません）。<br>" +
                 "<b>本日の状態が空白の部屋は清掃対象になりません。</b>エコ清掃はチェックを付けた部屋のみ対象です。<br>" +
-                "（エコDBは使用せず、ここで指定した内容のみ反映されます）<br>" +
-                "セルを選択して Ctrl+C / Ctrl+V でコピー＆貼り付けできます（複数セルへ同じ値を一括貼り付け、Excelからの貼り付けも可）。<br>" +
                 "部屋数: " + roomLines.size() + "室" +
                 "</div></html>"), BorderLayout.CENTER);
         add(infoPanel, BorderLayout.NORTH);

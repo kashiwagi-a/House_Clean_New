@@ -50,6 +50,10 @@ public class ManualRoomStatusDialog extends JDialog {
     private static final Font TABLE_FONT = new Font("MS Gothic", Font.PLAIN, 18);
     private static final Font HEADER_FONT = new Font("MS Gothic", Font.BOLD, 16);
     private static final Font UI_FONT = new Font("MS Gothic", Font.PLAIN, 15);
+    // 選択セルを含む行の強調色（セル選択色とは別）／選択不可のエコセルの色
+    private static final Color ROW_HIGHLIGHT_COLOR = new Color(255, 242, 170);
+    private static final Color ROW_HIGHLIGHT_DISABLED_COLOR = new Color(222, 214, 160);
+    private static final Color DISABLED_COLOR = new Color(225, 225, 225);
 
     private JTable roomTable;
     private JLabel countLabel;
@@ -201,7 +205,23 @@ public class ManualRoomStatusDialog extends JDialog {
                     line.roomNumber, type, building, "", "", false});
         }
 
-        roomTable = new JTable(tableModel);
+        roomTable = new JTable(tableModel) {
+            // 選択セルを含む行を、セル選択色とは別の色で強調表示する
+            @Override
+            public Component prepareRenderer(javax.swing.table.TableCellRenderer renderer, int row, int column) {
+                Component c = super.prepareRenderer(renderer, row, column);
+                if (!isCellSelected(row, column)) {
+                    boolean disabledEco = convertColumnIndexToModel(column) == COL_ECO
+                            && !getModel().isCellEditable(convertRowIndexToModel(row), COL_ECO);
+                    if (isRowSelected(row)) {
+                        c.setBackground(disabledEco ? ROW_HIGHLIGHT_DISABLED_COLOR : ROW_HIGHLIGHT_COLOR);
+                    } else {
+                        c.setBackground(disabledEco ? DISABLED_COLOR : getBackground());
+                    }
+                }
+                return c;
+            }
+        };
         roomTable.setFont(TABLE_FONT);
         roomTable.setRowHeight(34);
         roomTable.getTableHeader().setFont(HEADER_FONT);
@@ -214,20 +234,6 @@ public class ManualRoomStatusDialog extends JDialog {
         ecoCombo.setFont(TABLE_FONT);
         roomTable.getColumnModel().getColumn(COL_STATUS).setCellEditor(new DefaultCellEditor(statusCombo));
         roomTable.getColumnModel().getColumn(COL_ECO).setCellEditor(new DefaultCellEditor(ecoCombo));
-        // エコ列: 選択不可（チェックアウト）のセルをグレー表示にする
-        roomTable.getColumnModel().getColumn(COL_ECO).setCellRenderer(new javax.swing.table.DefaultTableCellRenderer() {
-            @Override
-            public Component getTableCellRendererComponent(JTable t, Object v,
-                                                           boolean sel, boolean focus, int row, int col) {
-                Component c = super.getTableCellRendererComponent(t, v, sel, focus, row, col);
-                // 背景色はレンダラーに保持されるため、通常セルは明示的に元の色へ戻す
-                if (!sel) {
-                    boolean editable = t.getModel().isCellEditable(t.convertRowIndexToModel(row), COL_ECO);
-                    c.setBackground(editable ? t.getBackground() : new Color(225, 225, 225));
-                }
-                return c;
-            }
-        });
         // デュベ列: 選択不可（チェックアウト・エコ選択中）はチェックボックスを無効表示にする
         roomTable.getColumnModel().getColumn(COL_DUVET).setCellRenderer(new javax.swing.table.TableCellRenderer() {
             private final JCheckBox cb = new JCheckBox();

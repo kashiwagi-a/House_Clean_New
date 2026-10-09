@@ -92,14 +92,10 @@ public class BrokenRoomSelectionDialog extends JDialog {
                     new java.io.FileReader(file, java.nio.charset.StandardCharsets.UTF_8));
 
             String line;
-            int lineNumber = 0;
 
+            // 部屋状態CSVにはヘッダー行がなく1行目から部屋行のため、行の読み飛ばしはしない
+            // （FileProcessor と同じく、7列以上かつ部屋番号が空でない行だけを部屋行として扱う）
             while ((line = reader.readLine()) != null) {
-                lineNumber++;
-
-                // ヘッダー行をスキップ
-                if (lineNumber <= 4) continue;
-
                 String[] parts = line.split(",");
                 if (parts.length < 7) continue;
 
@@ -406,14 +402,14 @@ public class BrokenRoomSelectionDialog extends JDialog {
         }
     }
 
+    // FileProcessor と同じ判定: 4桁で先頭2桁が22以上（2201〜2724）のみ別館。0201〜1017 は本館
     private boolean isAnnexRoom(String roomNumber) {
         String numericPart = roomNumber.replaceAll("[^0-9]", "");
-        if (numericPart.length() == 3) {
-            return false;
-        } else if (numericPart.length() == 4 && numericPart.startsWith("10")) {
-            return false;
-        } else if (numericPart.length() == 4) {
-            return true;
+        if (numericPart.length() == 3) return false;
+        if (numericPart.length() == 4 && numericPart.startsWith("10")) return false;
+        if (numericPart.length() == 4) {
+            try { return Integer.parseInt(numericPart.substring(0, 2)) >= 22; }
+            catch (NumberFormatException ignored) {}
         }
         return false;
     }

@@ -103,7 +103,8 @@ public class ManualRoomStatusDialog extends JDialog {
         JLabel descLabel = new JLabel("<html><div style='padding:8px;'>" +
                 "<b>本日の状態が空白の部屋は清掃対象になりません。</b><br>" +
                 "エコ清掃は「エコ」または「エコドア」を選択します。<br>" +
-                "デュベ（布団カバー交換）はチェックを付けた部屋が対象です。エコ選択中の部屋は選べません。" +
+                "デュベ（布団カバー交換）はチェックを付けた部屋が対象です。<br>" +
+                "チェックアウトの部屋はエコ・デュベを選べません。エコ選択中の部屋もデュベを選べません。" +
                 "</div></html>");
         descLabel.setFont(UI_FONT);
         infoPanel.add(descLabel, BorderLayout.CENTER);
@@ -159,19 +160,32 @@ public class ManualRoomStatusDialog extends JDialog {
 
             @Override
             public boolean isCellEditable(int row, int col) {
-                if (col == COL_DUVET) return !isEcoSelected(row);  // エコ選択中はデュベ不可
-                return col == COL_STATUS || col == COL_ECO;
+                if (col == COL_ECO) return !isCheckout(row);                         // チェックアウトはエコ不可
+                if (col == COL_DUVET) return !isCheckout(row) && !isEcoSelected(row); // チェックアウト・エコ選択中はデュベ不可
+                return col == COL_STATUS;
             }
 
             @Override
             public void setValueAt(Object value, int row, int col) {
-                if (col == COL_DUVET && Boolean.TRUE.equals(value) && isEcoSelected(row)) {
-                    return;  // エコ選択中の部屋はデュベにできない
+                boolean hasValue = value instanceof String && !((String) value).isEmpty();
+                if (col == COL_ECO && hasValue && isCheckout(row)) {
+                    return;  // チェックアウトの部屋はエコにできない
+                }
+                if (col == COL_DUVET && Boolean.TRUE.equals(value) && (isCheckout(row) || isEcoSelected(row))) {
+                    return;  // チェックアウト・エコ選択中の部屋はデュベにできない
                 }
                 super.setValueAt(value, row, col);
-                if (col == COL_ECO && value instanceof String && !((String) value).isEmpty()) {
+                if (col == COL_ECO && hasValue) {
                     super.setValueAt(false, row, COL_DUVET);  // エコ選択時はデュベを解除
                 }
+                if (col == COL_STATUS && "チェックアウト".equals(value)) {
+                    super.setValueAt("", row, COL_ECO);        // チェックアウト選択時はエコ・デュベを解除
+                    super.setValueAt(false, row, COL_DUVET);
+                }
+            }
+
+            private boolean isCheckout(int row) {
+                return "チェックアウト".equals(getValueAt(row, COL_STATUS));
             }
 
             private boolean isEcoSelected(int row) {
@@ -200,7 +214,21 @@ public class ManualRoomStatusDialog extends JDialog {
         ecoCombo.setFont(TABLE_FONT);
         roomTable.getColumnModel().getColumn(COL_STATUS).setCellEditor(new DefaultCellEditor(statusCombo));
         roomTable.getColumnModel().getColumn(COL_ECO).setCellEditor(new DefaultCellEditor(ecoCombo));
-        // デュベ列: エコ選択中はチェックボックスを無効表示にする
+        // エコ列: 選択不可（チェックアウト）のセルをグレー表示にする
+        roomTable.getColumnModel().getColumn(COL_ECO).setCellRenderer(new javax.swing.table.DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable t, Object v,
+                                                           boolean sel, boolean focus, int row, int col) {
+                Component c = super.getTableCellRendererComponent(t, v, sel, focus, row, col);
+                // 背景色はレンダラーに保持されるため、通常セルは明示的に元の色へ戻す
+                if (!sel) {
+                    boolean editable = t.getModel().isCellEditable(t.convertRowIndexToModel(row), COL_ECO);
+                    c.setBackground(editable ? t.getBackground() : new Color(225, 225, 225));
+                }
+                return c;
+            }
+        });
+        // デュベ列: 選択不可（チェックアウト・エコ選択中）はチェックボックスを無効表示にする
         roomTable.getColumnModel().getColumn(COL_DUVET).setCellRenderer(new javax.swing.table.TableCellRenderer() {
             private final JCheckBox cb = new JCheckBox();
             @Override
@@ -319,7 +347,8 @@ public class ManualRoomStatusDialog extends JDialog {
                     "貼り付けできない値があったため、" + invalid.size() + "件を貼り付けませんでした。\n" +
                             "状態: 空白 / チェックアウト / 連泊\n" +
                             "エコ清掃: 空白 / エコ / エコドア\n" +
-                            "デュベ: TRUE / FALSE（エコ選択中の部屋は不可）\n\n" +
+                            "デュベ: TRUE / FALSE\n" +
+                            "（チェックアウトの部屋はエコ・デュベ不可、エコ選択中の部屋はデュベ不可）\n\n" +
                             String.join(", ", invalid.subList(0, Math.min(invalid.size(), 10))),
                     "貼り付けの警告", JOptionPane.WARNING_MESSAGE);
         }
@@ -335,15 +364,21 @@ public class ManualRoomStatusDialog extends JDialog {
             else roomTable.setValueAt(status, viewRow, viewCol);
         } else if (modelCol == COL_ECO) {
             String eco = parseEco(v);
-            if (eco == null) invalid.add(v);
-            else roomTable.setValueAt(eco, viewRow, viewCol);
+            if (eco == null) {
+                invalid.add(v);
+            } else if (!eco.isEmpty() && !roomTable.getModel().isCellEditable(
+                    roomTable.convertRowIndexToModel(viewRow), COL_ECO)) {
+                invalid.add("エコ（チェックアウトの部屋）");
+            } else {
+                roomTable.setValueAt(eco, viewRow, viewCol);
+            }
         } else if (modelCol == COL_DUVET) {
             Boolean duvet = parseDuvet(v);
             if (duvet == null) {
                 invalid.add(v);
             } else if (duvet && !roomTable.getModel().isCellEditable(
                     roomTable.convertRowIndexToModel(viewRow), COL_DUVET)) {
-                invalid.add("デュベ（エコ選択中の部屋）");
+                invalid.add("デュベ（チェックアウト・エコ選択中の部屋）");
             } else {
                 roomTable.setValueAt(duvet, viewRow, viewCol);
             }

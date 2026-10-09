@@ -24,7 +24,8 @@ public class ManualRoomStatusDialog extends JDialog {
     private static final Logger LOGGER = Logger.getLogger(ManualRoomStatusDialog.class.getName());
 
     private static final String[] STATUS_ITEMS = {"", "チェックアウト", "連泊"};
-    private static final int COL_ROOM = 0, COL_TYPE = 1, COL_BUILDING = 2, COL_STATUS = 3, COL_ECO = 4;
+    private static final String[] ECO_ITEMS = {"", "エコ", "エコドア"};
+    private static final int COL_ROOM = 0, COL_TYPE = 1, COL_BUILDING = 2, COL_STATUS = 3, COL_ECO = 4, COL_DUVET = 5;
 
     /** CSVの1行分（部屋行のみ列を差し替えられるよう保持） */
     private static class CsvLine {
@@ -56,7 +57,7 @@ public class ManualRoomStatusDialog extends JDialog {
         this.sourceFile = pastCsv;
         loadCsv(pastCsv);
         initializeGUI();
-        setSize(780, 560);
+        setSize(540, 560);
         setLocationRelativeTo(parent);
     }
 
@@ -86,9 +87,10 @@ public class ManualRoomStatusDialog extends JDialog {
 
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoPanel.setBorder(BorderFactory.createTitledBorder("手動入力モード"));
-        infoPanel.add(new JLabel("<html><div style='padding:8px;'>" +
+        infoPanel.add(new JLabel("<html><div style='padding:8px; width:460px;'>" +
                 "過去CSV（" + sourceFile.getName() + "）は部屋一覧の取得にのみ使用します（過去の状態は使いません）。<br>" +
-                "<b>本日の状態が空白の部屋は清掃対象になりません。</b>エコ清掃はチェックを付けた部屋のみ対象です。<br>" +
+                "<b>本日の状態が空白の部屋は清掃対象になりません。</b><br>" +
+                "エコ清掃は「エコ」または「エコドア」を選択します。デュベ（布団カバー交換）はチェックを付けた部屋が対象で、エコ選択中の部屋は選べません。<br>" +
                 "（エコDBは使用せず、ここで指定した内容のみ反映されます）<br>" +
                 "セルを選択して Ctrl+C / Ctrl+V でコピー＆貼り付けできます（複数セルへ同じ値を一括貼り付け、Excelからの貼り付けも可）。<br>" +
                 "部屋数: " + roomLines.size() + "室" +
@@ -104,7 +106,8 @@ public class ManualRoomStatusDialog extends JDialog {
             stopEditing();
             for (int row = 0; row < tableModel.getRowCount(); row++) {
                 tableModel.setValueAt("", row, COL_STATUS);
-                tableModel.setValueAt(false, row, COL_ECO);
+                tableModel.setValueAt("", row, COL_ECO);
+                tableModel.setValueAt(false, row, COL_DUVET);
             }
         });
         buttonPanel.add(clearButton);
@@ -124,17 +127,34 @@ public class ManualRoomStatusDialog extends JDialog {
     }
 
     private void createRoomTable() {
-        String[] columnNames = {"部屋番号", "部屋タイプ", "建物", "本日の状態", "エコ清掃"};
+        String[] columnNames = {"部屋番号", "タイプ", "建物", "本日の状態", "エコ清掃", "デュベ"};
 
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public Class<?> getColumnClass(int col) {
-                return col == COL_ECO ? Boolean.class : String.class;
+                return col == COL_DUVET ? Boolean.class : String.class;
             }
 
             @Override
             public boolean isCellEditable(int row, int col) {
+                if (col == COL_DUVET) return !isEcoSelected(row);  // エコ選択中はデュベ不可
                 return col == COL_STATUS || col == COL_ECO;
+            }
+
+            @Override
+            public void setValueAt(Object value, int row, int col) {
+                if (col == COL_DUVET && Boolean.TRUE.equals(value) && isEcoSelected(row)) {
+                    return;  // エコ選択中の部屋はデュベにできない
+                }
+                super.setValueAt(value, row, col);
+                if (col == COL_ECO && value instanceof String && !((String) value).isEmpty()) {
+                    super.setValueAt(false, row, COL_DUVET);  // エコ選択時はデュベを解除
+                }
+            }
+
+            private boolean isEcoSelected(int row) {
+                Object eco = getValueAt(row, COL_ECO);
+                return eco instanceof String && !((String) eco).isEmpty();
             }
         };
 
@@ -142,19 +162,39 @@ public class ManualRoomStatusDialog extends JDialog {
             String building = isAnnexRoom(line.roomNumber) ? "別館" : "本館";
             String type = line.roomTypeCode + (line.broken ? "（故障）" : "");
             tableModel.addRow(new Object[]{
-                    line.roomNumber, type, building, "", false});
+                    line.roomNumber, type, building, "", "", false});
         }
 
         roomTable = new JTable(tableModel);
         roomTable.setRowHeight(26);
         roomTable.setAutoCreateRowSorter(true);
+        // 列幅を固定して広がりすぎないようにする
+        roomTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         roomTable.getColumnModel().getColumn(COL_STATUS)
                 .setCellEditor(new DefaultCellEditor(new JComboBox<>(STATUS_ITEMS)));
-        roomTable.getColumnModel().getColumn(COL_ROOM).setPreferredWidth(90);
-        roomTable.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(110);
-        roomTable.getColumnModel().getColumn(COL_BUILDING).setPreferredWidth(60);
-        roomTable.getColumnModel().getColumn(COL_STATUS).setPreferredWidth(130);
-        roomTable.getColumnModel().getColumn(COL_ECO).setPreferredWidth(70);
+        roomTable.getColumnModel().getColumn(COL_ECO)
+                .setCellEditor(new DefaultCellEditor(new JComboBox<>(ECO_ITEMS)));
+        // デュベ列: エコ選択中はチェックボックスを無効表示にする
+        roomTable.getColumnModel().getColumn(COL_DUVET).setCellRenderer(new javax.swing.table.TableCellRenderer() {
+            private final JCheckBox cb = new JCheckBox();
+            @Override
+            public Component getTableCellRendererComponent(JTable t, Object v,
+                                                           boolean sel, boolean focus, int row, int col) {
+                int modelRow = t.convertRowIndexToModel(row);
+                cb.setSelected(Boolean.TRUE.equals(v));
+                cb.setEnabled(t.getModel().isCellEditable(modelRow, COL_DUVET));
+                cb.setHorizontalAlignment(JLabel.CENTER);
+                cb.setBackground(sel ? t.getSelectionBackground() : t.getBackground());
+                cb.setOpaque(true);
+                return cb;
+            }
+        });
+        roomTable.getColumnModel().getColumn(COL_ROOM).setPreferredWidth(70);
+        roomTable.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(80);
+        roomTable.getColumnModel().getColumn(COL_BUILDING).setPreferredWidth(50);
+        roomTable.getColumnModel().getColumn(COL_STATUS).setPreferredWidth(100);
+        roomTable.getColumnModel().getColumn(COL_ECO).setPreferredWidth(80);
+        roomTable.getColumnModel().getColumn(COL_DUVET).setPreferredWidth(50);
 
         installClipboardSupport();
     }
@@ -234,7 +274,7 @@ public class ManualRoomStatusDialog extends JDialog {
         } else {
             int startCol = cols[0];
             int modelCol = roomTable.convertColumnIndexToModel(startCol);
-            if (modelCol != COL_STATUS && modelCol != COL_ECO) {
+            if (modelCol != COL_STATUS && modelCol != COL_ECO && modelCol != COL_DUVET) {
                 startCol = roomTable.convertColumnIndexToView(COL_STATUS);
             }
             for (int i = 0; i < grid.length; i++) {
@@ -250,8 +290,10 @@ public class ManualRoomStatusDialog extends JDialog {
 
         if (!invalid.isEmpty()) {
             JOptionPane.showMessageDialog(this,
-                    "認識できない値があったため、" + invalid.size() + "件を貼り付けませんでした。\n" +
-                            "状態: 空白 / チェックアウト / 連泊、エコ清掃: TRUE / FALSE\n\n" +
+                    "貼り付けできない値があったため、" + invalid.size() + "件を貼り付けませんでした。\n" +
+                            "状態: 空白 / チェックアウト / 連泊\n" +
+                            "エコ清掃: 空白 / エコ / エコドア\n" +
+                            "デュベ: TRUE / FALSE（エコ選択中の部屋は不可）\n\n" +
                             String.join(", ", invalid.subList(0, Math.min(invalid.size(), 10))),
                     "貼り付けの警告", JOptionPane.WARNING_MESSAGE);
         }
@@ -266,9 +308,19 @@ public class ManualRoomStatusDialog extends JDialog {
             if (status == null) invalid.add(v);
             else roomTable.setValueAt(status, viewRow, viewCol);
         } else if (modelCol == COL_ECO) {
-            Boolean eco = parseEco(v);
+            String eco = parseEco(v);
             if (eco == null) invalid.add(v);
             else roomTable.setValueAt(eco, viewRow, viewCol);
+        } else if (modelCol == COL_DUVET) {
+            Boolean duvet = parseDuvet(v);
+            if (duvet == null) {
+                invalid.add(v);
+            } else if (duvet && !roomTable.getModel().isCellEditable(
+                    roomTable.convertRowIndexToModel(viewRow), COL_DUVET)) {
+                invalid.add("デュベ（エコ選択中の部屋）");
+            } else {
+                roomTable.setValueAt(duvet, viewRow, viewCol);
+            }
         }
     }
 
@@ -292,9 +344,32 @@ public class ManualRoomStatusDialog extends JDialog {
         }
     }
 
-    private static Boolean parseEco(String v) {
+    private static String parseEco(String v) {
         switch (v.toLowerCase()) {
-            case "true": case "1": case "○": case "〇": case "✓": case "☑": case "エコ": case "eco":
+            case "":
+            case "false":
+            case "0":
+            case "-":
+                return "";
+            case "エコ":
+            case "eco":
+            case "true":
+            case "1":
+            case "○":
+            case "〇":
+                return "エコ";
+            case "エコドア":
+            case "ecodoor":
+            case "eco door":
+                return "エコドア";
+            default:
+                return null;
+        }
+    }
+
+    private static Boolean parseDuvet(String v) {
+        switch (v.toLowerCase()) {
+            case "true": case "1": case "○": case "〇": case "デュベ": case "✓": case "☑":
                 return Boolean.TRUE;
             case "": case "false": case "0": case "-": case "☐":
                 return Boolean.FALSE;
@@ -312,20 +387,22 @@ public class ManualRoomStatusDialog extends JDialog {
     private void onOkClicked() {
         stopEditing();
 
-        // 状態が空白なのにエコが付いている部屋は矛盾するため警告
+        // 状態が空白なのにエコ/デュベが付いている部屋は矛盾するため警告
         List<String> invalid = new ArrayList<>();
         int target = 0;
         for (int i = 0; i < tableModel.getRowCount(); i++) {
             String st = (String) tableModel.getValueAt(i, COL_STATUS);
             boolean excluded = st == null || st.isEmpty();
-            boolean eco = Boolean.TRUE.equals(tableModel.getValueAt(i, COL_ECO));
-            if (excluded && eco) invalid.add((String) tableModel.getValueAt(i, COL_ROOM));
+            String eco = (String) tableModel.getValueAt(i, COL_ECO);
+            boolean hasEco = eco != null && !eco.isEmpty();
+            boolean duvet = Boolean.TRUE.equals(tableModel.getValueAt(i, COL_DUVET));
+            if (excluded && (hasEco || duvet)) invalid.add((String) tableModel.getValueAt(i, COL_ROOM));
             if (!excluded) target++;
         }
         if (!invalid.isEmpty()) {
             JOptionPane.showMessageDialog(this,
-                    "以下の部屋は状態が空白（清掃対象外）のためエコ清掃を設定できません。\n" +
-                            "状態を設定するか、エコ清掃のチェックを外してください。\n\n" + String.join(", ", invalid),
+                    "以下の部屋は状態が空白（清掃対象外）のためエコ清掃・デュベを設定できません。\n" +
+                            "状態を設定するか、エコ清掃・デュベの指定を外してください。\n\n" + String.join(", ", invalid),
                     "設定エラー", JOptionPane.WARNING_MESSAGE);
             return;
         }
@@ -355,12 +432,17 @@ public class ManualRoomStatusDialog extends JDialog {
      */
     private File writeGeneratedCsv() throws Exception {
         String[] newStatus = new String[roomLines.size()];
-        Set<String> ecoRooms = new LinkedHashSet<>();
+        Set<String> ecoRooms = new LinkedHashSet<>();     // 「部屋番号:エコ」「部屋番号:エコドア」
+        Set<String> duvetRooms = new LinkedHashSet<>();
         for (int i = 0; i < roomLines.size(); i++) {
             String item = (String) tableModel.getValueAt(i, COL_STATUS);
             newStatus[i] = "チェックアウト".equals(item) ? "2" : "連泊".equals(item) ? "3" : "1";
-            if (Boolean.TRUE.equals(tableModel.getValueAt(i, COL_ECO))) {
-                ecoRooms.add(roomLines.get(i).roomNumber);
+            String eco = (String) tableModel.getValueAt(i, COL_ECO);
+            if (eco != null && !eco.isEmpty()) {
+                ecoRooms.add(roomLines.get(i).roomNumber + ":" + eco);
+            }
+            if (Boolean.TRUE.equals(tableModel.getValueAt(i, COL_DUVET))) {
+                duvetRooms.add(roomLines.get(i).roomNumber);
             }
         }
 
@@ -380,10 +462,12 @@ public class ManualRoomStatusDialog extends JDialog {
         tmp.deleteOnExit();
         Files.write(tmp.toPath(), out, StandardCharsets.UTF_8);
 
-        // エコ清掃（部屋番号のカンマ区切り）。FileProcessor がDBの代わりに使用する
+        // エコ清掃（部屋番号:種別のカンマ区切り）・デュベ（部屋番号のカンマ区切り）。
+        // FileProcessor がDBの代わりに使用する
         System.setProperty("manualEcoRooms", String.join(",", ecoRooms));
+        System.setProperty("manualDuvetRooms", String.join(",", duvetRooms));
         LOGGER.info("手動入力モード: 一時CSVを生成 " + tmp.getAbsolutePath()
-                + " (エコ指定: " + ecoRooms.size() + "室)");
+                + " (エコ指定: " + ecoRooms.size() + "室, デュベ指定: " + duvetRooms.size() + "室)");
         return tmp;
     }
 

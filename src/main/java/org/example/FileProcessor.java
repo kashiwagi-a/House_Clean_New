@@ -239,11 +239,28 @@ public class FileProcessor {
         String manualEco = System.getProperty("manualEcoRooms");
         if (manualEco != null) {
             Map<String, String> manualEcoMap = new HashMap<>();
-            for (String r : manualEco.split(",")) {
-                if (!r.trim().isEmpty()) manualEcoMap.put(r.trim(), "手動設定");
+            for (String entry : manualEco.split(",")) {
+                // 形式: 部屋番号:種別（種別が「エコドア」ならエコドア、それ以外はエコ清掃）
+                String[] kv = entry.split(":", 2);
+                String r = kv[0].trim();
+                if (r.isEmpty()) continue;
+                boolean ecoDoor = kv.length > 1 && "エコドア".equals(kv[1].trim());
+                manualEcoMap.put(r, ecoDoor ? "エコドア" : "手動設定");
             }
             ecoRoomMap.put(targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE), manualEcoMap);
             LOGGER.info("手動入力モード: 手動指定のエコ清掃部屋を使用します (" + manualEcoMap.size() + "室)");
+        }
+
+        // ★手動入力モード: エコDBの「〇」の代わりに、手動指定されたデュベ部屋を使用する
+        String manualDuvet = System.getProperty("manualDuvetRooms");
+        if (manualDuvet != null) {
+            Set<String> duvetSet = new HashSet<>();
+            for (String r : manualDuvet.split(",")) {
+                if (!r.trim().isEmpty()) duvetSet.add(r.trim());
+            }
+            DUVET_ROOM_MAP.clear();
+            DUVET_ROOM_MAP.put(targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE), duvetSet);
+            LOGGER.info("手動入力モード: 手動指定のデュベ部屋を使用します (" + duvetSet.size() + "室)");
         }
 
         // 部屋状態マップをクリア

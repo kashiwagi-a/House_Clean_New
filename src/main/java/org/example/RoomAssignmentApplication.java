@@ -487,6 +487,7 @@ public class RoomAssignmentApplication extends JFrame {
 
             // 通常のCSVを選択した場合は手動入力モードのエコ指定を解除
             System.clearProperty("manualEcoRooms");
+            System.clearProperty("manualDuvetRooms");
             selectEcoDataButton.setEnabled(true);
             if (selectedEcoDataFile == null) {
                 selectEcoDataButton.setText("データベースを選択...");

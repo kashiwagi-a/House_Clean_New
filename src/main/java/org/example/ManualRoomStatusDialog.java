@@ -17,7 +17,7 @@ import java.util.logging.Logger;
 /**
  * 手動入力モードダイアログ
  * 外部システムエラーで当日の部屋状態CSV・エコDBが取得できない場合に、
- * 過去のCSVから部屋一覧を読み込み、部屋ごとに状態（チェックアウト/連泊/空白=対象外）とエコ清掃を手動指定する。
+ * 過去のCSVから部屋一覧を読み込み、部屋ごとに状態（チェックアウト/連泊/空白=未販売・対象外）とエコ清掃を手動指定する。
  * 結果は「部屋状態を差し替えた一時CSV」として出力し、通常のCSVと同じ流れで処理できるようにする。
  */
 public class ManualRoomStatusDialog extends JDialog {
@@ -105,7 +105,7 @@ public class ManualRoomStatusDialog extends JDialog {
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoPanel.setBorder(BorderFactory.createTitledBorder("手動入力モード"));
         JLabel descLabel = new JLabel("<html><div style='padding:8px;'>" +
-                "<b>本日の状態が空白の部屋は清掃対象になりません。</b><br>" +
+                "<b>本日の状態が空白の部屋は未販売（清掃対象外）として扱います。</b><br>" +
                 "エコ清掃は「エコ」または「エコドア」を選択します。<br>" +
                 "デュベ（布団カバー交換）はチェックを付けた部屋が対象です。<br>" +
                 "チェックアウトの部屋はエコ・デュベを選べません。エコ選択中の部屋もデュベを選べません。" +
@@ -506,7 +506,7 @@ public class ManualRoomStatusDialog extends JDialog {
 
     /**
      * 画面の指定内容を反映した一時CSVを出力する。
-     * 空白（対象外）は状態「1」（未チェックイン＝清掃対象外）に置き換える。
+     * 空白（対象外）は状態「0」（未販売＝清掃対象外。ウォークイン候補として扱われる）に置き換える。
      * 故障フラグ等は過去CSVのまま保持する（故障部屋は従来どおり故障部屋設定で扱う）。
      */
     private File writeGeneratedCsv() throws Exception {
@@ -515,7 +515,7 @@ public class ManualRoomStatusDialog extends JDialog {
         Set<String> duvetRooms = new LinkedHashSet<>();
         for (int i = 0; i < roomLines.size(); i++) {
             String item = (String) tableModel.getValueAt(i, COL_STATUS);
-            newStatus[i] = "チェックアウト".equals(item) ? "2" : "連泊".equals(item) ? "3" : "1";
+            newStatus[i] = "チェックアウト".equals(item) ? "2" : "連泊".equals(item) ? "3" : "0";
             String eco = (String) tableModel.getValueAt(i, COL_ECO);
             if (eco != null && !eco.isEmpty()) {
                 ecoRooms.add(roomLines.get(i).roomNumber + ":" + eco);

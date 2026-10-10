@@ -484,16 +484,21 @@ public class ManualRoomStatusDialog extends JDialog {
         }
     }
 
-    /** 部屋数と、本日の清掃（チェックアウト/連泊）の部屋数を表示する */
+    /** 部屋数と、本日の清掃（チェックアウト/連泊）・エコ清掃（エコドア内訳）・デュベの部屋数を表示する */
     private void updateCounts() {
-        int checkout = 0, stay = 0;
+        int checkout = 0, stay = 0, eco = 0, ecoDoor = 0, duvet = 0;
         for (int i = 0; i < tableModel.getRowCount(); i++) {
             Object st = tableModel.getValueAt(i, COL_STATUS);
             if ("チェックアウト".equals(st)) checkout++;
             else if ("連泊".equals(st)) stay++;
+            Object ec = tableModel.getValueAt(i, COL_ECO);
+            if ("エコ".equals(ec)) eco++;
+            else if ("エコドア".equals(ec)) { eco++; ecoDoor++; }
+            if (Boolean.TRUE.equals(tableModel.getValueAt(i, COL_DUVET))) duvet++;
         }
-        countLabel.setText("部屋数: " + tableModel.getRowCount() + "室　　本日の清掃: "
-                + (checkout + stay) + "室（チェックアウト " + checkout + "室 / 連泊 " + stay + "室）");
+        countLabel.setText("<html>部屋数: " + tableModel.getRowCount() + "室　　本日の清掃: "
+                + (checkout + stay) + "室（チェックアウト " + checkout + "室 / 連泊 " + stay + "室）<br>"
+                + "エコ清掃: " + eco + "室（うちエコドア " + ecoDoor + "室）　　デュベ: " + duvet + "室</html>");
     }
 
     private void stopEditing() {

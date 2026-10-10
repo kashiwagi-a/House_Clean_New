@@ -47,6 +47,7 @@ public class ManualRoomStatusDialog extends JDialog {
     private final List<CsvLine> lines = new ArrayList<>();
     private final List<CsvLine> roomLines = new ArrayList<>();
     private final File sourceFile;
+    private final boolean restorePrevious;
     private static final Font TABLE_FONT = new Font("MS Gothic", Font.PLAIN, 18);
     private static final Font HEADER_FONT = new Font("MS Gothic", Font.BOLD, 16);
     private static final Font UI_FONT = new Font("MS Gothic", Font.PLAIN, 15);
@@ -62,8 +63,20 @@ public class ManualRoomStatusDialog extends JDialog {
     private File generatedCsv;
 
     public ManualRoomStatusDialog(JFrame parent, File pastCsv) {
-        super(parent, "手動入力モード（過去CSVから部屋状態を選定）", true);
+        this(parent, pastCsv, false);
+    }
+
+    /**
+     * @param restorePrevious true のとき、CSVの状態列（2=チェックアウト/3=連泊）と、
+     *                        システムプロパティ manualEcoRooms / manualDuvetRooms に残っている
+     *                        前回のエコ・デュベ指定を初期値として表に反映する
+     */
+    public ManualRoomStatusDialog(JFrame parent, File pastCsv, boolean restorePrevious) {
+        super(parent, restorePrevious
+                ? "手動入力モード（前回の内容を引き継いで修正）"
+                : "手動入力モード（過去CSVから部屋状態を選定）", true);
         this.sourceFile = pastCsv;
+        this.restorePrevious = restorePrevious;
         loadCsv(pastCsv);
         initializeGUI();
         // 高さはモニターの作業領域（タスクバーを除く）いっぱい、幅は表に合わせて中央に配置する
@@ -198,11 +211,37 @@ public class ManualRoomStatusDialog extends JDialog {
             }
         };
 
+        // 前回の内容を引き継ぐ場合は、CSVの状態列とシステムプロパティから初期値を復元する
+        java.util.Map<String, String> prevEco = new java.util.HashMap<>();
+        Set<String> prevDuvet = new java.util.HashSet<>();
+        if (restorePrevious) {
+            String eco = System.getProperty("manualEcoRooms", "");
+            for (String entry : eco.split(",")) {
+                String[] kv = entry.split(":", 2);
+                if (kv[0].trim().isEmpty()) continue;
+                prevEco.put(kv[0].trim(), kv.length > 1 && "エコドア".equals(kv[1].trim()) ? "エコドア" : "エコ");
+            }
+            for (String r : System.getProperty("manualDuvetRooms", "").split(",")) {
+                if (!r.trim().isEmpty()) prevDuvet.add(r.trim());
+            }
+        }
+
         for (CsvLine line : roomLines) {
             String building = isAnnexRoom(line.roomNumber) ? "別館" : "本館";
             String type = line.roomTypeCode + (line.broken ? "（故障）" : "");
-            tableModel.addRow(new Object[]{
-                    line.roomNumber, type, building, "", "", false});
+            String status = "";
+            String eco = "";
+            boolean duvet = false;
+            if (restorePrevious) {
+                String code = line.parts[6].trim();
+                status = "2".equals(code) ? "チェックアウト" : "3".equals(code) ? "連泊" : "";
+                // チェックアウトはエコ・デュベ不可、エコ選択中はデュベ不可（画面の制約と同じ）
+                if (!"チェックアウト".equals(status)) {
+                    eco = prevEco.getOrDefault(line.roomNumber, "");
+                    duvet = eco.isEmpty() && prevDuvet.contains(line.roomNumber);
+                }
+            }
+            tableModel.addRow(new Object[]{line.roomNumber, type, building, status, eco, duvet});
         }
 
         roomTable = new JTable(tableModel) {

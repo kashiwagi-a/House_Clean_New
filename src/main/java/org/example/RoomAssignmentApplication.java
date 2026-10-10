@@ -45,6 +45,10 @@ public class RoomAssignmentApplication extends JFrame {
     private LocalDate selectedDate;
     private ProcessingResult lastResult;
 
+    // ★手動入力モード: 前回生成した一時CSVと、元になった過去CSVの名前（再度開いたときに内容を引き継ぐため）
+    private File manualGeneratedCsv = null;
+    private String manualSourceCsvName = null;
+
     // ★★追加: 階別の手動割り当て（任意機能）
     private Map<String, ManualFloorAssignmentDialog.StaffManual> lastManualLayout = null;
     // ★★追加: リネン庫対象階の前回選択（同一セッション内でダイアログ再表示時に復元する）
@@ -501,36 +505,66 @@ public class RoomAssignmentApplication extends JFrame {
      * 部屋ごとに状態（チェックアウト/連泊/対象外）とエコ清掃を手動指定する
      */
     private void openManualInputMode(ActionEvent e) {
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setDialogTitle("手動入力モード: 部屋一覧のもとになる過去のCSVを選択");
-        fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
-            @Override
-            public boolean accept(File f) {
-                return f.isDirectory() || f.getName().toLowerCase().endsWith(".csv");
+        // 前回の手動入力結果が有効（一時CSVが現在の部屋データとして選択されたまま）なら引き継ぎを選べるようにする
+        boolean hasPrevious = manualGeneratedCsv != null && manualGeneratedCsv.exists()
+                && manualGeneratedCsv.equals(selectedRoomFile)
+                && System.getProperty("manualEcoRooms") != null;
+        boolean restorePrevious = false;
+        if (hasPrevious) {
+            String[] options = {"前回の内容を引き継ぐ", "空白から始める", "キャンセル"};
+            int ans = JOptionPane.showOptionDialog(this,
+                    "前回の手動入力（元CSV: " + manualSourceCsvName + "）が残っています。\n" +
+                            "前回設定した状態・エコ清掃・デュベを引き継いで修正しますか？",
+                    "手動入力モード", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE,
+                    null, options, options[0]);
+            if (ans == 2 || ans == JOptionPane.CLOSED_OPTION) {
+                return;
             }
-
-            @Override
-            public String getDescription() {
-                return "CSVファイル (*.csv)";
-            }
-        });
-        applyRememberedDataFolder(fileChooser);
-
-        if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
-            return;
+            restorePrevious = (ans == 0);
         }
-        File pastCsv = fileChooser.getSelectedFile();
-        rememberDataFolder(pastCsv);
 
-        ManualRoomStatusDialog dialog = new ManualRoomStatusDialog(this, pastCsv);
+        File sourceCsv;
+        String sourceName;
+        if (restorePrevious) {
+            sourceCsv = manualGeneratedCsv;
+            sourceName = manualSourceCsvName;
+        } else {
+            JFileChooser fileChooser = new JFileChooser();
+            fileChooser.setDialogTitle("手動入力モード: 部屋一覧のもとになる過去のCSVを選択");
+            fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
+                @Override
+                public boolean accept(File f) {
+                    return f.isDirectory() || f.getName().toLowerCase().endsWith(".csv");
+                }
+
+                @Override
+                public String getDescription() {
+                    return "CSVファイル (*.csv)";
+                }
+            });
+            applyRememberedDataFolder(fileChooser);
+
+            if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+                return;
+            }
+            sourceCsv = fileChooser.getSelectedFile();
+            sourceName = sourceCsv.getName();
+            rememberDataFolder(sourceCsv);
+        }
+
+        ManualRoomStatusDialog dialog = new ManualRoomStatusDialog(this, sourceCsv, restorePrevious);
         dialog.setVisible(true);
         if (!dialog.getDialogResult()) {
             return;
         }
 
         selectedRoomFile = dialog.getGeneratedCsv();
-        selectRoomFileButton.setText("手動入力（元: " + pastCsv.getName() + "）");
-        appendLog("手動入力モードで部屋状態を設定しました（元CSV: " + pastCsv.getName() + "）");
+        manualGeneratedCsv = selectedRoomFile;
+        manualSourceCsvName = sourceName;
+        selectRoomFileButton.setText("手動入力（元: " + sourceName + "）");
+        appendLog(restorePrevious
+                ? "手動入力モードで前回の内容を引き継いで部屋状態を再設定しました（元CSV: " + sourceName + "）"
+                : "手動入力モードで部屋状態を設定しました（元CSV: " + sourceName + "）");
         appendLog("  → エコ清掃は手動指定の内容のみ使用します（エコDBは使用しません）");
 
         // 手動入力モード中はエコDBを読み込めないようにする

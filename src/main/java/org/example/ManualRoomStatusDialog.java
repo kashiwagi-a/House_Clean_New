@@ -143,6 +143,11 @@ public class ManualRoomStatusDialog extends JDialog {
         add(new JScrollPane(roomTable), BorderLayout.CENTER);
 
         JPanel buttonPanel = new JPanel(new FlowLayout());
+        JButton guestCsvButton = new JButton("宿泊者一覧CSVから読み込み");
+        guestCsvButton.setFont(UI_FONT);
+        guestCsvButton.addActionListener(e -> importGuestListCsv());
+        buttonPanel.add(guestCsvButton);
+
         JButton clearButton = new JButton("全て空白に戻す");
         clearButton.setFont(UI_FONT);
         clearButton.addActionListener(e -> {
@@ -504,6 +509,180 @@ public class ManualRoomStatusDialog extends JDialog {
     private static String formatCounts(int total, int cleaning, int checkout, int stay, int eco) {
         return "部屋数: " + total + "室　本日の清掃: " + cleaning + "室（チェックアウト " + checkout
                 + "室 / 連泊 " + stay + "室（内エコ " + eco + "室））";
+    }
+
+    /**
+     * 宿泊者一覧CSV（2列目=部屋番号）を読み込み、選択した清掃日を基準に本日の状態を自動入力する。
+     * 出発日=清掃日 → チェックアウト、出発日>清掃日 → 連泊。到着日が清掃日以降の予約（前夜に宿泊していない）は対象外。
+     * CSVに載っていない部屋・日付が読めない行の部屋は空白（未販売）にする。
+     * エコ・デュベの指定は残すが、チェックアウト・空白になった部屋では外す（画面の制約と同じ）。
+     */
+    private void importGuestListCsv() {
+        stopEditing();
+        JFileChooser chooser = new JFileChooser(sourceFile != null ? sourceFile.getParentFile() : null);
+        chooser.setDialogTitle("宿泊者一覧CSVを選択");
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("CSVファイル (*.csv)", "csv"));
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+
+        java.time.LocalDate baseDate = askCleaningDate();
+        if (baseDate == null) return;
+
+        List<List<String>> rows;
+        try {
+            rows = readGuestListCsv(chooser.getSelectedFile());
+        } catch (Exception ex) {
+            LOGGER.severe("宿泊者一覧CSVの読み込みエラー: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this, "宿泊者一覧CSVの読み込みに失敗しました: " + ex.getMessage(),
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        // ヘッダー行から到着日・出発日の列を探す（見つからなければ既定の列位置）
+        int arrivalCol = 3, departureCol = 4;
+        if (!rows.isEmpty() && rows.get(0).size() > 1 && "部屋番号".equals(rows.get(0).get(1).trim())) {
+            List<String> header = rows.remove(0);
+            for (int i = 0; i < header.size(); i++) {
+                String h = header.get(i).trim();
+                if ("到着日".equals(h)) arrivalCol = i;
+                else if ("出発日".equals(h)) departureCol = i;
+            }
+        }
+
+        // 部屋番号 → 状態（同じ部屋に複数行ある場合はチェックアウトを優先）
+        java.util.Map<String, String> statusByRoom = new java.util.HashMap<>();
+        for (List<String> row : rows) {
+            String room = normalizeRoomNumber(row.size() > 1 ? row.get(1) : "");
+            if (room.isEmpty()) continue;
+            java.time.LocalDate departure = parseDate(row, departureCol);
+            java.time.LocalDate arrival = parseDate(row, arrivalCol);
+            if (departure == null || arrival == null || !arrival.isBefore(baseDate)) continue;
+            String status = departure.isEqual(baseDate) ? "チェックアウト"
+                    : departure.isAfter(baseDate) ? "連泊" : null;
+            if (status == null) continue;
+            if (!"チェックアウト".equals(statusByRoom.get(room))) statusByRoom.put(room, status);
+        }
+
+        Set<String> matched = new java.util.HashSet<>();
+        int checkout = 0, stay = 0;
+        for (int i = 0; i < tableModel.getRowCount(); i++) {
+            String room = normalizeRoomNumber((String) tableModel.getValueAt(i, COL_ROOM));
+            String status = statusByRoom.getOrDefault(room, "");
+            if (statusByRoom.containsKey(room)) matched.add(room);
+            tableModel.setValueAt(status, i, COL_STATUS);
+            if (status.isEmpty()) {
+                tableModel.setValueAt("", i, COL_ECO);
+                tableModel.setValueAt(false, i, COL_DUVET);
+            } else if ("チェックアウト".equals(status)) {
+                checkout++;
+            } else {
+                stay++;
+            }
+        }
+
+        List<String> unknown = new ArrayList<>();
+        for (String room : statusByRoom.keySet()) {
+            if (!matched.contains(room)) unknown.add(room);
+        }
+        java.util.Collections.sort(unknown);
+        LOGGER.info("手動入力モード: 宿泊者一覧CSVを反映 " + chooser.getSelectedFile().getName()
+                + " (清掃日 " + baseDate + ", チェックアウト " + checkout + "室, 連泊 " + stay + "室)");
+        String message = "清掃日 " + baseDate.format(java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd"))
+                + " として反映しました。\nチェックアウト " + checkout + "室 / 連泊 " + stay + "室";
+        if (!unknown.isEmpty()) {
+            message += "\n\n表に存在しない部屋番号があったため反映していません:\n" + String.join(", ", unknown);
+        }
+        JOptionPane.showMessageDialog(this, message, "宿泊者一覧CSVの読み込み",
+                unknown.isEmpty() ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
+    }
+
+    /** 判定の基準となる清掃日を選ばせる（初期値は今日）。キャンセル時は null */
+    private java.time.LocalDate askCleaningDate() {
+        SpinnerDateModel model = new SpinnerDateModel(new java.util.Date(), null, null, java.util.Calendar.DAY_OF_MONTH);
+        JSpinner spinner = new JSpinner(model);
+        spinner.setEditor(new JSpinner.DateEditor(spinner, "yyyy/MM/dd"));
+        spinner.setFont(TABLE_FONT);
+        JPanel panel = new JPanel(new BorderLayout(0, 8));
+        JLabel label = new JLabel("<html>清掃日を選択してください。<br>" +
+                "出発日が清掃日の部屋はチェックアウト、清掃日より後の部屋は連泊になります。</html>");
+        label.setFont(UI_FONT);
+        panel.add(label, BorderLayout.NORTH);
+        panel.add(spinner, BorderLayout.CENTER);
+        int ans = JOptionPane.showConfirmDialog(this, panel, "清掃日の選択",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (ans != JOptionPane.OK_OPTION) return null;
+        return model.getDate().toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+    }
+
+    /** UTF-8（BOM可）として読めなければ Shift_JIS(MS932) として読み、ダブルクォートを考慮して分割する */
+    private static List<List<String>> readGuestListCsv(File file) throws Exception {
+        byte[] bytes = Files.readAllBytes(file.toPath());
+        String text;
+        try {
+            text = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            text = new String(bytes, java.nio.charset.Charset.forName("MS932"));
+        }
+        if (text.startsWith("﻿")) text = text.substring(1);
+
+        List<List<String>> rows = new ArrayList<>();
+        List<String> row = new ArrayList<>();
+        StringBuilder field = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inQuotes) {
+                if (c == '"' && i + 1 < text.length() && text.charAt(i + 1) == '"') {
+                    field.append('"');
+                    i++;
+                } else if (c == '"') {
+                    inQuotes = false;
+                } else {
+                    field.append(c);
+                }
+            } else if (c == '"') {
+                inQuotes = true;
+            } else if (c == ',') {
+                row.add(field.toString());
+                field.setLength(0);
+            } else if (c == '\n' || c == '\r') {
+                if (c == '\r' && i + 1 < text.length() && text.charAt(i + 1) == '\n') i++;
+                row.add(field.toString());
+                field.setLength(0);
+                rows.add(row);
+                row = new ArrayList<>();
+            } else {
+                field.append(c);
+            }
+        }
+        if (field.length() > 0 || !row.isEmpty()) {
+            row.add(field.toString());
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /** 「2026/10/11」「2026-10-11」「2026/10/11 13:14」などを日付として読む。読めなければ null */
+    private static java.time.LocalDate parseDate(List<String> row, int col) {
+        if (col < 0 || col >= row.size()) return null;
+        String v = row.get(col).trim();
+        int space = v.indexOf(' ');
+        if (space > 0) v = v.substring(0, space);
+        String[] ymd = v.split("[/-]");
+        if (ymd.length != 3) return null;
+        try {
+            return java.time.LocalDate.of(Integer.parseInt(ymd[0]), Integer.parseInt(ymd[1]), Integer.parseInt(ymd[2]));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 部屋番号の照合用に、数字以外と先頭の0を除く（例: 「0201」「201号室」→「201」） */
+    private static String normalizeRoomNumber(String roomNumber) {
+        String n = roomNumber == null ? "" : roomNumber.replaceAll("[^0-9]", "");
+        return n.replaceFirst("^0+(?=.)", "");
     }
 
     private void stopEditing() {

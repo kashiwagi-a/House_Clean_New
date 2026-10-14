@@ -143,10 +143,10 @@ public class ManualRoomStatusDialog extends JDialog {
         add(new JScrollPane(roomTable), BorderLayout.CENTER);
 
         JPanel buttonPanel = new JPanel(new FlowLayout());
-        JButton guestCsvButton = new JButton("宿泊者一覧CSVから読み込み");
-        guestCsvButton.setFont(UI_FONT);
-        guestCsvButton.addActionListener(e -> importGuestListCsv());
-        buttonPanel.add(guestCsvButton);
+        JButton guestListButton = new JButton("宿泊者一覧から読み込み");
+        guestListButton.setFont(UI_FONT);
+        guestListButton.addActionListener(e -> importGuestList());
+        buttonPanel.add(guestListButton);
 
         JButton clearButton = new JButton("全て空白に戻す");
         clearButton.setFont(UI_FONT);
@@ -512,39 +512,46 @@ public class ManualRoomStatusDialog extends JDialog {
     }
 
     /**
-     * 宿泊者一覧CSV（2列目=部屋番号）を読み込み、選択した清掃日を基準に本日の状態を自動入力する。
+     * 宿泊者一覧（Excel .xlsx/.xls、またはCSV。2列目=部屋番号）を読み込み、選択した清掃日を基準に本日の状態を自動入力する。
      * 出発日=清掃日 → チェックアウト、出発日>清掃日 → 連泊。到着日が清掃日以降の予約（前夜に宿泊していない）は対象外。
-     * CSVに載っていない部屋・日付が読めない行の部屋は空白（未販売）にする。
+     * 一覧に載っていない部屋・日付が読めない行の部屋は空白（未販売）にする。
      * エコ・デュベの指定は残すが、チェックアウト・空白になった部屋では外す（画面の制約と同じ）。
      */
-    private void importGuestListCsv() {
+    private void importGuestList() {
         stopEditing();
         JFileChooser chooser = new JFileChooser(sourceFile != null ? sourceFile.getParentFile() : null);
-        chooser.setDialogTitle("宿泊者一覧CSVを選択");
-        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("CSVファイル (*.csv)", "csv"));
+        chooser.setDialogTitle("宿泊者一覧を選択");
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
+                "宿泊者一覧 (*.xlsx, *.xls, *.csv)", "xlsx", "xls", "csv"));
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        File file = chooser.getSelectedFile();
 
         java.time.LocalDate baseDate = askCleaningDate();
         if (baseDate == null) return;
 
         List<List<String>> rows;
         try {
-            rows = readGuestListCsv(chooser.getSelectedFile());
+            rows = file.getName().toLowerCase().endsWith(".csv") ? readGuestListCsv(file) : readGuestListExcel(file);
         } catch (Exception ex) {
-            LOGGER.severe("宿泊者一覧CSVの読み込みエラー: " + ex.getMessage());
-            JOptionPane.showMessageDialog(this, "宿泊者一覧CSVの読み込みに失敗しました: " + ex.getMessage(),
+            LOGGER.severe("宿泊者一覧の読み込みエラー: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this, "宿泊者一覧の読み込みに失敗しました: " + ex.getMessage(),
                     "エラー", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
-        // ヘッダー行から到着日・出発日の列を探す（見つからなければ既定の列位置）
+        // 2列目が「部屋番号」の行を見出しとし、それより上（タイトル行など）は読み飛ばす。
+        // 見出しから到着日・出発日の列を探す（見つからなければ既定の列位置）
         int arrivalCol = 3, departureCol = 4;
-        if (!rows.isEmpty() && rows.get(0).size() > 1 && "部屋番号".equals(rows.get(0).get(1).trim())) {
-            List<String> header = rows.remove(0);
-            for (int i = 0; i < header.size(); i++) {
-                String h = header.get(i).trim();
-                if ("到着日".equals(h)) arrivalCol = i;
-                else if ("出発日".equals(h)) departureCol = i;
+        for (int r = 0; r < rows.size(); r++) {
+            List<String> header = rows.get(r);
+            if (header.size() > 1 && "部屋番号".equals(header.get(1).trim())) {
+                for (int i = 0; i < header.size(); i++) {
+                    String h = header.get(i).trim();
+                    if ("到着日".equals(h)) arrivalCol = i;
+                    else if ("出発日".equals(h)) departureCol = i;
+                }
+                rows = rows.subList(r + 1, rows.size());
+                break;
             }
         }
 
@@ -584,14 +591,14 @@ public class ManualRoomStatusDialog extends JDialog {
             if (!matched.contains(room)) unknown.add(room);
         }
         java.util.Collections.sort(unknown);
-        LOGGER.info("手動入力モード: 宿泊者一覧CSVを反映 " + chooser.getSelectedFile().getName()
+        LOGGER.info("手動入力モード: 宿泊者一覧を反映 " + file.getName()
                 + " (清掃日 " + baseDate + ", チェックアウト " + checkout + "室, 連泊 " + stay + "室)");
         String message = "清掃日 " + baseDate.format(java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd"))
                 + " として反映しました。\nチェックアウト " + checkout + "室 / 連泊 " + stay + "室";
         if (!unknown.isEmpty()) {
             message += "\n\n表に存在しない部屋番号があったため反映していません:\n" + String.join(", ", unknown);
         }
-        JOptionPane.showMessageDialog(this, message, "宿泊者一覧CSVの読み込み",
+        JOptionPane.showMessageDialog(this, message, "宿泊者一覧の読み込み",
                 unknown.isEmpty() ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
     }
 
@@ -611,6 +618,48 @@ public class ManualRoomStatusDialog extends JDialog {
                 JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         if (ans != JOptionPane.OK_OPTION) return null;
         return model.getDate().toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+    }
+
+    /**
+     * Excel（.xlsx/.xls）の先頭シートを、セルの表示どおりの文字列の表として読む。
+     * 日付セルは parseDate で読めるよう yyyy/MM/dd 形式の文字列にする。
+     */
+    private static List<List<String>> readGuestListExcel(File file) throws Exception {
+        List<List<String>> rows = new ArrayList<>();
+        org.apache.poi.ss.usermodel.DataFormatter formatter = new org.apache.poi.ss.usermodel.DataFormatter();
+        try (org.apache.poi.ss.usermodel.Workbook wb = org.apache.poi.ss.usermodel.WorkbookFactory.create(file, null, true)) {
+            org.apache.poi.ss.usermodel.FormulaEvaluator evaluator = wb.getCreationHelper().createFormulaEvaluator();
+            org.apache.poi.ss.usermodel.Sheet sheet = wb.getSheetAt(0);
+            for (org.apache.poi.ss.usermodel.Row xlRow : sheet) {
+                List<String> row = new ArrayList<>();
+                for (int c = 0; c < xlRow.getLastCellNum(); c++) {
+                    org.apache.poi.ss.usermodel.Cell cell = xlRow.getCell(c);
+                    if (cell == null) {
+                        row.add("");
+                    } else if (isDateCell(cell)) {
+                        row.add(new java.text.SimpleDateFormat("yyyy/MM/dd").format(cell.getDateCellValue()));
+                    } else {
+                        row.add(formatter.formatCellValue(cell, evaluator));
+                    }
+                }
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * 日付の数値セルか。POI は「m月d日(aaa)」のような日本語の曜日付き書式を日付と判定しないため、
+     * 書式文字列（引用符・[]内を除く）に y/m/d や 年・月・日・aaa が含まれる場合も日付として扱う。
+     */
+    private static boolean isDateCell(org.apache.poi.ss.usermodel.Cell cell) {
+        if (cell.getCellType() != org.apache.poi.ss.usermodel.CellType.NUMERIC) return false;
+        if (org.apache.poi.ss.usermodel.DateUtil.isCellDateFormatted(cell)) return true;
+        String format = cell.getCellStyle().getDataFormatString();
+        if (format == null) return false;
+        String f = format.replaceAll("\"[^\"]*\"|\\[[^\\]]*\\]", "").toLowerCase();
+        return f.matches(".*([ymd]|aaa|年|月|日).*")
+                && org.apache.poi.ss.usermodel.DateUtil.isValidExcelDate(cell.getNumericCellValue());
     }
 
     /** UTF-8（BOM可）として読めなければ Shift_JIS(MS932) として読み、ダブルクォートを考慮して分割する */
@@ -664,14 +713,11 @@ public class ManualRoomStatusDialog extends JDialog {
         return rows;
     }
 
-    /** 「2026/10/11」「2026-10-11」「2026/10/11 13:14」などを日付として読む。読めなければ null */
+    /** 「2026/10/11」「2026-10-11」「2026年10月11日」「2026/10/11(日) 13:14」などを日付として読む。読めなければ null */
     private static java.time.LocalDate parseDate(List<String> row, int col) {
         if (col < 0 || col >= row.size()) return null;
-        String v = row.get(col).trim();
-        int space = v.indexOf(' ');
-        if (space > 0) v = v.substring(0, space);
-        String[] ymd = v.split("[/-]");
-        if (ymd.length != 3) return null;
+        String[] ymd = row.get(col).trim().replaceAll("^[^0-9]+", "").split("[^0-9]+");
+        if (ymd.length < 3 || ymd[0].length() != 4) return null;
         try {
             return java.time.LocalDate.of(Integer.parseInt(ymd[0]), Integer.parseInt(ymd[1]), Integer.parseInt(ymd[2]));
         } catch (Exception e) {

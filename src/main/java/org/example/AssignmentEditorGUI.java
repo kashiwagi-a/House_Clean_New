@@ -47,6 +47,32 @@ public class AssignmentEditorGUI extends JFrame {
     // ★新規: 備考設定（部屋番号 → 備考テキスト）
     private final Map<String, String> roomRemarksMap = new HashMap<>();
 
+    // ★エコ変更: 通常清掃からエコ清掃へ変更中の部屋（部屋番号 → 変更内容）。全解共通。
+    private final Map<String, EcoChange> ecoChanges = new LinkedHashMap<>();
+
+    // ★エコ変更: 一度でもエコ変更した部屋の「変更前／エコ」の部屋オブジェクト（部屋番号 → {変更前, エコ}）。
+    //   取り消し後も保持し、過去の状態で計算された解の部屋番号割り当てに使う。
+    private final Map<String, FileProcessor.Room[]> ecoRoomPairs = new HashMap<>();
+
+    // ★エコ変更: 現在の解一式を計算した時点でエコ変更されていた部屋
+    //   （初回は空。再最適化・手動割り当て反映時にその時点の変更内容で更新する）
+    private Set<String> ecoChangedAtOptimization = new HashSet<>();
+
+    /**
+     * ★エコ変更: 1部屋分のエコ変更内容（取り消し時に元へ戻すための情報を含む）
+     */
+    private static class EcoChange {
+        final String staffName;        // 変更時の担当スタッフ（部屋割り振り設定の室数を減らした相手）
+        String distributionField;      // 減らした室数の区分（mainSingle/mainTwin/annexSingle/annexTwin、null=未調整）
+        boolean ecoLimitRaised;        // ECO上限を+1したか
+        boolean dbWritten;             // データベースへ書き戻したか
+        String dbPreviousStatus;       // 書き戻し前の状態（null=レコード無し）
+
+        EcoChange(String staffName) {
+            this.staffName = staffName;
+        }
+    }
+
     // ★追加: グループ境界の行インデックス（罫線表示用）
     private Set<Integer> groupBoundaryRows = new HashSet<>();
 
@@ -753,7 +779,11 @@ public class AssignmentEditorGUI extends JFrame {
 
         assignmentTable = new JTable(tableModel);
         assignmentTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        assignmentTable.setRowHeight(25);
+        // 読みやすさのため表の文字・行の高さを拡大
+        java.awt.Font tableFont = assignmentTable.getFont().deriveFont(16f);
+        assignmentTable.setFont(tableFont);
+        assignmentTable.getTableHeader().setFont(tableFont);
+        assignmentTable.setRowHeight(30);
 
         // ★修正: グループ境界罫線対応のカスタムレンダラーを使用
         // 中央揃えの列用レンダラー
@@ -772,7 +802,7 @@ public class AssignmentEditorGUI extends JFrame {
         }
         assignmentTable.getColumnModel().getColumn(7).setCellRenderer(htmlRenderer);   // 担当階・部屋詳細
 
-        assignmentTable.getColumnModel().getColumn(0).setPreferredWidth(100);
+        assignmentTable.getColumnModel().getColumn(0).setPreferredWidth(170);
         assignmentTable.getColumnModel().getColumn(1).setPreferredWidth(140);  // 作業者タイプ
         assignmentTable.getColumnModel().getColumn(2).setPreferredWidth(100);  // リネン庫担当階
         assignmentTable.getColumnModel().getColumn(3).setPreferredWidth(60);
@@ -810,6 +840,9 @@ public class AssignmentEditorGUI extends JFrame {
 
         setSize(1400, 800);
         setLocationRelativeTo(null);
+
+        // この画面から開く設定ウィンドウ（ウォークイン・未割り当て等）の文字を自動で拡大
+        UiScale.enlargeWindowsOwnedBy(this);
     }
 
     /**
@@ -888,6 +921,11 @@ public class AssignmentEditorGUI extends JFrame {
                 panel.add(new JLabel(String.format(" 故障: %d室",
                         processingResult.cleaningDataObj.totalBrokenRooms)));
             }
+        }
+
+        // 読みやすさのためサマリーの文字を拡大（太字などのスタイルは維持）
+        for (Component c : panel.getComponents()) {
+            c.setFont(c.getFont().deriveFont(15f));
         }
 
         return panel;
@@ -1063,6 +1101,8 @@ public class AssignmentEditorGUI extends JFrame {
             detailedRoomAssignments = new HashMap<>(saved.detailedRooms);
             excludedRooms = new HashSet<>(saved.excluded);
             unassignedExcludedRooms = new HashSet<>(saved.unassignedExcluded);
+            // ★エコ変更: 保存後にエコ変更・取り消しがあっても現在の状態に合わせる
+            reconcileEcoRooms(staffDataMap.values());
         } else {
             // 初回表示: 従来どおりの作り直し（既存動作のまま）
 
@@ -1191,6 +1231,13 @@ public class AssignmentEditorGUI extends JFrame {
             }
         });
         buttonPanel.add(editRoomDetailsButton);
+
+        // ★エコ変更: 割り振り済みの通常清掃部屋をエコ清掃に変更（取り消しも可）
+        JButton ecoChangeButton = new JButton("エコ変更");
+        ecoChangeButton.setFont(new java.awt.Font("MS Gothic", java.awt.Font.BOLD, 12));
+        ecoChangeButton.setBackground(new java.awt.Color(190, 215, 255)); // 薄い青
+        ecoChangeButton.addActionListener(e -> showEcoChangeDialog());
+        buttonPanel.add(ecoChangeButton);
 
         // ★新規: 残し部屋設定ボタン（ポイント再計算の代わり）
         JButton excludeRoomsButton = new JButton("残し部屋設定");
@@ -2017,6 +2064,9 @@ public class AssignmentEditorGUI extends JFrame {
             // 9. staffDataMapを再構築
             rebuildStaffDataMap();
 
+            // ★エコ変更: 新しい解一式は現在のエコ変更を反映した部屋データで計算済み
+            ecoChangedAtOptimization = new HashSet<>(ecoChanges.keySet());
+
             // 10. 部屋番号を再割り当て
             if (roomAssigner != null) {
                 assignRoomNumbers();
@@ -2155,6 +2205,8 @@ public class AssignmentEditorGUI extends JFrame {
             this.currentAssignments = new ArrayList<>(manualAssignments);
             this.processingResult = newResult;
             rebuildStaffDataMap();
+            // ★エコ変更: 手動割り当ては現在のエコ変更を反映した状態で作成済み
+            ecoChangedAtOptimization = new HashSet<>(ecoChanges.keySet());
             if (roomAssigner != null) {
                 assignRoomNumbers();
             }
@@ -2288,6 +2340,15 @@ public class AssignmentEditorGUI extends JFrame {
     protected void assignRoomNumbers() {
         if (roomAssigner == null) return;
 
+        // ★エコ変更: 解は「計算した時点のエコ状態」で室数が決まっているため、
+        //   その状態の部屋データで部屋番号を割り当て、後から現在のエコ変更を反映する
+        if (!ecoRoomPairs.isEmpty()) {
+            roomAssigner = new RoomNumberAssigner(
+                    ecoChangedAtOptimization.equals(ecoChanges.keySet())
+                            ? processingResult.cleaningDataObj
+                            : buildCleaningDataWithEco(ecoChangedAtOptimization));
+        }
+
         Map<String, List<FileProcessor.Room>> assignments =
                 roomAssigner.assignDetailedRooms(currentAssignments);
 
@@ -2311,6 +2372,385 @@ public class AssignmentEditorGUI extends JFrame {
                 staffData.calculateExtendedMetrics();
             }
         }
+
+        // ★エコ変更: 現在のエコ変更を担当部屋へ反映
+        reconcileEcoRooms(staffDataMap.values());
+    }
+
+    /**
+     * ★エコ変更: スタッフに割り振られている通常清掃の部屋を選んでエコ清掃に変更するダイアログ。
+     * エコ変更済みの部屋はチェック済みで表示し、チェックを外すと通常清掃に戻す。
+     */
+    private void showEcoChangeDialog() {
+        // 対象: 割り振り済みの部屋のうち、元から通常清掃の部屋（エコ変更済みを含む）
+        List<Object[]> rows = new ArrayList<>();
+        for (StaffData staffData : getSortedStaffList()) {
+            List<FileProcessor.Room> rooms = new ArrayList<>();
+            for (List<FileProcessor.Room> floorRooms : staffData.detailedRoomsByFloor.values()) {
+                rooms.addAll(floorRooms);
+            }
+            rooms.sort(Comparator.comparing(r -> r.roomNumber));
+            for (FileProcessor.Room room : rooms) {
+                boolean changed = ecoChanges.containsKey(room.roomNumber);
+                if (room.isEco && !changed) {
+                    continue; // 元からエコの部屋は対象外
+                }
+                FileProcessor.Room original = changed ? ecoRoomPairs.get(room.roomNumber)[0] : room;
+                rows.add(new Object[]{
+                        changed,
+                        room.roomNumber,
+                        room.building,
+                        room.floor + "F",
+                        original.rawRoomType != null ? original.rawRoomType : original.roomType,
+                        staffData.name,
+                        original.isDuvetChange ? "デュベ交換日（エコにするとデュベなし）" : ""
+                });
+            }
+        }
+
+        if (rows.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "エコに変更できる部屋がありません。", "エコ変更", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        String[] columns = {"エコにする", "部屋番号", "建物", "階", "タイプ", "担当スタッフ", "備考"};
+        DefaultTableModel model = new DefaultTableModel(columns, 0) {
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == 0 ? Boolean.class : String.class;
+            }
+
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 0;
+            }
+        };
+        for (Object[] row : rows) {
+            model.addRow(row);
+        }
+
+        JTable table = new JTable(model);
+        table.setRowHeight(25);
+        table.setAutoCreateRowSorter(true);
+        table.getColumnModel().getColumn(0).setPreferredWidth(80);
+        table.getColumnModel().getColumn(1).setPreferredWidth(80);
+        table.getColumnModel().getColumn(2).setPreferredWidth(60);
+        table.getColumnModel().getColumn(3).setPreferredWidth(50);
+        table.getColumnModel().getColumn(4).setPreferredWidth(70);
+        table.getColumnModel().getColumn(5).setPreferredWidth(130);
+        table.getColumnModel().getColumn(6).setPreferredWidth(260);
+
+        JDialog dialog = new JDialog(this, "エコ変更", true);
+        dialog.setLayout(new BorderLayout());
+
+        JPanel infoPanel = new JPanel(new GridLayout(3, 1));
+        infoPanel.setBorder(BorderFactory.createTitledBorder("通常清掃 → エコ清掃"));
+        infoPanel.add(new JLabel(" エコ清掃にする部屋にチェックを入れてください。チェックを外すと通常清掃に戻ります。"));
+        infoPanel.add(new JLabel(" 変更した部屋は担当スタッフのまま「エコ清掃」になり、部屋割り振り設定の室数・ECO上限にも反映されます。"));
+        infoPanel.add(new JLabel(" デュベ交換日（〇）の部屋をエコにした場合はデュベ交換なしになります。"));
+
+        JScrollPane scrollPane = new JScrollPane(table);
+        scrollPane.setPreferredSize(new Dimension(760, 400));
+
+        JPanel buttonPanel = new JPanel(new FlowLayout());
+        JButton okButton = new JButton("OK");
+        JButton cancelButton = new JButton("キャンセル");
+        buttonPanel.add(okButton);
+        buttonPanel.add(cancelButton);
+
+        okButton.addActionListener(e -> {
+            if (table.isEditing()) {
+                table.getCellEditor().stopCellEditing();
+            }
+            Map<String, String> toEco = new LinkedHashMap<>();   // 部屋番号 → 担当スタッフ
+            List<String> toNormal = new ArrayList<>();
+            for (int i = 0; i < model.getRowCount(); i++) {
+                boolean checked = Boolean.TRUE.equals(model.getValueAt(i, 0));
+                String roomNumber = (String) model.getValueAt(i, 1);
+                boolean changed = ecoChanges.containsKey(roomNumber);
+                if (checked && !changed) {
+                    toEco.put(roomNumber, (String) model.getValueAt(i, 5));
+                } else if (!checked && changed) {
+                    toNormal.add(roomNumber);
+                }
+            }
+            if (toEco.isEmpty() && toNormal.isEmpty()) {
+                dialog.dispose();
+                return;
+            }
+            int confirm = JOptionPane.showConfirmDialog(dialog,
+                    String.format("エコに変更: %d室\n通常清掃に戻す: %d室\n\nこの内容で反映しますか？\n" +
+                                    "（エコ清掃データベースにも書き戻します）",
+                            toEco.size(), toNormal.size()),
+                    "エコ変更の確認", JOptionPane.YES_NO_OPTION);
+            if (confirm != JOptionPane.YES_OPTION) {
+                return;
+            }
+            if (applyEcoChanges(toEco, toNormal)) {
+                dialog.dispose();
+            }
+        });
+        cancelButton.addActionListener(e -> dialog.dispose());
+
+        dialog.add(infoPanel, BorderLayout.NORTH);
+        dialog.add(scrollPane, BorderLayout.CENTER);
+        dialog.add(buttonPanel, BorderLayout.SOUTH);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+
+    /**
+     * ★エコ変更: エコ変更・取り消しを反映する（データベース → 割り振り設定 → 部屋データ → 画面の順）。
+     *
+     * @param toEco    エコにする部屋（部屋番号 → 担当スタッフ）
+     * @param toNormal 通常清掃に戻す部屋
+     * @return 反映できた場合 true（データベース書き込み失敗時は何も変更せず false）
+     */
+    private boolean applyEcoChanges(Map<String, String> toEco, List<String> toNormal) {
+        // 1. データベースへ書き戻し（失敗したら何も変更しない）
+        java.io.File dbFile = EcoDatabaseWriter.getDatabaseFile();
+        java.time.LocalDate targetDate = processingResult.optimizationResult != null
+                ? processingResult.optimizationResult.targetDate : null;
+        Map<String, String> previousStatus = new HashMap<>();
+        if (dbFile != null && targetDate != null) {
+            Map<String, String> restoreMap = new HashMap<>();
+            for (String roomNumber : toNormal) {
+                EcoChange change = ecoChanges.get(roomNumber);
+                if (change.dbWritten) {
+                    restoreMap.put(roomNumber, change.dbPreviousStatus);
+                }
+            }
+            try {
+                EcoDatabaseWriter.restore(dbFile, targetDate, restoreMap);
+                previousStatus = EcoDatabaseWriter.markEco(dbFile, targetDate, toEco.keySet());
+            } catch (java.sql.SQLException ex) {
+                JOptionPane.showMessageDialog(this,
+                        "エコ清掃データベースへの書き込みに失敗しました。\n変更は反映していません。\n\n" + ex.getMessage(),
+                        "エラー", JOptionPane.ERROR_MESSAGE);
+                return false;
+            }
+        }
+
+        // 2. 通常清掃に戻す（部屋割り振り設定の室数・ECO上限も元に戻す）
+        for (String roomNumber : toNormal) {
+            revertDistributionForEco(ecoChanges.remove(roomNumber));
+        }
+
+        // 3. エコに変更（担当スタッフの室数を減らし、ECO上限が設定されていれば増やす）
+        for (Map.Entry<String, String> entry : toEco.entrySet()) {
+            String roomNumber = entry.getKey();
+            FileProcessor.Room original = findCleaningRoom(roomNumber);
+            if (original == null) {
+                continue;
+            }
+            ecoRoomPairs.computeIfAbsent(roomNumber,
+                    k -> new FileProcessor.Room[]{original, original.asEcoClean()});
+
+            EcoChange change = new EcoChange(entry.getValue());
+            change.dbWritten = previousStatus.containsKey(roomNumber);
+            change.dbPreviousStatus = previousStatus.get(roomNumber);
+            adjustDistributionForEco(change, ecoRoomPairs.get(roomNumber)[0]);
+            ecoChanges.put(roomNumber, change);
+        }
+
+        // 4. 部屋データ（清掃対象・エコ一覧）と全解の担当部屋に反映
+        applyEcoRoomsToCleaningData();
+        reconcileEcoRooms(staffDataMap.values());
+        for (SolutionEditState state : solutionEditStates.values()) {
+            reconcileEcoRooms(state.staffData.values());
+        }
+
+        // 5. 画面更新
+        refreshTable();
+        statusLabel.setText(String.format("エコ変更を反映しました（エコに変更 %d室・通常清掃に戻す %d室）",
+                toEco.size(), toNormal.size()));
+
+        if (dbFile == null) {
+            JOptionPane.showMessageDialog(this,
+                    "エコ清掃データベースが設定されていないため、画面上の割り当てにのみ反映しました。",
+                    "エコ変更", JOptionPane.WARNING_MESSAGE);
+        }
+        return true;
+    }
+
+    /** ★エコ変更: 清掃対象の部屋を部屋番号で探す（エコ変更済みなら変更前の部屋を返す） */
+    private FileProcessor.Room findCleaningRoom(String roomNumber) {
+        FileProcessor.Room[] pair = ecoRoomPairs.get(roomNumber);
+        if (pair != null) {
+            return pair[0];
+        }
+        for (FileProcessor.Room room : processingResult.cleaningDataObj.roomsToClean) {
+            if (room.roomNumber.equals(roomNumber)) {
+                return room;
+            }
+        }
+        return null;
+    }
+
+    /** ★エコ変更: 現在の解一式の元になった部屋割り振り設定（無ければ null） */
+    private Map<String, NormalRoomDistributionDialog.StaffDistribution> getCurrentRoomDistribution() {
+        if (processingResult.optimizationResult == null
+                || processingResult.optimizationResult.config == null) {
+            return null;
+        }
+        return processingResult.optimizationResult.config.roomDistribution;
+    }
+
+    /**
+     * ★エコ変更: 担当スタッフの部屋割り振り設定から、エコにした部屋の分の室数を減らし、
+     * ECO上限が設定されていれば（空欄=制限なし以外）その分増やす。
+     * 本館は本館ツイン統合によりシングル等にまとめられているため、シングル等→ツインの順に減らす。
+     */
+    private void adjustDistributionForEco(EcoChange change, FileProcessor.Room room) {
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> distribution = getCurrentRoomDistribution();
+        NormalRoomDistributionDialog.StaffDistribution sd =
+                distribution != null ? distribution.get(change.staffName) : null;
+        if (sd == null) {
+            return;
+        }
+
+        boolean isTwin = "T".equals(room.roomType) || "NT".equals(room.roomType);
+        if ("別館".equals(room.building)) {
+            if (isTwin && sd.annexTwinAssignedRooms > 0) {
+                sd.annexTwinAssignedRooms--;
+                change.distributionField = "annexTwin";
+            } else if (sd.annexSingleAssignedRooms > 0) {
+                sd.annexSingleAssignedRooms--;
+                change.distributionField = "annexSingle";
+            } else if (sd.annexTwinAssignedRooms > 0) {
+                sd.annexTwinAssignedRooms--;
+                change.distributionField = "annexTwin";
+            }
+        } else {
+            if (sd.mainSingleAssignedRooms > 0) {
+                sd.mainSingleAssignedRooms--;
+                change.distributionField = "mainSingle";
+            } else if (sd.mainTwinAssignedRooms > 0) {
+                sd.mainTwinAssignedRooms--;
+                change.distributionField = "mainTwin";
+            }
+        }
+        sd.updateTotal();
+
+        if (sd.ecoUpperLimit >= 0) {
+            sd.ecoUpperLimit++;
+            change.ecoLimitRaised = true;
+        }
+    }
+
+    /** ★エコ変更: adjustDistributionForEco で変更した室数・ECO上限を元に戻す */
+    private void revertDistributionForEco(EcoChange change) {
+        Map<String, NormalRoomDistributionDialog.StaffDistribution> distribution = getCurrentRoomDistribution();
+        NormalRoomDistributionDialog.StaffDistribution sd =
+                distribution != null ? distribution.get(change.staffName) : null;
+        if (sd == null) {
+            return;
+        }
+
+        if (change.distributionField != null) {
+            switch (change.distributionField) {
+                case "mainSingle": sd.mainSingleAssignedRooms++; break;
+                case "mainTwin": sd.mainTwinAssignedRooms++; break;
+                case "annexSingle": sd.annexSingleAssignedRooms++; break;
+                case "annexTwin": sd.annexTwinAssignedRooms++; break;
+                default: break;
+            }
+            sd.updateTotal();
+        }
+        if (change.ecoLimitRaised && sd.ecoUpperLimit > 0) {
+            sd.ecoUpperLimit--;
+        }
+    }
+
+    /** ★エコ変更: 指定したエコ変更の状態での部屋オブジェクトを返す（エコ変更対象外の部屋はそのまま） */
+    private FileProcessor.Room ecoRoomFor(FileProcessor.Room room, Set<String> changedRooms) {
+        FileProcessor.Room[] pair = ecoRoomPairs.get(room.roomNumber);
+        if (pair == null) {
+            return room;
+        }
+        return changedRooms.contains(room.roomNumber) ? pair[1] : pair[0];
+    }
+
+    /**
+     * ★エコ変更: 部屋データ（清掃対象・エコ一覧）を現在のエコ変更に合わせる。
+     * 部屋割り振り設定の通常室集計・再最適化・サマリーのエコ室数はこのデータを使う。
+     */
+    private void applyEcoRoomsToCleaningData() {
+        FileProcessor.CleaningData data = processingResult.cleaningDataObj;
+        Set<String> changed = ecoChanges.keySet();
+        data.mainRooms.replaceAll(r -> ecoRoomFor(r, changed));
+        data.annexRooms.replaceAll(r -> ecoRoomFor(r, changed));
+        data.roomsToClean.replaceAll(r -> ecoRoomFor(r, changed));
+        data.ecoRooms.removeIf(r -> ecoRoomPairs.containsKey(r.roomNumber));
+        for (String roomNumber : changed) {
+            data.ecoRooms.add(ecoRoomPairs.get(roomNumber)[1]);
+        }
+    }
+
+    /** ★エコ変更: 指定したエコ変更の状態で部屋データを作り直す（部屋番号割り当て用） */
+    private FileProcessor.CleaningData buildCleaningDataWithEco(Set<String> changedRooms) {
+        FileProcessor.CleaningData data = processingResult.cleaningDataObj;
+        List<FileProcessor.Room> mainRooms = new ArrayList<>();
+        List<FileProcessor.Room> annexRooms = new ArrayList<>();
+        List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+        for (FileProcessor.Room room : data.mainRooms) {
+            mainRooms.add(ecoRoomFor(room, changedRooms));
+        }
+        for (FileProcessor.Room room : data.annexRooms) {
+            annexRooms.add(ecoRoomFor(room, changedRooms));
+        }
+        for (FileProcessor.Room room : mainRooms) {
+            if (room.isEcoClean) ecoRooms.add(room);
+        }
+        for (FileProcessor.Room room : annexRooms) {
+            if (room.isEcoClean) ecoRooms.add(room);
+        }
+        return new FileProcessor.CleaningData(mainRooms, annexRooms, ecoRooms, data.brokenRooms,
+                data.ecoWarnings, data.unsoldRooms, data.preExcludedRooms, data.lateOutRooms);
+    }
+
+    /**
+     * ★エコ変更: スタッフの担当部屋を現在のエコ変更に合わせて差し替え、部屋数・換算値を再計算する。
+     * 担当スタッフは変えず、部屋の「エコ／通常」だけを切り替える。
+     */
+    private void reconcileEcoRooms(Collection<StaffData> staffList) {
+        if (ecoRoomPairs.isEmpty()) {
+            return;
+        }
+        Set<String> changed = ecoChanges.keySet();
+        for (StaffData staffData : staffList) {
+            boolean updated = replaceEcoRooms(staffData.detailedRoomsByFloor, changed);
+            replaceEcoRooms(staffData.originalDetailedRoomsByFloor, changed);
+            if (updated) {
+                staffData.calculateExtendedMetrics();
+            }
+        }
+        if (detailedRoomAssignments != null) {
+            for (List<FileProcessor.Room> rooms : detailedRoomAssignments.values()) {
+                rooms.replaceAll(r -> ecoRoomFor(r, changed));
+            }
+        }
+    }
+
+    /** ★エコ変更: 階別の部屋リスト内の部屋を差し替える。差し替えがあれば true */
+    private boolean replaceEcoRooms(Map<Integer, List<FileProcessor.Room>> roomsByFloor, Set<String> changed) {
+        if (roomsByFloor == null) {
+            return false;
+        }
+        boolean updated = false;
+        for (List<FileProcessor.Room> rooms : roomsByFloor.values()) {
+            for (int i = 0; i < rooms.size(); i++) {
+                FileProcessor.Room current = rooms.get(i);
+                FileProcessor.Room wanted = ecoRoomFor(current, changed);
+                if (wanted != current) {
+                    rooms.set(i, wanted);
+                    updated = true;
+                }
+            }
+        }
+        return updated;
     }
 
     /**

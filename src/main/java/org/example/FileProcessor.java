@@ -148,6 +148,15 @@ public class FileProcessor {
         }
 
         /**
+         * ★エコ変更: この部屋をエコ清掃（×）にした複製を返す。
+         * エコ清掃にした部屋はデュベ交換なしとして扱う。
+         */
+        public Room asEcoClean() {
+            return new Room(roomNumber, roomType, true, isBroken, roomStatus,
+                    EcoDatabaseWriter.ECO_STATUS, rawRoomType, false);
+        }
+
+        /**
          * ★追加: 部屋状態の表示形式取得
          */
         public String getStatusDisplay() {

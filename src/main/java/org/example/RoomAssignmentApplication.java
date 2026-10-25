@@ -1477,7 +1477,7 @@ public class RoomAssignmentApplication extends JFrame {
             dialog = new JDialog((Frame) null, "担当者変更", true);
         }
         dialog.setLayout(new BorderLayout());
-        dialog.setSize(380, 520);
+        dialog.setSize(420, 700);
         dialog.setLocationRelativeTo(parent);
 
         // 説明パネル
@@ -1502,6 +1502,7 @@ public class RoomAssignmentApplication extends JFrame {
         final List<JCheckBox> checkBoxes = new ArrayList<>();
         for (FileProcessor.Staff staff : enrolledStaff) {
             JCheckBox cb = new JCheckBox(staff.name);
+            cb.setFont(cb.getFont().deriveFont(16f)); // 読みやすさのため文字を拡大
             cb.setSelected(selectedIds.contains(staff.id)); // ★変更: 現在選択中ならON
             checkBoxes.add(cb);
             checkPanel.add(cb);
@@ -1571,7 +1572,7 @@ public class RoomAssignmentApplication extends JFrame {
 
         JDialog dialog = new JDialog(parentFrame, "ポイント制限・大浴場清掃・備品発注設定", true);
         dialog.setLayout(new BorderLayout());
-        dialog.setSize(1000, 520);
+        dialog.setSize(1100, 800);
         dialog.setLocationRelativeTo(parentFrame);
 
         JPanel infoPanel = new JPanel(new GridLayout(6, 1));
@@ -1634,13 +1635,20 @@ public class RoomAssignmentApplication extends JFrame {
 
         JTable table = new JTable(tableModel);
         table.getSelectionModel().setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        // 読みやすさのため表の文字・行の高さを拡大
+        Font tableFont = table.getFont().deriveFont(16f);
+        table.setFont(tableFont);
+        table.setRowHeight(28);
+        table.getTableHeader().setFont(tableFont);
 
         String[] constraintTypes = {"制限なし", "故障者制限", "業者制限"};
         JComboBox<String> constraintCombo = new JComboBox<>(constraintTypes);
+        constraintCombo.setFont(tableFont);
         table.getColumnModel().getColumn(1).setCellEditor(new DefaultCellEditor(constraintCombo));
 
         String[] buildings = {"両方", "本館のみ", "別館のみ"};
         JComboBox<String> buildingCombo = new JComboBox<>(buildings);
+        buildingCombo.setFont(tableFont);
         table.getColumnModel().getColumn(3).setCellEditor(new DefaultCellEditor(buildingCombo));
 
         table.getColumnModel().getColumn(4).setCellRenderer(new TableCellRenderer() {

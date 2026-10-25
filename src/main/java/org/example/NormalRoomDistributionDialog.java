@@ -321,8 +321,15 @@ public class NormalRoomDistributionDialog extends JDialog {
                 ? deepCopyPattern(patternMap.get(defaultPatternLabel)) : null;
 
         initializeGUI();
-        setSize(1690, Math.min(950, Toolkit.getDefaultToolkit().getScreenSize().height - 60));
-        setLocationRelativeTo(parent);
+        applyDisplaySize();
+    }
+
+    /**
+     * 読みやすさのため文字を拡大し、ウィンドウを使用中のPCの画面サイズに合わせる
+     */
+    private void applyDisplaySize() {
+        UiScale.enlargeContents(this);
+        UiScale.fitToScreen(this);
     }
 
     /**
@@ -370,8 +377,7 @@ public class NormalRoomDistributionDialog extends JDialog {
         }
 
         initializeGUI();
-        setSize(1690, Math.min(950, Toolkit.getDefaultToolkit().getScreenSize().height - 60));
-        setLocationRelativeTo(parent);
+        applyDisplaySize();
     }
 
     /**

@@ -40,6 +40,8 @@ public class RoomAssignmentApplication extends JFrame {
     private JButton viewResultsButton;
 
     private File selectedRoomFile;
+    // ★CSV共有: 部屋データがエコDBに保存された部屋状態CSVから読み込まれたものか
+    private boolean roomFileFromEcoDatabase = false;
     private File selectedShiftFile;
     private File selectedEcoDataFile;
     private LocalDate selectedDate;
@@ -264,6 +266,24 @@ public class RoomAssignmentApplication extends JFrame {
 
         appendLog("ホテル清掃管理システムを開始しました。");
         appendLog("部屋数制限機能が有効です。");
+
+        autoSelectEcoDatabase();
+    }
+
+    /**
+     * ★CSV共有: データフォルダー（無ければ作業フォルダー）に hotel_cleaning.db があれば
+     * エコデータとして自動選択し、Eco側で読み込んだ部屋状態CSVも取り込む。
+     */
+    private void autoSelectEcoDatabase() {
+        File dbFile = findDefaultEcoDatabase();
+        if (dbFile == null) {
+            return;
+        }
+        selectedEcoDataFile = dbFile;
+        selectEcoDataButton.setText(dbFile.getName());
+        appendLog("エコ清掃データベースを自動選択しました: " + dbFile.getAbsolutePath());
+        loadRoomFileFromEcoDatabase();
+        updateButtonStates();
     }
 
     private JPanel createFileSelectionPanel() {
@@ -472,39 +492,50 @@ public class RoomAssignmentApplication extends JFrame {
         applyRememberedDataFolder(fileChooser);
 
         if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            selectedRoomFile = fileChooser.getSelectedFile();
-            selectRoomFileButton.setText(selectedRoomFile.getName());
-            appendLog("部屋データファイルを選択しました: " + selectedRoomFile.getName());
+            File file = fileChooser.getSelectedFile();
+            applyRoomFile(file, file.getName(), false);
+            appendLog("部屋データファイルを選択しました: " + file.getName());
 
             // ★フォルダー自動検出: 選択したファイルの親フォルダーを記憶
-            rememberDataFolder(selectedRoomFile);
-
-            brokenRoomSettingsButton.setEnabled(true);
-            brokenRoomSettingsButton.setText("故障部屋・ウォークイン");
-            brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
-            selectedBrokenRoomsForCleaning.clear();
-
-            // ★残し部屋(事前設定): ファイル変更時は残し部屋設定もリセット
-            excludedRoomSettingsButton.setText("残し部屋設定");
-            excludedRoomSettingsButton.setBackground(new Color(255, 200, 100));
-            excludedRoomSettingsButton.setForeground(Color.BLACK);
-            preExcludedRooms.clear();
-            System.clearProperty("preExcludedRooms");
-
-            // ★レイトアウト: ファイル変更時はレイトアウト設定もリセット
-            lateOutSettingsButton.setEnabled(true);
-            lateOutSettingsButton.setText("レイトアウト設定");
-            lateOutSettingsButton.setBackground(new Color(147, 112, 219));
-            System.clearProperty("lateOutRooms");
-
-            // ★未チェックイン: ファイル変更時は未チェックイン設定もリセット
-            pendingRoomSettingsButton.setText("未チェックイン設定");
-            pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
-            pendingRoomSettingsButton.setForeground(Color.BLACK);
-            System.clearProperty("pendingRoomSettings");
-
-            updateButtonStates();
+            rememberDataFolder(file);
         }
+    }
+
+    /**
+     * 部屋データファイルを設定し、ファイルに紐づく各設定をリセットする。
+     *
+     * @param fromEcoDatabase エコDBの共有CSVから作った一時ファイルなら true
+     */
+    private void applyRoomFile(File file, String buttonLabel, boolean fromEcoDatabase) {
+        selectedRoomFile = file;
+        roomFileFromEcoDatabase = fromEcoDatabase;
+        selectRoomFileButton.setText(buttonLabel);
+
+        brokenRoomSettingsButton.setEnabled(true);
+        brokenRoomSettingsButton.setText("故障部屋・ウォークイン");
+        brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
+        selectedBrokenRoomsForCleaning.clear();
+
+        // ★残し部屋(事前設定): ファイル変更時は残し部屋設定もリセット
+        excludedRoomSettingsButton.setText("残し部屋設定");
+        excludedRoomSettingsButton.setBackground(new Color(255, 200, 100));
+        excludedRoomSettingsButton.setForeground(Color.BLACK);
+        preExcludedRooms.clear();
+        System.clearProperty("preExcludedRooms");
+
+        // ★レイトアウト: ファイル変更時はレイトアウト設定もリセット
+        lateOutSettingsButton.setEnabled(true);
+        lateOutSettingsButton.setText("レイトアウト設定");
+        lateOutSettingsButton.setBackground(new Color(147, 112, 219));
+        System.clearProperty("lateOutRooms");
+
+        // ★未チェックイン: ファイル変更時は未チェックイン設定もリセット
+        pendingRoomSettingsButton.setText("未チェックイン設定");
+        pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
+        pendingRoomSettingsButton.setForeground(Color.BLACK);
+        System.clearProperty("pendingRoomSettings");
+
+        updateButtonStates();
     }
 
     private void selectShiftFile(ActionEvent e) {
@@ -559,22 +590,7 @@ public class RoomAssignmentApplication extends JFrame {
         // ★フォルダー自動検出: 記憶されたデータフォルダーを開いた状態で始める
         applyRememberedDataFolder(fileChooser);
 
-        // デフォルトで hotel_cleaning.db を探す（記憶フォルダー優先、無ければ従来通り作業フォルダー）
-        File dataFolder = AppSettings.getInstance().getExistingFolder(AppSettings.KEY_DATA_FOLDER);
-        File defaultDb = null;
-        if (dataFolder != null) {
-            File cand = new File(dataFolder, "hotel_cleaning.db");
-            if (cand.exists()) {
-                defaultDb = cand;
-            }
-        }
-        if (defaultDb == null) {
-            File currentDir = new File(System.getProperty("user.dir"));
-            File cand = new File(currentDir, "hotel_cleaning.db");
-            if (cand.exists()) {
-                defaultDb = cand;
-            }
-        }
+        File defaultDb = selectedEcoDataFile != null ? selectedEcoDataFile : findDefaultEcoDatabase();
         if (defaultDb != null) {
             fileChooser.setSelectedFile(defaultDb);
         }
@@ -588,7 +604,81 @@ public class RoomAssignmentApplication extends JFrame {
             // ★フォルダー自動検出: 選択したファイルの親フォルダーを記憶
             rememberDataFolder(selectedEcoDataFile);
 
+            loadRoomFileFromEcoDatabase();
             updateButtonStates();
+        }
+    }
+
+    /**
+     * デフォルトの hotel_cleaning.db を探す（記憶フォルダー優先、無ければ従来通り作業フォルダー）。
+     */
+    private File findDefaultEcoDatabase() {
+        File dataFolder = AppSettings.getInstance().getExistingFolder(AppSettings.KEY_DATA_FOLDER);
+        if (dataFolder != null) {
+            File cand = new File(dataFolder, "hotel_cleaning.db");
+            if (cand.exists()) {
+                return cand;
+            }
+        }
+        File cand = new File(System.getProperty("user.dir"), "hotel_cleaning.db");
+        return cand.exists() ? cand : null;
+    }
+
+    /**
+     * ★CSV共有: エコDBに保存された部屋状態CSV（EcoRoomClean.pyで読み込んだもの）を部屋データとして使う。
+     * 手動で選択したCSVがある場合は上書きしない。CSVの日付は対象日が未設定なら対象日にする。
+     */
+    private void loadRoomFileFromEcoDatabase() {
+        if (selectedEcoDataFile == null || (selectedRoomFile != null && !roomFileFromEcoDatabase)) {
+            return;
+        }
+
+        Map<String, SharedCsvStore.SharedCsv> sharedCsvs;
+        try {
+            sharedCsvs = SharedCsvStore.load(selectedEcoDataFile);
+        } catch (Exception ex) {
+            LOGGER.warning("共有CSVの読み込みに失敗しました: " + ex.getMessage());
+            appendLog("エコDBから部屋状態CSVを読み込めませんでした: " + ex.getMessage());
+            return;
+        }
+
+        SharedCsvStore.SharedCsv roomStatus = sharedCsvs.get(SharedCsvStore.KIND_ROOM_STATUS);
+        if (roomStatus == null) {
+            appendLog("エコDBに部屋状態CSVが保存されていません（エコ側でCSV読込を行うと自動で使われます）。");
+            return;
+        }
+
+        File tempFile;
+        try {
+            tempFile = SharedCsvStore.writeTempFile(roomStatus);
+        } catch (Exception ex) {
+            LOGGER.warning("共有CSVの一時ファイル作成に失敗しました: " + ex.getMessage());
+            appendLog("エコDBの部屋状態CSVを使用できませんでした: " + ex.getMessage());
+            return;
+        }
+
+        applyRoomFile(tempFile, "エコDBから: " + roomStatus.fileName, true);
+        appendLog("エコDBの部屋状態CSVを使用します: " + roomStatus.fileName
+                + "（エコ側の読込日時: " + roomStatus.importedAt + "）");
+        if (sharedCsvs.containsKey(SharedCsvStore.KIND_YOYAKU)) {
+            appendLog("  予約CSVも共有されています: " + sharedCsvs.get(SharedCsvStore.KIND_YOYAKU).fileName);
+        }
+        if (sharedCsvs.containsKey(SharedCsvStore.KIND_YOYAKU_CO)) {
+            appendLog("  予約詳細CSVも共有されています: " + sharedCsvs.get(SharedCsvStore.KIND_YOYAKU_CO).fileName);
+        }
+
+        if (roomStatus.csvDate != null) {
+            if (selectedDate == null) {
+                applySelectedDate(roomStatus.csvDate);
+            } else if (!selectedDate.equals(roomStatus.csvDate)) {
+                String message = "エコDBの部屋状態CSVの日付（"
+                        + roomStatus.csvDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"))
+                        + "）が対象日（"
+                        + selectedDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"))
+                        + "）と異なります。\nエコ側で当日のCSVを読み込んだか確認してください。";
+                appendLog("警告: " + message.replace("\n", " "));
+                JOptionPane.showMessageDialog(this, message, "日付の確認", JOptionPane.WARNING_MESSAGE);
+            }
         }
     }
 
@@ -752,14 +842,17 @@ public class RoomAssignmentApplication extends JFrame {
 
         if (result == JOptionPane.OK_OPTION) {
             Date selectedDateValue = (Date) spinner.getValue();
-            selectedDate = selectedDateValue.toInstant()
+            applySelectedDate(selectedDateValue.toInstant()
                     .atZone(java.time.ZoneId.systemDefault())
-                    .toLocalDate();
-
-            selectDateButton.setText(selectedDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
-            appendLog("対象日を設定しました: " + selectedDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
-            updateButtonStates();
+                    .toLocalDate());
         }
+    }
+
+    private void applySelectedDate(LocalDate date) {
+        selectedDate = date;
+        selectDateButton.setText(selectedDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
+        appendLog("対象日を設定しました: " + selectedDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日")));
+        updateButtonStates();
     }
 
     private void updateButtonStates() {

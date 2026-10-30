@@ -383,7 +383,9 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         try {
-            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(this, selectedRoomFile);
+            // 前回の設定を渡して、再度開いたときにチェック状態を復元する
+            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(this, selectedRoomFile,
+                    selectedBrokenRoomsForCleaning);
             dialog.setVisible(true);
 
             if (dialog.getDialogResult()) {
@@ -396,11 +398,15 @@ public class RoomAssignmentApplication extends JFrame {
                     for (String roomNumber : selectedBrokenRoomsForCleaning) {
                         appendLog("    " + roomNumber);
                     }
+                    brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
+                    brokenRoomSettingsButton.setForeground(Color.BLACK);
+                    brokenRoomSettingsButton.setText("故障部屋・ウォークイン設定済み");
+                } else {
+                    // 全て解除して設定完了した場合は未設定の表示に戻す
+                    brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
+                    brokenRoomSettingsButton.setForeground(Color.BLACK);
+                    brokenRoomSettingsButton.setText("故障部屋・ウォークイン");
                 }
-
-                brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
-                brokenRoomSettingsButton.setForeground(Color.BLACK);
-                brokenRoomSettingsButton.setText("故障部屋・ウォークイン設定済み");
             }
 
         } catch (Exception ex) {

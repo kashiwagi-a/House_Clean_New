@@ -66,6 +66,14 @@ public class BrokenRoomSelectionDialog extends JDialog {
      * コンストラクタ
      */
     public BrokenRoomSelectionDialog(JFrame parent, File roomDataFile) {
+        this(parent, roomDataFile, Collections.emptySet());
+    }
+
+    /**
+     * コンストラクタ（前回の設定を復元）
+     * @param previousSelection 前回「設定完了」で清掃対象に選択した部屋番号
+     */
+    public BrokenRoomSelectionDialog(JFrame parent, File roomDataFile, Set<String> previousSelection) {
         super(parent, "故障部屋・ウォークイン清掃設定", true);
         this.brokenRoomData = new HashMap<>();
         this.selectedForCleaning = new HashSet<>();
@@ -73,7 +81,11 @@ public class BrokenRoomSelectionDialog extends JDialog {
         // 故障部屋・ウォークインデータを読み込み
         loadBrokenRoomData(roomDataFile);
 
+        // 前回の設定を復元（再度開いたときにチェック状態を引き継ぐ）
+        restorePreviousSettings(previousSelection);
+
         initializeGUI();
+        updateSelectionCount();
         setSize(680, 430);
         setLocationRelativeTo(parent);
     }
@@ -131,6 +143,23 @@ public class BrokenRoomSelectionDialog extends JDialog {
                     "故障部屋・ウォークインデータの読み込みに失敗しました: " + e.getMessage(),
                     "エラー", JOptionPane.ERROR_MESSAGE);
         }
+    }
+
+    /**
+     * 前回の設定を復元する
+     */
+    private void restorePreviousSettings(Set<String> previousSelection) {
+        if (previousSelection == null || previousSelection.isEmpty()) return;
+
+        for (String roomNumber : previousSelection) {
+            BrokenRoomInfo info = brokenRoomData.get(roomNumber);
+            if (info != null) {
+                info.selectedForCleaning = true;
+                selectedForCleaning.add(roomNumber);
+            }
+        }
+
+        LOGGER.info("前回の故障部屋・ウォークイン設定を復元: " + selectedForCleaning.size() + "室");
     }
 
     /**
@@ -223,7 +252,7 @@ public class BrokenRoomSelectionDialog extends JDialog {
 
         for (BrokenRoomInfo roomInfo : sortedRooms) {
             Object[] row = {
-                    false, // 初期状態は未選択
+                    roomInfo.selectedForCleaning, // 前回の設定を反映（初回は未選択）
                     roomInfo.roomNumber,
                     roomInfo.roomType,
                     roomInfo.floor + "階",

@@ -31,6 +31,7 @@ public class RoomAssignmentApplication extends JFrame {
     private JButton selectRoomFileButton;
     private JButton selectShiftFileButton;
     private JButton selectEcoDataButton;
+    private JButton openEcoAppButton;
     private JButton selectDateButton;
     private JButton brokenRoomSettingsButton;
     private JButton pendingRoomSettingsButton;
@@ -318,6 +319,13 @@ public class RoomAssignmentApplication extends JFrame {
         selectEcoDataButton.setToolTipText("EcoRoomClean.pyで作成されたhotel_cleaning.dbデータベースを選択してください");
         selectEcoDataButton.addActionListener(e -> selectEcoDatabase());
         panel.add(selectEcoDataButton, gbc);
+
+        // ★エコ管理起動: EcoRoomClean を開き、閉じたらエコDBの部屋状態CSVを読み直す
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        openEcoAppButton = new JButton("エコ管理を開く");
+        openEcoAppButton.setToolTipText("エコ管理（EcoRoomClean）を起動します。閉じるとCSVの内容を自動で読み込みます");
+        openEcoAppButton.addActionListener(e -> openEcoApp());
+        panel.add(openEcoAppButton, gbc);
 
         gbc.gridx = 0; gbc.gridy = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         panel.add(new JLabel("対象日:"), gbc);
@@ -610,9 +618,83 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     /**
-     * デフォルトの hotel_cleaning.db を探す（記憶フォルダー優先、無ければ従来通り作業フォルダー）。
+     * ★エコ管理起動: 記憶したエコ管理アプリを起動する（未記憶・見つからない場合は場所を選んでもらう）。
+     * アプリは自分のフォルダーの hotel_cleaning.db を使うため、そのフォルダーを作業フォルダーにして起動し、
+     * 終了後にそのDBをエコデータとして選択し直して共有CSVを取り込む。
+     */
+    private void openEcoApp() {
+        File appFile = AppSettings.getInstance().getExistingFile(AppSettings.KEY_ECO_APP);
+        if (appFile == null) {
+            JOptionPane.showMessageDialog(this,
+                    "エコ管理アプリ（EcoRoomClean.exe）の場所を選択してください。\n"
+                            + "※選択したファイルの場所は記憶され、次回からは自動で使用されます。",
+                    "エコ管理アプリの選択", JOptionPane.INFORMATION_MESSAGE);
+
+            JFileChooser fileChooser = new JFileChooser();
+            fileChooser.setDialogTitle("エコ管理アプリ（EcoRoomClean）を選択");
+            fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
+                    "エコ管理アプリ (*.exe, *.py)", "exe", "py"));
+            if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+                return;
+            }
+            appFile = fileChooser.getSelectedFile();
+            AppSettings.getInstance().setPath(AppSettings.KEY_ECO_APP, appFile.getAbsolutePath());
+        }
+
+        List<String> command = new ArrayList<>();
+        if (appFile.getName().toLowerCase().endsWith(".py")) {
+            boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+            command.add(isWindows ? "python" : "python3");
+        }
+        command.add(appFile.getAbsolutePath());
+
+        Process process;
+        try {
+            process = new ProcessBuilder(command).directory(appFile.getParentFile()).start();
+        } catch (Exception ex) {
+            LOGGER.warning("エコ管理アプリの起動に失敗しました: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this,
+                    "エコ管理アプリを起動できませんでした:\n" + appFile.getAbsolutePath() + "\n\n" + ex.getMessage()
+                            + "\n\n次回起動時に場所を選び直せるよう、記憶した場所をリセットします。",
+                    "エラー", JOptionPane.ERROR_MESSAGE);
+            AppSettings.getInstance().setPath(AppSettings.KEY_ECO_APP, null);
+            return;
+        }
+
+        appendLog("エコ管理を起動しました: " + appFile.getAbsolutePath());
+        appendLog("  エコ管理を閉じると、CSVの内容を自動で読み込みます。");
+        openEcoAppButton.setEnabled(false);
+        openEcoAppButton.setText("エコ管理を実行中...");
+
+        File ecoDbFile = new File(appFile.getParentFile(), "hotel_cleaning.db");
+        process.onExit().thenRun(() -> SwingUtilities.invokeLater(() -> {
+            openEcoAppButton.setEnabled(true);
+            openEcoAppButton.setText("エコ管理を開く");
+            appendLog("エコ管理が終了しました。");
+            if (!ecoDbFile.exists()) {
+                appendLog("エコ清掃データベースが見つかりません: " + ecoDbFile.getAbsolutePath());
+                return;
+            }
+            selectedEcoDataFile = ecoDbFile;
+            selectEcoDataButton.setText(ecoDbFile.getName());
+            appendLog("エコ清掃データベースを選択しました: " + ecoDbFile.getAbsolutePath());
+            loadRoomFileFromEcoDatabase();
+            updateButtonStates();
+        }));
+    }
+
+    /**
+     * デフォルトの hotel_cleaning.db を探す
+     * （エコ管理アプリのフォルダー → 記憶フォルダー → 従来通り作業フォルダーの順）。
      */
     private File findDefaultEcoDatabase() {
+        File ecoApp = AppSettings.getInstance().getExistingFile(AppSettings.KEY_ECO_APP);
+        if (ecoApp != null) {
+            File cand = new File(ecoApp.getParentFile(), "hotel_cleaning.db");
+            if (cand.exists()) {
+                return cand;
+            }
+        }
         File dataFolder = AppSettings.getInstance().getExistingFolder(AppSettings.KEY_DATA_FOLDER);
         if (dataFolder != null) {
             File cand = new File(dataFolder, "hotel_cleaning.db");

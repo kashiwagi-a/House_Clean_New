@@ -42,6 +42,8 @@ public class AppSettings {
     public static final String KEY_SHIFT_XLS = "shift.xls.path";
     /** エコDB のパス（将来の自動読み込み用） */
     public static final String KEY_ECO_DB = "eco.db.path";
+    /** エコ管理アプリ（EcoRoomClean.exe / EcoRoomClean.py）のパス */
+    public static final String KEY_ECO_APP = "eco.app.path";
 
     /** シングルトンインスタンス */
     private static AppSettings instance;

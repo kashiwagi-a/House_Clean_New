@@ -143,6 +143,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         // ★★追加: 指定階（空の場合は制限なし）
         public Set<Integer> preferredFloors;
 
+        // ★★追加: 除外階（このスタッフに通常清掃を割り振らない階。空の場合は制限なし。ECOは対象外）
+        //   指定階と同じく実際の階数で保持する（別館も実階。本館・別館の同じ階数の両方に効く）
+        public Set<Integer> excludedFloors = new HashSet<>();
+
         // ★★追加: リネン庫清掃
         public boolean isLinenClosetCleaning;
         public int linenClosetFloorCount;
@@ -183,6 +187,8 @@ public class NormalRoomDistributionDialog extends JDialog {
             this.annexSingleAssignedRooms = other.annexSingleAssignedRooms;
             this.annexTwinAssignedRooms = other.annexTwinAssignedRooms;
             this.preferredFloors = new HashSet<>(other.preferredFloors);
+            this.excludedFloors = other.excludedFloors != null
+                    ? new HashSet<>(other.excludedFloors) : new HashSet<>();
             this.isLinenClosetCleaning = other.isLinenClosetCleaning;
             this.linenClosetFloorCount = other.linenClosetFloorCount;
             this.ecoUpperLimit = other.ecoUpperLimit;  // ★★追加: ECO上限のコピー
@@ -210,7 +216,31 @@ public class NormalRoomDistributionDialog extends JDialog {
             if (preferredFloors == null) {
                 preferredFloors = new HashSet<>();
             }
-            preferredFloors.clear();
+            parseFloorsText(text, preferredFloors);
+        }
+
+        // ★★追加: 除外階の文字列表現を取得（"2,3,5" 形式）
+        public String getExcludedFloorsText() {
+            if (excludedFloors == null || excludedFloors.isEmpty()) {
+                return "";
+            }
+            return excludedFloors.stream()
+                    .sorted()
+                    .map(String::valueOf)
+                    .collect(Collectors.joining(","));
+        }
+
+        // ★★追加: 除外階をテキストから設定（"2,3,5" 形式）
+        public void setExcludedFloorsFromText(String text) {
+            if (excludedFloors == null) {
+                excludedFloors = new HashSet<>();
+            }
+            parseFloorsText(text, excludedFloors);
+        }
+
+        /** "2,3,5" 形式のテキストを階数セットへ読み込む（既存の内容は置き換える） */
+        private static void parseFloorsText(String text, Set<Integer> target) {
+            target.clear();
             if (text == null || text.trim().isEmpty()) {
                 return;
             }
@@ -219,7 +249,7 @@ public class NormalRoomDistributionDialog extends JDialog {
                 part = part.trim();
                 if (!part.isEmpty()) {
                     try {
-                        preferredFloors.add(Integer.parseInt(part));
+                        target.add(Integer.parseInt(part));
                     } catch (NumberFormatException e) {
                         // 無効な入力は無視
                     }
@@ -491,17 +521,17 @@ public class NormalRoomDistributionDialog extends JDialog {
         selectHeaderLabel.setPreferredSize(new Dimension(SELECT_COLUMN_WIDTH, 25));
         headerPanel.add(selectHeaderLabel, BorderLayout.WEST);
 
-        JPanel headerCells = new JPanel(new GridLayout(1, 11));  // ★★★変更: 12→11列（本館S/Tを「本館」1列に統合）
+        JPanel headerCells = new JPanel(new GridLayout(1, 12));  // ★★変更: 除外階列の追加で11→12列
         headerCells.setOpaque(false);
 
         // ECO列・通常合計列を削除（ECOはCP-SATが自動配分）
         // ★★追加: ECO上限列（CP-SATのECO自動配分に対する上限。空欄=制限なし）
         // ★★★本館ツイン統合: 「本館S」「本館T」を「本館」1列（合計値）に統合
-        String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "ECO上限", "指定階",
+        String[] headers = {"スタッフ名", "制限タイプ", "お風呂", "リネン庫", "リネン庫階数", "ECO上限", "指定階", "除外階",
                 "本館",
                 "別館S", "別館T",
                 "換算合計"};
-        int[] widths = {100, 100, 50, 55, 70, 60, 100, 80, 80, 80, 100};
+        int[] widths = {100, 100, 50, 55, 70, 60, 100, 100, 80, 80, 80, 100};
 
         for (int i = 0; i < headers.length; i++) {
             JLabel headerLabel = new JLabel(headers[i], JLabel.CENTER);
@@ -613,7 +643,7 @@ public class NormalRoomDistributionDialog extends JDialog {
             rowContainer.add(selectPanel, BorderLayout.WEST);
 
             // 従来の列部分（スタッフ名〜換算合計）。既存リスナーはこのrowPanelを参照する
-            JPanel rowPanel = new JPanel(new GridLayout(1, 11));  // ★★★変更: 12→11列（本館S/T統合）
+            JPanel rowPanel = new JPanel(new GridLayout(1, 12));  // ★★変更: 除外階列の追加で11→12列
 
             // スタッフ名（★★追加: ドラッグで行の並べ替えが可能）
             JLabel nameLabel = new JLabel(staff.staffName, JLabel.CENTER);
@@ -724,6 +754,27 @@ public class NormalRoomDistributionDialog extends JDialog {
             });
             floorPanel.add(floorField);
             rowPanel.add(floorPanel);
+
+            // ★★追加: 除外階テキストフィールド（このスタッフに通常清掃を割り振らない階。ECOは可）
+            JPanel excludedFloorPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
+            excludedFloorPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.GRAY));
+            JTextField excludedFloorField = new JTextField(staff.getExcludedFloorsText(), 8);
+            excludedFloorField.setFont(new Font("MS Gothic", Font.PLAIN, 11));
+            excludedFloorField.setHorizontalAlignment(JTextField.CENTER);
+            excludedFloorField.setToolTipText("通常清掃を割り振らない階数をカンマ区切りで入力 (例: 2,3,5)。ECOは割り振られることがあります");
+            excludedFloorField.addFocusListener(new FocusAdapter() {
+                @Override
+                public void focusLost(FocusEvent e) {
+                    staff.setExcludedFloorsFromText(excludedFloorField.getText());
+                    excludedFloorField.setText(staff.getExcludedFloorsText());
+                }
+            });
+            excludedFloorField.addActionListener(e -> {
+                staff.setExcludedFloorsFromText(excludedFloorField.getText());
+                excludedFloorField.setText(staff.getExcludedFloorsText());
+            });
+            excludedFloorPanel.add(excludedFloorField);
+            rowPanel.add(excludedFloorPanel);
 
             // ★★★本館ツイン統合: 「本館」合計スピナー（シングル等＋ツインの合計を1列で扱う）
             //   内部的には mainSingleAssignedRooms に合計を集約し、mainTwinAssignedRooms は常に0とする。
@@ -963,6 +1014,10 @@ public class NormalRoomDistributionDialog extends JDialog {
         Set<Integer> tmpFloors = a.preferredFloors;
         a.preferredFloors = b.preferredFloors;
         b.preferredFloors = tmpFloors;
+        // ★★追加: 除外階の交換
+        Set<Integer> tmpExcluded = a.excludedFloors;
+        a.excludedFloors = b.excludedFloors;
+        b.excludedFloors = tmpExcluded;
         // リネン庫の交換
         boolean tmpLinen = a.isLinenClosetCleaning;
         a.isLinenClosetCleaning = b.isLinenClosetCleaning;
@@ -1177,6 +1232,98 @@ public class NormalRoomDistributionDialog extends JDialog {
         return set;
     }
 
+    /**
+     * ★★追加: 除外階（スタッフごとの「通常清掃を割り振らない階」。ECOは対象外）のバリデーション。
+     * ・指定階と重複 → エラー
+     * ・除外後に残る階の部屋数が、そのスタッフの割り振り数に足りない → エラー（解なしになるため）
+     * ・存在しない（売れていない）階 → 警告（割り振りには影響しない）
+     * ・手動割り当てで除外階に通常清掃が入っている → 警告（手動割り当てが優先される）
+     */
+    private void validateExcludedFloors(List<String> errors, List<String> warnings,
+                                        Set<Integer> availableAnnexFloorsActual) {
+        boolean floorsKnown = !availableMainFloors.isEmpty() || !availableAnnexFloors.isEmpty();
+        boolean manualUsed = manualLayout != null && !manualLayout.isEmpty();
+
+        for (StaffDistribution dist : currentPattern.values()) {
+            if (dist.excludedFloors == null || dist.excludedFloors.isEmpty()) continue;
+
+            // 指定階との重複
+            if (dist.preferredFloors != null) {
+                String both = dist.excludedFloors.stream()
+                        .filter(dist.preferredFloors::contains).sorted()
+                        .map(f -> f + "F").collect(Collectors.joining(","));
+                if (!both.isEmpty()) {
+                    errors.add(String.format("%s: %s が指定階と除外階の両方に入力されています",
+                            dist.staffName, both));
+                }
+            }
+
+            int mainRooms = dist.mainSingleAssignedRooms + dist.mainTwinAssignedRooms;
+
+            // 存在しない階（警告のみ）
+            if (floorsKnown) {
+                String unknown = dist.excludedFloors.stream()
+                        .filter(f -> !availableMainFloors.contains(f)
+                                && !availableAnnexFloorsActual.contains(f))
+                        .sorted().map(f -> f + "F").collect(Collectors.joining(","));
+                if (!unknown.isEmpty()) {
+                    warnings.add(String.format("%s: 除外階 %s は本日の清掃対象階にありません（影響なし）",
+                            dist.staffName, unknown));
+                }
+            }
+
+            // 除外後に残る部屋数のチェック（階別在庫がある場合のみ。手動割り当て時は手動が優先のため対象外）
+            if (!manualInventory.isEmpty() && !manualUsed) {
+                int mainLeft = 0, annexSingleLeft = 0, annexTwinLeft = 0;
+                for (ManualFloorAssignmentDialog.FloorInv fi : manualInventory.values()) {
+                    if (dist.excludedFloors.contains(fi.displayFloor)) continue;
+                    if (fi.isMain) {
+                        mainLeft += fi.singleAvail + fi.twinAvail;
+                    } else {
+                        annexSingleLeft += fi.singleAvail;
+                        annexTwinLeft += fi.twinAvail;
+                    }
+                }
+                String excludedText = dist.getExcludedFloorsText();
+                if (mainRooms > mainLeft) {
+                    errors.add(String.format(
+                            "%s: 除外階(%s)を除くと本館は%d室しかなく、割り振り%d室に足りません",
+                            dist.staffName, excludedText, mainLeft, mainRooms));
+                }
+                if (dist.annexSingleAssignedRooms > annexSingleLeft) {
+                    errors.add(String.format(
+                            "%s: 除外階(%s)を除くと別館シングル等は%d室しかなく、割り振り%d室に足りません",
+                            dist.staffName, excludedText, annexSingleLeft, dist.annexSingleAssignedRooms));
+                }
+                if (dist.annexTwinAssignedRooms > annexTwinLeft) {
+                    errors.add(String.format(
+                            "%s: 除外階(%s)を除くと別館ツインは%d室しかなく、割り振り%d室に足りません",
+                            dist.staffName, excludedText, annexTwinLeft, dist.annexTwinAssignedRooms));
+                }
+            }
+
+            // 手動割り当てとの矛盾（警告のみ・手動優先）
+            if (manualUsed) {
+                ManualFloorAssignmentDialog.StaffManual sm = manualLayout.get(dist.staffName);
+                if (sm != null) {
+                    Set<String> hit = new TreeSet<>();
+                    for (ManualFloorAssignmentDialog.FloorAssign fa : sm.rows) {
+                        int actual = (!fa.isMain && fa.floorKey > 20) ? fa.floorKey - 20 : fa.floorKey;
+                        if (dist.excludedFloors.contains(actual)
+                                && fa.singleCount + fa.twinCount > 0) {
+                            hit.add((fa.isMain ? "本館" : "別館") + actual + "F");
+                        }
+                    }
+                    if (!hit.isEmpty()) {
+                        warnings.add(String.format(
+                                "%s: 手動割り当てで除外階(%s)に通常清掃が割り当てられています（手動割り当てが優先されます）",
+                                dist.staffName, String.join(",", hit)));
+                    }
+                }
+            }
+        }
+    }
+
     /** ★★追加: 階別の手動割り当てダイアログを開く（「割り当て済み数」ウィンドウも同時に開く） */
     private void openManualAssignment() {
         ManualFloorAssignmentDialog mdlg = new ManualFloorAssignmentDialog(
@@ -1336,6 +1483,9 @@ public class NormalRoomDistributionDialog extends JDialog {
                 }
             }
         }
+
+        // ★★追加: 除外階のバリデーション
+        validateExcludedFloors(errors, warnings, availableAnnexFloorsActual);
 
         // ★★必須清掃: 必須部屋・フロアのバリデーション
         if (!requiredCleaningFloors.isEmpty() || !requiredCleaningRooms.isEmpty()) {
@@ -2660,6 +2810,9 @@ public class NormalRoomDistributionDialog extends JDialog {
         pattern.values().forEach(d -> {
                     String floorInfo = (d.preferredFloors != null && !d.preferredFloors.isEmpty())
                             ? " 指定階=" + d.getPreferredFloorsText() : "";
+                    if (d.excludedFloors != null && !d.excludedFloors.isEmpty()) {
+                        floorInfo += " 除外階=" + d.getExcludedFloorsText();
+                    }
                     String linenInfo = d.isLinenClosetCleaning
                             ? " リネン庫=" + d.linenClosetFloorCount + "階" : "";
                     System.out.println("  " + d.staffName + ": 本館(S" + d.mainSingleAssignedRooms +

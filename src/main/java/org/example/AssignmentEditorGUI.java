@@ -4015,6 +4015,14 @@ public class AssignmentEditorGUI extends JFrame {
                 System.err.println("インスペクション数式の修正に失敗しました: " + e.getMessage());
             }
 
+            // 指示書タブの清掃報告用タイプの数式を、別館の簡略表記（T・DT）にも対応させる
+            //   万一失敗しても、清掃指示書出力（担当ブロック＋保存）は必ず継続する
+            try {
+                fixReportTypeFormulas(workbook);
+            } catch (Exception e) {
+                System.err.println("清掃報告用タイプ数式の修正に失敗しました: " + e.getMessage());
+            }
+
             // 開いたときに清掃時間・集計などの数式を再計算させる
             workbook.setForceFormulaRecalculation(true);
 
@@ -4034,18 +4042,12 @@ public class AssignmentEditorGUI extends JFrame {
      *   ・書き込むのは各ブロックの6列（部屋番号・タイプ・連泊・エコ・デュベ・備考）
      *     ＋担当者名＋担当リネン庫のみ。清掃時間列（S/AA/AI/AQ/AY）は原本の
      *     数式に任せる（エコ欄に値が入るとエコ清掃時間、空欄ならタイプ別時間）。
-     *   ・タイプは正式表記（NS/ZS/ZT…）のまま書く。マスタの清掃時間検索が
-     *     正式タイプをキーにしているため、簡略表記にすると時間が引けなくなる
+     *   ・タイプは本館は正式表記（NS/ZS/ZT…）のまま、別館のみ簡略表記
+     *     （ANS→S / AND→D / ANT→T / ADT→DT）で書く。マスタの清掃時間検索は
+     *     正式タイプをキーにしているため、簡略表記にした行は清掃時間の数式を
+     *     正式タイプで検索する形に書き換える
      */
     private void writeInstructionCreationSheet(Sheet sheet) {
-        final int BAND_FIRST_ROW = 7;    // 0始まり: 1段目の見出し行（=8行目）
-        final int BAND_HEIGHT = 26;      // 段の高さ（行数）
-        final int BLOCK_FIRST_COL = 12;  // 0始まり: 1ブロック目の先頭列（=M列）
-        final int BLOCK_WIDTH = 8;       // ブロックの幅（列数）
-        final int BLOCKS_PER_BAND = 5;   // 1段あたりのブロック数
-        final int ROOMS_PER_BLOCK = 18;  // 1ブロックに書ける部屋数
-        final int TOTAL_BLOCKS = 50;     // 原本のブロック総数（10段×5）
-
         // 清掃実施日（C2）を対象日で更新
         java.time.LocalDate targetDate = java.time.LocalDate.now();
         if (processingResult.optimizationResult != null &&
@@ -4066,64 +4068,129 @@ public class AssignmentEditorGUI extends JFrame {
                     }
                 }
             }
-            normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
-            ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
-
-            // 通常（番号順）→ 1行空き → エコ（番号順）。18行に収まらない場合は空きなし
-            List<FileProcessor.Room> ordered = new ArrayList<>(normalRooms);
-            boolean withSeparator = !normalRooms.isEmpty() && !ecoRooms.isEmpty()
-                    && normalRooms.size() + ecoRooms.size() + 1 <= ROOMS_PER_BLOCK;
-            if (withSeparator) {
-                ordered.add(null);   // null = 空き行
-            }
-            ordered.addAll(ecoRooms);
-
-            // 18部屋を超えるスタッフは次のブロックへ「（続き）」として書く
-            int offset = 0;
-            boolean firstBlock = true;
-            while (firstBlock || offset < ordered.size()) {
-                if (blockIndex >= TOTAL_BLOCKS) {
-                    System.err.println("指示書作成シートのブロック数（50）を超えたため、"
-                            + staff.name + " 以降は書き込めませんでした。");
-                    return;
-                }
-                int bandTop = BAND_FIRST_ROW + (blockIndex / BLOCKS_PER_BAND) * BAND_HEIGHT;
-                int col = BLOCK_FIRST_COL + (blockIndex % BLOCKS_PER_BAND) * BLOCK_WIDTH;
-
-                // 担当者名（「清掃担当者：」ラベル右隣の結合セル左上。1段目なら N9 相当）
-                String label = firstBlock ? staff.name : staff.name + "（続き）";
-                getCellForWrite(sheet, bandTop + 1, col + 1).setCellValue(label);
-
-                // 担当リネン庫（フッターのラベル右隣。1段目ブロック1なら S30 相当）
-                if (firstBlock) {
-                    String linen = formatLinenFloors(staff);
-                    if (!linen.isEmpty()) {
-                        getCellForWrite(sheet, bandTop + 22, col + 6).setCellValue(linen);
-                        // ドンディス確認拭き上げ補充担当（1段目ブロック1なら N28 相当）
-                        //   リネン庫担当と同じ内容を記入する
-                        getCellForWrite(sheet, bandTop + 20, col + 1).setCellValue(linen);
-                    }
-
-                    // 大浴場清掃ラベルの右隣（1段目ブロック1なら N29 相当）
-                    //   大浴場担当スタッフに限り、他の大浴場担当スタッフの担当フロア一覧を記入する
-                    String bathNote = formatOtherStaffFloorsForBath(staff);
-                    if (!bathNote.isEmpty()) {
-                        getCellForWrite(sheet, bandTop + 21, col + 1).setCellValue(bathNote);
-                    }
-                }
-
-                // 部屋行（見出し行+2 から18行分）
-                int wrote = 0;
-                while (offset < ordered.size() && wrote < ROOMS_PER_BLOCK) {
-                    writeInstructionRoomRow(sheet, bandTop + 2 + wrote, col, ordered.get(offset));
-                    offset++;
-                    wrote++;
-                }
-
-                blockIndex++;
-                firstBlock = false;
+            blockIndex = writeInstructionBlocks(sheet, blockIndex, staff.name, staff,
+                    normalRooms, ecoRooms);
+            if (blockIndex < 0) {
+                return;
             }
         }
+
+        // 残し部屋ブロック（全スタッフの後）。担当者名は「残し部屋（本館）」「残し部屋（別館）」。
+        // 対象: 残し部屋設定(excludedRooms) + 未割り当て発(unassignedExcludedRooms)
+        //       （メイン画面で事前設定した残し部屋も unassignedExcludedRooms に含まれる）
+        Set<String> allExcludedRoomNumbers = new HashSet<>(excludedRooms);
+        allExcludedRoomNumbers.addAll(unassignedExcludedRooms);
+        if (!allExcludedRoomNumbers.isEmpty() && processingResult.cleaningDataObj != null) {
+            // 事前設定の残し部屋は roomsToClean に含まれないため、検索対象に追加する
+            List<FileProcessor.Room> searchPool =
+                    new ArrayList<>(processingResult.cleaningDataObj.roomsToClean);
+            if (processingResult.cleaningDataObj.preExcludedRooms != null) {
+                searchPool.addAll(processingResult.cleaningDataObj.preExcludedRooms);
+            }
+            // 建物ごとにブロックを分ける（本館 → 別館の順。部屋が無い建物はブロックを作らない）
+            Set<String> added = new HashSet<>();
+            for (String building : new String[]{"本館", "別館"}) {
+                List<FileProcessor.Room> normalRooms = new ArrayList<>();
+                List<FileProcessor.Room> ecoRooms = new ArrayList<>();
+                for (FileProcessor.Room room : searchPool) {
+                    boolean isAnnex = "別館".equals(room.building);
+                    if (isAnnex != "別館".equals(building)) {
+                        continue;
+                    }
+                    if (allExcludedRoomNumbers.contains(room.roomNumber) && added.add(room.roomNumber)) {
+                        (room.isEcoClean ? ecoRooms : normalRooms).add(room);
+                    }
+                }
+                if (!normalRooms.isEmpty() || !ecoRooms.isEmpty()) {
+                    blockIndex = writeInstructionBlocks(sheet, blockIndex,
+                            "残し部屋（" + building + "）", null, normalRooms, ecoRooms);
+                    if (blockIndex < 0) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * ★新規: 指示書作成シートへ1担当分（スタッフ1人、または残し部屋）のブロックを書き込む。
+     * 通常（番号順）→ 1行空き → エコ（番号順）の順に並べ、18部屋を超える場合は
+     * 次のブロックへ「（続き）」として書く。
+     *
+     * @param blockIndex 書き込み開始ブロック（0始まり）
+     * @param name       担当者名欄に書く名前
+     * @param staff      リネン庫・大浴場欄の記入に使うスタッフ。残し部屋ブロックは null（記入しない）
+     * @return 次に使うブロック番号。ブロック数（50）を超えて書き込めなかった場合は -1
+     */
+    private int writeInstructionBlocks(Sheet sheet, int blockIndex, String name, StaffData staff,
+                                       List<FileProcessor.Room> normalRooms,
+                                       List<FileProcessor.Room> ecoRooms) {
+        final int BAND_FIRST_ROW = 7;    // 0始まり: 1段目の見出し行（=8行目）
+        final int BAND_HEIGHT = 26;      // 段の高さ（行数）
+        final int BLOCK_FIRST_COL = 12;  // 0始まり: 1ブロック目の先頭列（=M列）
+        final int BLOCK_WIDTH = 8;       // ブロックの幅（列数）
+        final int BLOCKS_PER_BAND = 5;   // 1段あたりのブロック数
+        final int ROOMS_PER_BLOCK = 18;  // 1ブロックに書ける部屋数
+        final int TOTAL_BLOCKS = 50;     // 原本のブロック総数（10段×5）
+
+        normalRooms.sort(Comparator.comparing(r -> r.roomNumber));
+        ecoRooms.sort(Comparator.comparing(r -> r.roomNumber));
+
+        // 通常（番号順）→ 1行空き → エコ（番号順）。18行に収まらない場合は空きなし
+        List<FileProcessor.Room> ordered = new ArrayList<>(normalRooms);
+        boolean withSeparator = !normalRooms.isEmpty() && !ecoRooms.isEmpty()
+                && normalRooms.size() + ecoRooms.size() + 1 <= ROOMS_PER_BLOCK;
+        if (withSeparator) {
+            ordered.add(null);   // null = 空き行
+        }
+        ordered.addAll(ecoRooms);
+
+        // 18部屋を超える場合は次のブロックへ「（続き）」として書く
+        int offset = 0;
+        boolean firstBlock = true;
+        while (firstBlock || offset < ordered.size()) {
+            if (blockIndex >= TOTAL_BLOCKS) {
+                System.err.println("指示書作成シートのブロック数（50）を超えたため、"
+                        + name + " 以降は書き込めませんでした。");
+                return -1;
+            }
+            int bandTop = BAND_FIRST_ROW + (blockIndex / BLOCKS_PER_BAND) * BAND_HEIGHT;
+            int col = BLOCK_FIRST_COL + (blockIndex % BLOCKS_PER_BAND) * BLOCK_WIDTH;
+
+            // 担当者名（「清掃担当者：」ラベル右隣の結合セル左上。1段目なら N9 相当）
+            String label = firstBlock ? name : name + "（続き）";
+            getCellForWrite(sheet, bandTop + 1, col + 1).setCellValue(label);
+
+            // 担当リネン庫（フッターのラベル右隣。1段目ブロック1なら S30 相当）
+            if (firstBlock && staff != null) {
+                String linen = formatLinenFloors(staff);
+                if (!linen.isEmpty()) {
+                    getCellForWrite(sheet, bandTop + 22, col + 6).setCellValue(linen);
+                    // ドンディス確認拭き上げ補充担当（1段目ブロック1なら N28 相当）
+                    //   リネン庫担当と同じ内容を記入する
+                    getCellForWrite(sheet, bandTop + 20, col + 1).setCellValue(linen);
+                }
+
+                // 大浴場清掃ラベルの右隣（1段目ブロック1なら N29 相当）
+                //   大浴場担当スタッフに限り、他の大浴場担当スタッフの担当フロア一覧を記入する
+                String bathNote = formatOtherStaffFloorsForBath(staff);
+                if (!bathNote.isEmpty()) {
+                    getCellForWrite(sheet, bandTop + 21, col + 1).setCellValue(bathNote);
+                }
+            }
+
+            // 部屋行（見出し行+2 から18行分）
+            int wrote = 0;
+            while (offset < ordered.size() && wrote < ROOMS_PER_BLOCK) {
+                writeInstructionRoomRow(sheet, bandTop + 2 + wrote, col, ordered.get(offset));
+                offset++;
+                wrote++;
+            }
+
+            blockIndex++;
+            firstBlock = false;
+        }
+        return blockIndex;
     }
 
     /**
@@ -4153,7 +4220,20 @@ public class AssignmentEditorGUI extends JFrame {
         String typeText = (room.rawRoomType != null && !room.rawRoomType.isEmpty())
                 ? room.rawRoomType : room.roomType;
         if (typeText != null && !typeText.isEmpty()) {
-            getCellForWrite(sheet, row, col + 1).setCellValue(typeText);
+            // 別館は指示書上の表記を簡略化する（ANS→S / AND→D / ANT→T / ADT→DT。ABFはそのまま）
+            String displayType = toInstructionDisplayType(typeText);
+            getCellForWrite(sheet, row, col + 1).setCellValue(displayType);
+
+            // 表記を変えた部屋は、清掃時間の数式（ブロック7列目）が表示タイプではなく
+            // 正式タイプでマスタを検索するように書き換える。
+            // （T・DT はマスタの「部屋タイプ表示」に無く、S・D は本館の行に当たってしまうため）
+            if (!displayType.equals(typeText)) {
+                String ecoRef = org.apache.poi.ss.util.CellReference.convertNumToColString(col + 3)
+                        + (row + 1);
+                getCellForWrite(sheet, row, col + 6).setCellFormula(
+                        "IF(" + ecoRef + "<>\"\",マスタ!$H$8,IFERROR(VLOOKUP(\""
+                                + typeText + "\",マスタ!$D$8:$E$87,2,FALSE),\"\"))");
+            }
         }
 
         boolean isStay = "3".equals(room.roomStatus);
@@ -4214,6 +4294,42 @@ public class AssignmentEditorGUI extends JFrame {
             String formula = "IF(L" + (r + 1) + "=\"エコ\",\"×\",\"\")";
             getCellForWrite(sheet, r, 30).setCellFormula(formula);
             getCellForWrite(sheet, r, 32).setCellFormula(formula);
+        }
+    }
+
+    /**
+     * ★新規: 清掃指示書に書く部屋タイプ表記へ変換する。
+     * 別館（グランドアネックス）の正式タイプを簡略表記にする。
+     *   ANS→S / AND→D / ANT→T / ADT→DT（ABF・本館のタイプはそのまま）
+     */
+    private static String toInstructionDisplayType(String rawType) {
+        switch (rawType) {
+            case "ANS": return "S";
+            case "AND": return "D";
+            case "ANT": return "T";
+            case "ADT": return "DT";
+            default:    return rawType;
+        }
+    }
+
+    /**
+     * ★新規: 指示書タブの清掃報告用タイプ（AJ列）の数式を、マスタに無い表示タイプでも
+     * 集計できるように修正する。
+     * 原本の数式はタイプ（F列）をマスタの「部屋タイプ表示」から検索して清掃報告用タイプに
+     * 変換するが、別館の簡略表記（T・DT）はマスタに無く空欄になり、指示書上部の
+     * タイプ別清掃数から漏れてしまう。マスタに無い場合は表示タイプ自体を使う。
+     */
+    private void fixReportTypeFormulas(XSSFWorkbook workbook) {
+        Sheet sheet = workbook.getSheet("指示書");
+        if (sheet == null) {
+            return;
+        }
+        // 部屋行は9〜26行目（0始まり8〜25）。AJ=0始まり35列
+        for (int r = 8; r <= 25; r++) {
+            String f = "指示書!F" + (r + 1);
+            getCellForWrite(sheet, r, 35).setCellFormula(
+                    "IFERROR(INDEX(マスタ!$D$8:$F$87,MATCH(" + f
+                            + ",マスタ!$D$8:$D$87,0),3),T(" + f + "))");
         }
     }
 

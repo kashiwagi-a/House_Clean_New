@@ -66,16 +66,44 @@ public class BrokenRoomSelectionDialog extends JDialog {
      * コンストラクタ
      */
     public BrokenRoomSelectionDialog(JFrame parent, File roomDataFile) {
+        this(parent, roomDataFile, Collections.emptySet());
+    }
+
+    /**
+     * コンストラクタ（前回の選択状態を復元する）
+     *
+     * @param previouslySelected 前回清掃対象に選択した部屋番号（再オープン時にチェック済みで表示する）
+     */
+    public BrokenRoomSelectionDialog(JFrame parent, File roomDataFile, Set<String> previouslySelected) {
         super(parent, "故障部屋・ウォークイン清掃設定", true);
         this.brokenRoomData = new HashMap<>();
         this.selectedForCleaning = new HashSet<>();
 
         // 故障部屋・ウォークインデータを読み込み
         loadBrokenRoomData(roomDataFile);
+        restorePreviousSettings(previouslySelected);
 
         initializeGUI();
         setSize(680, 430);
         setLocationRelativeTo(parent);
+        updateSelectionCount();
+    }
+
+    /**
+     * 前回の選択状態を復元する（CSVに存在しない部屋は無視）
+     */
+    private void restorePreviousSettings(Set<String> previouslySelected) {
+        if (previouslySelected == null || previouslySelected.isEmpty()) return;
+
+        for (String roomNumber : previouslySelected) {
+            BrokenRoomInfo info = brokenRoomData.get(roomNumber);
+            if (info != null) {
+                info.selectedForCleaning = true;
+                selectedForCleaning.add(roomNumber);
+            }
+        }
+
+        LOGGER.info("前回の故障部屋・ウォークイン設定を復元: " + selectedForCleaning.size() + "室");
     }
 
     /**
@@ -223,7 +251,7 @@ public class BrokenRoomSelectionDialog extends JDialog {
 
         for (BrokenRoomInfo roomInfo : sortedRooms) {
             Object[] row = {
-                    false, // 初期状態は未選択
+                    roomInfo.selectedForCleaning, // 前回選択した部屋はチェック済みで表示
                     roomInfo.roomNumber,
                     roomInfo.roomType,
                     roomInfo.floor + "階",

@@ -43,6 +43,7 @@ public class RoomAssignmentApplication extends JFrame {
     private File selectedRoomFile;
     // ★CSV共有: 部屋データがエコDBに保存された部屋状態CSVから読み込まれたものか
     private boolean roomFileFromEcoDatabase = false;
+    private static final String ROOM_FILE_BUTTON_DEFAULT_TEXT = "エコ管理で読み込むと自動で入ります（手動で選ぶ場合はクリック）";
     private File selectedShiftFile;
     private File selectedEcoDataFile;
     private LocalDate selectedDate;
@@ -283,7 +284,7 @@ public class RoomAssignmentApplication extends JFrame {
         selectedEcoDataFile = dbFile;
         selectEcoDataButton.setText(dbFile.getName());
         appendLog("エコ清掃データベースを自動選択しました: " + dbFile.getAbsolutePath());
-        loadRoomFileFromEcoDatabase();
+        loadRoomFileFromEcoDatabase(false, false);
         updateButtonStates();
     }
 
@@ -295,42 +296,46 @@ public class RoomAssignmentApplication extends JFrame {
         gbc.insets = new Insets(5, 5, 5, 5);
         gbc.anchor = GridBagConstraints.WEST;
 
+        // ★エコ管理起動: 毎回最初に行う操作なので最上段に置く。
+        // EcoRoomClean を開き、閉じたらそこで読み込んだ部屋状態CSVを部屋データとして使う
         gbc.gridx = 0; gbc.gridy = 0;
-        panel.add(new JLabel("部屋データファイル:"), gbc);
+        panel.add(new JLabel("エコ管理:"), gbc);
 
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
-        selectRoomFileButton = new JButton("CSVファイルを選択...");
+        openEcoAppButton = new JButton("エコ管理を開く");
+        openEcoAppButton.setFont(openEcoAppButton.getFont().deriveFont(Font.BOLD));
+        openEcoAppButton.setToolTipText("エコ管理（EcoRoomClean）を起動します。閉じると、そこで読み込んだCSVを部屋データとして使用します");
+        openEcoAppButton.addActionListener(e -> openEcoApp());
+        panel.add(openEcoAppButton, gbc);
+
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        selectEcoDataButton = new JButton("データベースを選択...");
+        selectEcoDataButton.setToolTipText("エコ管理が使う hotel_cleaning.db です。通常は自動で選択されます");
+        selectEcoDataButton.addActionListener(e -> selectEcoDatabase());
+        panel.add(selectEcoDataButton, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        panel.add(new JLabel("部屋データファイル:"), gbc);
+
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
+        selectRoomFileButton = new JButton(ROOM_FILE_BUTTON_DEFAULT_TEXT);
+        selectRoomFileButton.setToolTipText("通常はエコ管理で読み込んだCSVが自動で入ります。別のCSVを使う場合だけ、ここから選択してください");
         selectRoomFileButton.addActionListener(this::selectRoomFile);
         panel.add(selectRoomFileButton, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 1; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         panel.add(new JLabel("シフトファイル:"), gbc);
 
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
         selectShiftFileButton = new JButton("Excelファイルを選択...");
         selectShiftFileButton.addActionListener(this::selectShiftFile);
         panel.add(selectShiftFileButton, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        panel.add(new JLabel("エコデータ(オプション):"), gbc);
-
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
-        selectEcoDataButton = new JButton("データベースを選択...");
-        selectEcoDataButton.setToolTipText("EcoRoomClean.pyで作成されたhotel_cleaning.dbデータベースを選択してください");
-        selectEcoDataButton.addActionListener(e -> selectEcoDatabase());
-        panel.add(selectEcoDataButton, gbc);
-
-        // ★エコ管理起動: EcoRoomClean を開き、閉じたらエコDBの部屋状態CSVを読み直す
-        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        openEcoAppButton = new JButton("エコ管理を開く");
-        openEcoAppButton.setToolTipText("エコ管理（EcoRoomClean）を起動します。閉じるとCSVの内容を自動で読み込みます");
-        openEcoAppButton.addActionListener(e -> openEcoApp());
-        panel.add(openEcoAppButton, gbc);
-
+        gbc.gridwidth = 1;
         gbc.gridx = 0; gbc.gridy = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         panel.add(new JLabel("対象日:"), gbc);
 
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
         selectDateButton = new JButton("日付を選択...");
         selectDateButton.addActionListener(this::selectDate);
         panel.add(selectDateButton, gbc);
@@ -411,7 +416,9 @@ public class RoomAssignmentApplication extends JFrame {
         }
 
         try {
-            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(this, selectedRoomFile);
+            // 前回の選択を引き継ぎ、再オープン時に設定済みの部屋をチェック済みで表示する
+            BrokenRoomSelectionDialog dialog = new BrokenRoomSelectionDialog(
+                    this, selectedRoomFile, selectedBrokenRoomsForCleaning);
             dialog.setVisible(true);
 
             if (dialog.getDialogResult()) {
@@ -421,14 +428,17 @@ public class RoomAssignmentApplication extends JFrame {
                 appendLog("  清掃対象に追加する故障部屋・ウォークイン: " + selectedBrokenRoomsForCleaning.size() + "室");
 
                 if (!selectedBrokenRoomsForCleaning.isEmpty()) {
-                    for (String roomNumber : selectedBrokenRoomsForCleaning) {
+                    for (String roomNumber : new TreeSet<>(selectedBrokenRoomsForCleaning)) {
                         appendLog("    " + roomNumber);
                     }
+                    brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
+                    brokenRoomSettingsButton.setForeground(Color.BLACK);
+                } else {
+                    // 全て解除して設定完了した場合は未設定の表示に戻す
+                    brokenRoomSettingsButton.setBackground(new Color(255, 140, 0));
+                    brokenRoomSettingsButton.setForeground(Color.BLACK);
+                    brokenRoomSettingsButton.setText("故障部屋・ウォークイン");
                 }
-
-                brokenRoomSettingsButton.setBackground(new Color(34, 139, 34));
-                brokenRoomSettingsButton.setForeground(Color.BLACK);
-                brokenRoomSettingsButton.setText("故障部屋・ウォークイン設定済み");
             }
 
         } catch (Exception ex) {
@@ -466,7 +476,6 @@ public class RoomAssignmentApplication extends JFrame {
                     }
                     excludedRoomSettingsButton.setBackground(new Color(34, 139, 34));
                     excludedRoomSettingsButton.setForeground(Color.BLACK);
-                    excludedRoomSettingsButton.setText("残し部屋設定済み");
                 } else {
                     excludedRoomSettingsButton.setBackground(new Color(255, 200, 100));
                     excludedRoomSettingsButton.setForeground(Color.BLACK);
@@ -612,7 +621,7 @@ public class RoomAssignmentApplication extends JFrame {
             // ★フォルダー自動検出: 選択したファイルの親フォルダーを記憶
             rememberDataFolder(selectedEcoDataFile);
 
-            loadRoomFileFromEcoDatabase();
+            loadRoomFileFromEcoDatabase(false, false);
             updateButtonStates();
         }
     }
@@ -648,6 +657,10 @@ public class RoomAssignmentApplication extends JFrame {
         }
         command.add(appFile.getAbsolutePath());
 
+        // 起動前の部屋状態CSVの状態を控えておき、終了後に「今回読み込まれたか」を判定する
+        File ecoDbFile = new File(appFile.getParentFile(), "hotel_cleaning.db");
+        String roomStatusStampBefore = readRoomStatusStamp(ecoDbFile);
+
         Process process;
         try {
             process = new ProcessBuilder(command).directory(appFile.getParentFile()).start();
@@ -666,7 +679,6 @@ public class RoomAssignmentApplication extends JFrame {
         openEcoAppButton.setEnabled(false);
         openEcoAppButton.setText("エコ管理を実行中...");
 
-        File ecoDbFile = new File(appFile.getParentFile(), "hotel_cleaning.db");
         process.onExit().thenRun(() -> SwingUtilities.invokeLater(() -> {
             openEcoAppButton.setEnabled(true);
             openEcoAppButton.setText("エコ管理を開く");
@@ -678,7 +690,10 @@ public class RoomAssignmentApplication extends JFrame {
             selectedEcoDataFile = ecoDbFile;
             selectEcoDataButton.setText(ecoDbFile.getName());
             appendLog("エコ清掃データベースを選択しました: " + ecoDbFile.getAbsolutePath());
-            loadRoomFileFromEcoDatabase();
+            // 今回のエコ管理でCSVが読み込まれていれば、それを正とする（手動で選んだCSVがあっても置き換える）。
+            // 読み込まれていなければ前回のCSVのままなので、古い日付のものは引き継がない
+            boolean importedThisTime = !Objects.equals(roomStatusStampBefore, readRoomStatusStamp(ecoDbFile));
+            loadRoomFileFromEcoDatabase(true, importedThisTime);
             updateButtonStates();
         }));
     }
@@ -707,11 +722,43 @@ public class RoomAssignmentApplication extends JFrame {
     }
 
     /**
-     * ★CSV共有: エコDBに保存された部屋状態CSV（EcoRoomClean.pyで読み込んだもの）を部屋データとして使う。
-     * 手動で選択したCSVがある場合は上書きしない。CSVの日付は対象日が未設定なら対象日にする。
+     * ★CSV共有: エコDBに保存されている部屋状態CSVの識別文字列（ファイル名・日付・読込日時）を返す。
+     * エコ管理の起動前後で比べ、今回CSVが読み込まれたかを判定するために使う。保存されていなければ null。
      */
-    private void loadRoomFileFromEcoDatabase() {
-        if (selectedEcoDataFile == null || (selectedRoomFile != null && !roomFileFromEcoDatabase)) {
+    private String readRoomStatusStamp(File dbFile) {
+        if (dbFile == null || !dbFile.exists()) {
+            return null;
+        }
+        try {
+            SharedCsvStore.SharedCsv roomStatus = SharedCsvStore.load(dbFile).get(SharedCsvStore.KIND_ROOM_STATUS);
+            if (roomStatus == null) {
+                return null;
+            }
+            return roomStatus.fileName + "|" + roomStatus.csvDate + "|" + roomStatus.importedAt
+                    + "|" + roomStatus.content.hashCode();
+        } catch (Exception ex) {
+            LOGGER.warning("共有CSVの確認に失敗しました: " + ex.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * ★CSV共有: エコDBに保存された部屋状態CSV（EcoRoomClean.pyで読み込んだもの）を部屋データとして使う。
+     * 対象日（清掃日）はCSVの日付の翌日に合わせる。
+     *
+     * 前回のCSVを引き継がないよう、今回読み込まれたものでなければ、清掃日が今日以降のCSVだけを使う。
+     *
+     * @param replaceManualFile true なら手動で選択したCSVがあっても置き換える（エコ管理を閉じた直後）。
+     *                          false なら手動で選択したCSVを残す（起動時・データベース選択時）。
+     * @param importedThisTime  true なら今回のエコ管理で読み込まれたCSVなので、日付が古くても使う。
+     */
+    private void loadRoomFileFromEcoDatabase(boolean replaceManualFile, boolean importedThisTime) {
+        if (selectedEcoDataFile == null) {
+            return;
+        }
+        boolean manualFileSelected = selectedRoomFile != null && !roomFileFromEcoDatabase;
+        if (manualFileSelected && !replaceManualFile) {
+            appendLog("手動で選択した部屋データファイルを引き続き使用します（エコDBの部屋状態CSVは使用しません）。");
             return;
         }
 
@@ -730,6 +777,17 @@ public class RoomAssignmentApplication extends JFrame {
             return;
         }
 
+        // 前回のCSVは引き継がない: 清掃日（CSVの日付の翌日）が過ぎたもの・日付不明のものは使わない
+        if (!importedThisTime
+                && (roomStatus.csvDate == null || roomStatus.csvDate.plusDays(1).isBefore(LocalDate.now()))) {
+            String dateText = roomStatus.csvDate == null ? "日付不明"
+                    : roomStatus.csvDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"));
+            appendLog("エコDBの部屋状態CSVは前回のものなので使用しません: " + roomStatus.fileName
+                    + "（CSVの日付: " + dateText + "）");
+            appendLog("  「エコ管理を開く」で今回のCSVを読み込むか、部屋データファイルを手動で選択してください。");
+            return;
+        }
+
         File tempFile;
         try {
             tempFile = SharedCsvStore.writeTempFile(roomStatus);
@@ -739,7 +797,10 @@ public class RoomAssignmentApplication extends JFrame {
             return;
         }
 
-        applyRoomFile(tempFile, "エコDBから: " + roomStatus.fileName, true);
+        applyRoomFile(tempFile, "エコ管理から: " + roomStatus.fileName, true);
+        if (manualFileSelected) {
+            appendLog("手動で選択した部屋データファイルを、エコ管理で読み込んだCSVに置き換えました。");
+        }
         appendLog("エコDBの部屋状態CSVを使用します: " + roomStatus.fileName
                 + "（エコ側の読込日時: " + roomStatus.importedAt + "）");
         if (sharedCsvs.containsKey(SharedCsvStore.KIND_YOYAKU)) {
@@ -749,17 +810,18 @@ public class RoomAssignmentApplication extends JFrame {
             appendLog("  予約詳細CSVも共有されています: " + sharedCsvs.get(SharedCsvStore.KIND_YOYAKU_CO).fileName);
         }
 
+        // 清掃日は部屋状態CSVの日付（1行目1列目）の翌日。対象日をそれに合わせる
         if (roomStatus.csvDate != null) {
-            if (selectedDate == null) {
-                applySelectedDate(roomStatus.csvDate);
-            } else if (!selectedDate.equals(roomStatus.csvDate)) {
-                String message = "エコDBの部屋状態CSVの日付（"
-                        + roomStatus.csvDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"))
-                        + "）が対象日（"
-                        + selectedDate.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"))
-                        + "）と異なります。\nエコ側で当日のCSVを読み込んだか確認してください。";
-                appendLog("警告: " + message.replace("\n", " "));
-                JOptionPane.showMessageDialog(this, message, "日付の確認", JOptionPane.WARNING_MESSAGE);
+            DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("yyyy年MM月dd日");
+            LocalDate cleaningDate = roomStatus.csvDate.plusDays(1);
+            LocalDate previousDate = selectedDate;
+            if (!cleaningDate.equals(previousDate)) {
+                applySelectedDate(cleaningDate);
+            }
+            appendLog("  対象日（清掃日）: " + cleaningDate.format(dateFormat)
+                    + "（CSVの日付 " + roomStatus.csvDate.format(dateFormat) + " の翌日）");
+            if (previousDate != null && !cleaningDate.equals(previousDate)) {
+                appendLog("  ※対象日を " + previousDate.format(dateFormat) + " から変更しました。");
             }
         }
     }
@@ -823,7 +885,6 @@ public class RoomAssignmentApplication extends JFrame {
                 if (changedCount > 0) {
                     pendingRoomSettingsButton.setBackground(new Color(34, 139, 34));
                     pendingRoomSettingsButton.setForeground(Color.BLACK);
-                    pendingRoomSettingsButton.setText("未チェックイン設定済み");
                 } else {
                     pendingRoomSettingsButton.setBackground(new Color(255, 140, 0));
                     pendingRoomSettingsButton.setForeground(Color.BLACK);
@@ -865,7 +926,6 @@ public class RoomAssignmentApplication extends JFrame {
                 if (!lateOutSettings.isEmpty()) {
                     lateOutSettingsButton.setBackground(new Color(34, 139, 34));
                     lateOutSettingsButton.setForeground(Color.BLACK);
-                    lateOutSettingsButton.setText("レイトアウト設定済み");
                 } else {
                     lateOutSettingsButton.setBackground(new Color(147, 112, 219));
                     lateOutSettingsButton.setForeground(Color.BLACK);
@@ -1135,6 +1195,9 @@ public class RoomAssignmentApplication extends JFrame {
             roomDistribution.values().forEach(dist -> {
                 String floorInfo = (dist.preferredFloors != null && !dist.preferredFloors.isEmpty())
                         ? " [指定階: " + dist.getPreferredFloorsText() + "]" : "";
+                if (dist.excludedFloors != null && !dist.excludedFloors.isEmpty()) {
+                    floorInfo += " [除外階: " + dist.getExcludedFloorsText() + "]";
+                }
                 String linenInfo = dist.isLinenClosetCleaning
                         ? String.format(" [リネン庫: %d階分]", dist.linenClosetFloorCount) : "";
                 appendLog(String.format("  %s: %d部屋 (%s)%s%s",

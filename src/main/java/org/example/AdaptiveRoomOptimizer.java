@@ -816,11 +816,18 @@ public class AdaptiveRoomOptimizer {
         Arrays.fill(slotMatch, -1);
         Arrays.fill(floorMatch, -1);
 
+        // ★通常清掃優先: 通常清掃（シングル等・ツイン）を持つ階をリネン庫階として優先する。
+        //   ECOのみの担当階は、通常清掃のある階だけでは全員分を確保できない場合に限り使う。
+        //   コスト = ECOのみ階なら ECO_ONLY_LINEN_COST、通常清掃あり階なら0（＋階の並び順で決定性を確保）
+        int[][] slotCost = new int[numSlots][numFloors];
         for (int s = 0; s < numSlots; s++) {
-            // 各スロットについて増加パスを探索
-            boolean[] visited = new boolean[numFloors];
-            augment(s, slotToFloorIndices, slotMatch, floorMatch, visited);
+            StaffAssignment slotStaff = linenStaff.get(slots.get(s)[0]);
+            for (int fi : slotToFloorIndices.get(s)) {
+                slotCost[s][fi] = (hasNormalCleaningOnFloor(slotStaff, allFloors.get(fi))
+                        ? 0 : ECO_ONLY_LINEN_COST) + fi;
+            }
         }
+        minCostMatch(slotToFloorIndices, slotCost, slotMatch, floorMatch);
 
         // マッチング結果を各スタッフに反映
         // まずスタッフごとに割り当てられたフロアを集める
@@ -940,31 +947,99 @@ public class AdaptiveRoomOptimizer {
                 LOGGER.warning(String.format("  警告: %s のリネン庫フロアが不足しています（要求: %d、割当: %d）",
                         staff.staff.name, needed, assigned.size()));
             }
+
+            // ★通常清掃優先: やむを得ずECOのみの担当階がリネン庫階になった場合はログに残す
+            for (int f : assigned) {
+                if (staff.roomsByFloor.containsKey(f) && !hasNormalCleaningOnFloor(staff, f)) {
+                    LOGGER.info(String.format("  %s: %s はECOのみの担当階です（通常清掃のある階では確保できず）",
+                            staff.staff.name, formatFloorListForDisplay(Collections.singletonList(f))));
+                }
+            }
         }
 
         LOGGER.info("=== リネン庫担当フロア割り当て完了 ===");
     }
 
-    /**
-     * 二部マッチングの増加パス探索（DFS）
-     * スロットsから未マッチのフロアへの増加パスを見つけ、マッチングを更新する
-     *
-     * @return 増加パスが見つかった場合true
-     */
-    private static boolean augment(int slot, List<List<Integer>> slotToFloorIndices,
-                                   int[] slotMatch, int[] floorMatch, boolean[] visited) {
-        for (int floorIdx : slotToFloorIndices.get(slot)) {
-            if (visited[floorIdx]) continue;
-            visited[floorIdx] = true;
+    /** ★通常清掃優先: ECOのみの担当階をリネン庫階に選ぶ際のコスト（階の並び順による微小コストより十分大きい値） */
+    private static final int ECO_ONLY_LINEN_COST = 1000;
 
-            // このフロアが未マッチ、または既マッチ先スロットから別の増加パスが見つかる場合
-            if (floorMatch[floorIdx] < 0 || augment(floorMatch[floorIdx], slotToFloorIndices, slotMatch, floorMatch, visited)) {
-                slotMatch[slot] = floorIdx;
-                floorMatch[floorIdx] = slot;
-                return true;
+    /** ★通常清掃優先: スタッフがその階で通常清掃（シングル等・ツイン）を1室以上担当しているか */
+    private static boolean hasNormalCleaningOnFloor(StaffAssignment staff, int floor) {
+        RoomAllocation alloc = staff.getAllocation(floor);
+        return alloc != null && alloc.getTotalRooms() - alloc.ecoRooms > 0;
+    }
+
+    /**
+     * 二部マッチング（最大マッチングのうちコスト合計が最小のもの）
+     * 最短増加パス法（Bellman-Ford）で、スロット→フロアの割り当てを1件ずつ増やす。
+     * マッチ数の最大化が最優先で、その中でコスト（ECOのみ階の使用数）が最小になる。
+     *
+     * @param slotToFloorIndices 各スロットが接続可能なフロアインデックス
+     * @param cost               cost[slot][floorIdx]（接続可能な組のみ参照）
+     * @param slotMatch          出力: スロット → フロアインデックス（-1 = 未マッチ）
+     * @param floorMatch         出力: フロアインデックス → スロット（-1 = 未マッチ）
+     */
+    private static void minCostMatch(List<List<Integer>> slotToFloorIndices, int[][] cost,
+                                     int[] slotMatch, int[] floorMatch) {
+        final int numSlots = slotMatch.length;
+        final int numFloors = floorMatch.length;
+        final long inf = Long.MAX_VALUE / 4;
+
+        while (true) {
+            long[] distSlot = new long[numSlots];
+            long[] distFloor = new long[numFloors];
+            int[] prevSlotOfFloor = new int[numFloors];
+            Arrays.fill(distSlot, inf);
+            Arrays.fill(distFloor, inf);
+            Arrays.fill(prevSlotOfFloor, -1);
+            for (int s = 0; s < numSlots; s++) {
+                if (slotMatch[s] < 0) distSlot[s] = 0;
+            }
+
+            boolean changed = true;
+            for (int iter = 0; changed && iter <= numSlots + numFloors; iter++) {
+                changed = false;
+                for (int s = 0; s < numSlots; s++) {
+                    if (distSlot[s] >= inf) continue;
+                    for (int f : slotToFloorIndices.get(s)) {
+                        if (slotMatch[s] == f) continue;
+                        long nd = distSlot[s] + cost[s][f];
+                        if (nd < distFloor[f]) {
+                            distFloor[f] = nd;
+                            prevSlotOfFloor[f] = s;
+                            changed = true;
+                        }
+                    }
+                }
+                for (int f = 0; f < numFloors; f++) {
+                    if (distFloor[f] >= inf || floorMatch[f] < 0) continue;
+                    int s2 = floorMatch[f];
+                    long nd = distFloor[f] - cost[s2][f];
+                    if (nd < distSlot[s2]) {
+                        distSlot[s2] = nd;
+                        changed = true;
+                    }
+                }
+            }
+
+            // 到達可能な未マッチフロアのうち最小コストのものへ増加パスを通す
+            int bestFloor = -1;
+            for (int f = 0; f < numFloors; f++) {
+                if (floorMatch[f] >= 0 || distFloor[f] >= inf) continue;
+                if (bestFloor < 0 || distFloor[f] < distFloor[bestFloor]) bestFloor = f;
+            }
+            if (bestFloor < 0) break;
+
+            int f = bestFloor;
+            int guard = numSlots + numFloors + 1;
+            while (f >= 0 && guard-- > 0) {
+                int s = prevSlotOfFloor[f];
+                int prevFloor = slotMatch[s];
+                slotMatch[s] = f;
+                floorMatch[f] = s;
+                f = prevFloor;
             }
         }
-        return false;
     }
 
     /**

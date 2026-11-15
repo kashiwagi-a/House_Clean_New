@@ -31,7 +31,7 @@ final class SharedCsvStore {
     static final class SharedCsv {
         final String kind;
         final String fileName;
-        /** CSV 1行目1列目の日付（部屋状態CSVなら清掃日）。取れなければ null */
+        /** CSV 1行目1列目の日付（部屋状態CSVなら清掃日の前日）。取れなければ null */
         final LocalDate csvDate;
         /** Eco側で読み込んだ日時（表示用の文字列） */
         final String importedAt;

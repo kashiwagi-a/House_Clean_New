@@ -1781,6 +1781,8 @@ public class RoomAssignmentCPSATOptimizer {
         // 実際のリネン庫フロアの確定は従来どおり後処理（assignLinenClosetFloors）が行う。
         // 本制約により実現可能なレイアウトのみが解となるため、後処理のマッチングは必ず全要求を満たせる。
         Map<String, List<BoolVar>> floorLinenVars = new HashMap<>();  // floorNumber文字列 → 当該フロアのl変数群
+        // ★通常清掃優先: 「リネン庫階なのに通常清掃が0室（ECOのみ）」を表すペナルティ変数（ソフト制約）
+        List<BoolVar> linenEcoOnlyVars = new ArrayList<>();
         if (linenFloorDemand != null && !linenFloorDemand.isEmpty()) {
             // ★★追加: リネン庫対象階が設定されている場合、対象外のフロアにはリネン庫変数を作らない
             //   （対象階のみがリネン庫担当フロアの候補になる。未設定時は従来どおり全フロア）
@@ -1801,6 +1803,26 @@ public class RoomAssignmentCPSATOptimizer {
                     BoolVar lVar = model.newBoolVar(
                             String.format("l_%s_%d", staffName, floor.floorNumber));
                     model.addImplication(lVar, yVar);  // リネン庫フロアは清掃フロアであること
+
+                    // ★通常清掃優先: リネン庫階ではなるべく通常清掃（シングル等・ツイン）を1室以上持たせる。
+                    //   通常清掃合計 + p ≥ l （通常清掃0室のままリネン庫階にすると p=1 となりペナルティ）
+                    BoolVar ecoOnlyVar = model.newBoolVar(
+                            String.format("lEcoOnly_%s_%d", staffName, floor.floorNumber));
+                    LinearExprBuilder normalOrPenalty = LinearExpr.newBuilder();
+                    for (String rt : floor.roomCounts.keySet()) {
+                        if ((floor.isMainBuilding && isMainTwin(rt)) ||
+                                (!floor.isMainBuilding && isAnnexTwin(rt))) continue;
+                        String vn = String.format("x_%s_%d_%s", staffName, floor.floorNumber, rt);
+                        if (xVars.containsKey(vn)) normalOrPenalty.addTerm(xVars.get(vn), 1);
+                    }
+                    String linenTwinVarName = String.format("t_%s_%d", staffName, floor.floorNumber);
+                    if (twinVars.containsKey(linenTwinVarName)) {
+                        normalOrPenalty.addTerm(twinVars.get(linenTwinVarName), 1);
+                    }
+                    normalOrPenalty.addTerm(ecoOnlyVar, 1);
+                    normalOrPenalty.addTerm(lVar, -1);
+                    model.addGreaterOrEqual(normalOrPenalty.build(), 0);
+                    linenEcoOnlyVars.add(ecoOnlyVar);
                     staffLinenVars.add(lVar);
                     floorLinenVars.computeIfAbsent(String.valueOf(floor.floorNumber),
                             k -> new ArrayList<>()).add(lVar);
@@ -2022,6 +2044,37 @@ public class RoomAssignmentCPSATOptimizer {
                                 staffName, floor.isMainBuilding ? "本館" : "別館", actualFloorNumber));
                     }
                 }
+            }
+        }
+
+        // === ★追加: 除外階制約: スタッフごとの「割り振らない階」では通常清掃を0にする（ハード） ===
+        // 対象は通常清掃（シングル等＋ツイン）のみ。ECOは除外階でも割り振ってよい（仕様）。
+        // そのためフロア使用変数 y は固定せず、通常清掃の変数だけを0にする。
+        // 指定階と同じく実際の階数で照合する（本館・別館の同じ階数の両方に効く）。
+        for (AdaptiveRoomOptimizer.ExtendedStaffInfo staffInfo : staffList) {
+            String staffName = staffInfo.staff.name;
+            NormalRoomDistributionDialog.StaffDistribution dist =
+                    config.roomDistribution != null ?
+                            config.roomDistribution.get(staffName) : null;
+            if (dist == null || dist.excludedFloors == null || dist.excludedFloors.isEmpty()) continue;
+
+            LOGGER.info(String.format("除外階制約: %s → 除外階=%s（通常清掃=0、ECOは可）", staffName, dist.getExcludedFloorsText()));
+
+            for (AdaptiveRoomOptimizer.FloorInfo floor : allFloors) {
+                int actualFloorNumber = !floor.isMainBuilding && floor.floorNumber > 20
+                        ? floor.floorNumber - 20
+                        : floor.floorNumber;
+                if (!dist.excludedFloors.contains(actualFloorNumber)) continue;
+
+                // このフロアの通常清掃変数（シングル等＋ツイン）をすべて0にする
+                for (String roomType : floor.roomCounts.keySet()) {
+                    if ((floor.isMainBuilding && isMainTwin(roomType)) ||
+                            (!floor.isMainBuilding && isAnnexTwin(roomType))) continue;
+                    String vn = String.format("x_%s_%d_%s", staffName, floor.floorNumber, roomType);
+                    if (xVars.containsKey(vn)) model.addEquality(xVars.get(vn), 0);
+                }
+                String tVarName = String.format("t_%s_%d", staffName, floor.floorNumber);
+                if (twinVars.containsKey(tVarName)) model.addEquality(twinVars.get(tVarName), 0);
             }
         }
 
@@ -2543,8 +2596,10 @@ public class RoomAssignmentCPSATOptimizer {
         }
 
         // === 目的関数: シングル優先（重み1000）+ ECO未割当（重み100）+ 許容幅超過（重み30/点）
-        //     + 大浴2フロア目ペナルティ（重み10）+ ★★ツイン回避（重み5）+ スコア均等化（重み1） ===
-        // 優先順位: 通常室全室埋める > ECO全室埋める > 点数差の許容幅内維持 > 大浴1フロア維持 > ツイン回避 > スコア均等化
+        //     + ★リネン庫階の通常清掃優先（重み20）+ 大浴2フロア目ペナルティ（重み10）
+        //     + ★★ツイン回避（重み5）+ スコア均等化（重み1） ===
+        // 優先順位: 通常室全室埋める > ECO全室埋める > 点数差の許容幅内維持 > リネン庫階の通常清掃優先
+        //           > 大浴1フロア維持 > ツイン回避 > スコア均等化
         LinearExprBuilder objectiveBuilder = LinearExpr.newBuilder();
         boolean hasObjective = false;
         for (IntVar sv : shortageVars) {
@@ -2563,6 +2618,11 @@ public class RoomAssignmentCPSATOptimizer {
             // 許容幅超過ペナルティ（ECO全室埋めより弱く、大浴2フロア回避より強い
             // → 許容幅を超えるくらいなら2フロア目のECOを取りに行く）
             objectiveBuilder.addTerm(dv, DEADBAND_EXCESS_WEIGHT);
+            hasObjective = true;
+        }
+        for (BoolVar lv : linenEcoOnlyVars) {
+            // ★通常清掃優先: ECOのみの階をリネン庫階にしない（許容幅超過より弱く、大浴1フロア維持より強い）
+            objectiveBuilder.addTerm(lv, 20);
             hasObjective = true;
         }
         for (BoolVar tv : linenBathTwinFloorVars) {
